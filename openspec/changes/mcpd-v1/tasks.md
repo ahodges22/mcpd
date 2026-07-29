@@ -35,14 +35,14 @@
 
 ## 4. Catalog with coalescing refresh
 
-- [ ] 4.1 Write the failing tests: a notification during an in-flight list causes a second
+- [x] 4.1 Write the failing tests: a notification during an in-flight list causes a second
       read whose result wins; a trigger during that second read causes a third; a burst
       within the debounce window yields one follow-up; one failing backend does not sink
       the catalog
-- [ ] 4.2 Implement canonical ids, flattening, and persistence
-- [ ] 4.3 Implement the trigger-counter loop with debounce and backoff, and generation
+- [x] 4.2 Implement canonical ids, flattening, and persistence
+- [x] 4.3 Implement the trigger-counter loop with debounce and backoff, and generation
       rejection on commit
-- [ ] 4.4 Tests green under `-race -count=5`, then commit
+- [x] 4.4 Tests green under `-race -count=5`, then commit
 
 ## 5. Lifecycle serialization and the kill switch
 
@@ -119,7 +119,10 @@
       advertise different tool counts
 - [ ] 11.2 Implement `cmd/mcpd serve`: one mux, both MCP handlers sharing the guard's
       protection value, overrides loaded before connecting, graceful shutdown draining and
-      terminating children
+      terminating children. Must call `catalog.Load()` at startup (it is what backs the
+      spec's persistence requirement) and one startup `catalog.RefreshAll()`, because
+      `catalog.Start` deliberately performs no immediate refresh to avoid doubling every
+      cold start's reads
 - [ ] 11.3 Wire all four catalog refresh triggers: `catalog.Start(ctx)` covers TTL expiry, and
       `backend.Hooks{ToolListChanged, Reconnected}` both point at `Catalog.Trigger`. The
       mechanisms are built in Tasks 3 and 4; only the wiring is left, and an unwired hook is a
