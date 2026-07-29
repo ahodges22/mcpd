@@ -1,0 +1,6 @@
+kubernetes pod logs	mcp__art__kubectl_logs	5.505929512571311
+kubernetes pod logs	mcp__art__kubectl_get	0.5100312115660977
+on call schedule	mcp__pagerduty__list_oncalls	6.01146315453949
+weather forecast	mcp__weather__get_weather	5.011051873981472
+send a message to slack	mcp__slack__send_message	9.878930837277759
+pod	mcp__art__kubectl_logs	1.252762968495368

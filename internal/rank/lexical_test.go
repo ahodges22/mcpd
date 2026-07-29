@@ -1,16 +1,21 @@
 package rank
 
 import (
+	"bufio"
 	"math"
+	"os"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/ahodges/mcpd/internal/catalog"
 )
 
-// referenceCatalog and the golden scores below were produced by running the
-// original Python scorer (mcp-tool-search/src/proxy.py's query_terms/rank)
-// against this exact catalog, so these tests pin the Go port against the
-// prototype's real output rather than a re-derived expectation.
+// referenceCatalog mirrors CATALOG in testdata/lexical_reference.py, a
+// verbatim extraction of proxy.py's scorer, run to produce
+// testdata/lexical_golden.tsv. Keep the two catalogs in sync by hand: there
+// is no automatic link between a Go literal and a Python one. If this
+// changes, regenerate the golden file per that script's header comment.
 func referenceCatalog() []catalog.Entry {
 	return []catalog.Entry{
 		{
@@ -46,62 +51,83 @@ func referenceCatalog() []catalog.Entry {
 	}
 }
 
+// goldenRow is one line of testdata/lexical_golden.tsv: query, id, and score
+// in the rank order the real Python scorer produced.
+type goldenRow struct {
+	query string
+	id    string
+	score float64
+}
+
+func loadGolden(t *testing.T, path string) []goldenRow {
+	t.Helper()
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("open golden fixture: %v", err)
+	}
+	defer f.Close()
+
+	var rows []goldenRow
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		line := sc.Text()
+		if line == "" {
+			continue
+		}
+		parts := strings.Split(line, "\t")
+		if len(parts) != 3 {
+			t.Fatalf("malformed golden row: %q", line)
+		}
+		score, err := strconv.ParseFloat(parts[2], 64)
+		if err != nil {
+			t.Fatalf("parse golden score %q: %v", parts[2], err)
+		}
+		rows = append(rows, goldenRow{query: parts[0], id: parts[1], score: score})
+	}
+	if err := sc.Err(); err != nil {
+		t.Fatalf("read golden fixture: %v", err)
+	}
+	return rows
+}
+
+// TestLexicalMatchesThePythonPrototypeGoldenScores replays
+// testdata/lexical_golden.tsv, which testdata/lexical_reference.py (a
+// verbatim extraction of proxy.py's scorer) produced against
+// referenceCatalog, so this pins the Go port to the prototype's actual
+// output rather than a re-derived expectation. Two of the covered queries
+// exercise the port's most subtle behaviours: "on call schedule" is the
+// docstring's own example of the join term "oncall" substring-matching the
+// squashed tool name "oncalls", and "pod" (3 characters, below the
+// length>=4 gate) exact-matches the singular "pod" in kubectl_logs's
+// description but not kubectl_get's plural "pods", because that length
+// gate applies only to the name substring fallback, never to description
+// matching.
 func TestLexicalMatchesThePythonPrototypeGoldenScores(t *testing.T) {
 	entries := referenceCatalog()
-	for _, tc := range []struct {
-		query string
-		want  []Result
-	}{
-		{
-			query: "kubernetes pod logs",
-			want: []Result{
-				{ID: "mcp__art__kubectl_logs", Score: 5.505929512571311},
-				{ID: "mcp__art__kubectl_get", Score: 0.5100312115660977},
-			},
-		},
-		{
-			// Exercises the docstring's own example: the join term "oncall" substring-
-			// matches the squashed tool name "oncalls", so a two-word query with no
-			// separator in the tool name still finds it.
-			query: "on call schedule",
-			want: []Result{
-				{ID: "mcp__pagerduty__list_oncalls", Score: 6.01146315453949},
-			},
-		},
-		{
-			query: "weather forecast",
-			want: []Result{
-				{ID: "mcp__weather__get_weather", Score: 5.011051873981472},
-			},
-		},
-		{
-			query: "send a message to slack",
-			want: []Result{
-				{ID: "mcp__slack__send_message", Score: 9.878930837277759},
-			},
-		},
-		{
-			// "pod" is 3 characters, below the length>=4 gate the Python original
-			// applies only to the name substring fallback; it exact-matches the
-			// singular "pod" in kubectl_logs's description but does not touch
-			// kubectl_get's description, which only contains the plural "pods".
-			query: "pod",
-			want: []Result{
-				{ID: "mcp__art__kubectl_logs", Score: 1.252762968495368},
-			},
-		},
-	} {
-		t.Run(tc.query, func(t *testing.T) {
-			got := Lexical(tc.query, entries)
-			if len(got) != len(tc.want) {
-				t.Fatalf("Lexical(%q) = %+v, want %+v", tc.query, got, tc.want)
+	golden := loadGolden(t, "testdata/lexical_golden.tsv")
+
+	var queries []string
+	want := make(map[string][]goldenRow)
+	for _, row := range golden {
+		if _, ok := want[row.query]; !ok {
+			queries = append(queries, row.query)
+		}
+		want[row.query] = append(want[row.query], row)
+	}
+
+	for _, query := range queries {
+		t.Run(query, func(t *testing.T) {
+			got := Lexical(query, entries)
+			rows := want[query]
+			if len(got) != len(rows) {
+				t.Fatalf("Lexical(%q) = %+v, want %d results", query, got, len(rows))
 			}
-			for i, w := range tc.want {
-				if got[i].ID != w.ID {
-					t.Errorf("result[%d].ID = %q, want %q", i, got[i].ID, w.ID)
+			for i, row := range rows {
+				if got[i].ID != row.id {
+					t.Errorf("result[%d].ID = %q, want %q", i, got[i].ID, row.id)
 				}
-				if math.Abs(got[i].Score-w.Score) > 1e-9 {
-					t.Errorf("result[%d].Score = %v, want %v", i, got[i].Score, w.Score)
+				if math.Abs(got[i].Score-row.score) > 1e-9 {
+					t.Errorf("result[%d].Score = %v, want %v", i, got[i].Score, row.score)
 				}
 			}
 		})
