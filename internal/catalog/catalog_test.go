@@ -1,0 +1,438 @@
+package catalog
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"maps"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
+	"slices"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/ahodges/mcpd/internal/backend"
+	"github.com/ahodges/mcpd/internal/config"
+	"github.com/ahodges/mcpd/internal/testfake"
+)
+
+var fastTuning = tuning{debounce: time.Millisecond, backoffBase: time.Millisecond, ttl: 20 * time.Millisecond}
+
+func TestCanonicalIdsFlattenEveryBackendThroughARealRegistry(t *testing.T) {
+	reg := httpRegistry(t, testfake.New("github", tool("create_pull_request")), testfake.New("infra", tool("kubectl_logs")))
+	c := New(reg, filepath.Join(t.TempDir(), "catalog.json"))
+	t.Cleanup(func() { stopAll(c, reg.Names()) })
+
+	c.RefreshAll(t.Context())
+
+	if got, want := ids(c), []string{"mcp__github__create_pull_request", "mcp__infra__kubectl_logs"}; !slices.Equal(got, want) {
+		t.Fatalf("ids = %v, want %v", got, want)
+	}
+	e, ok := c.Lookup("mcp__github__create_pull_request")
+	if !ok {
+		t.Fatal("Lookup missed an id the catalog just reported")
+	}
+	if e.Server != "github" || e.Tool != "create_pull_request" {
+		t.Errorf("entry = %+v, want server github and tool create_pull_request", e)
+	}
+	if !strings.Contains(string(e.Schema), "properties") {
+		t.Errorf("schema = %s, want the upstream input schema so describe_tool costs no upstream call", e.Schema)
+	}
+}
+
+func TestDeadBackendDoesNotSinkTheCatalog(t *testing.T) {
+	c := newTestCatalog(t, stubSource{
+		"alpha": staticLister{tools: []*mcp.Tool{tool("kubectl_logs"), tool("kubectl_get")}},
+		"beta":  errLister{err: errSpawn},
+	}, fastTuning)
+
+	// Refreshed in order rather than through RefreshAll: the failure has to be
+	// processed after the success, or an implementation that discards the whole
+	// catalog on one failure passes on scheduling luck.
+	c.Refresh(t.Context(), "alpha")
+	c.Refresh(t.Context(), "beta")
+
+	if got, want := ids(c), []string{"mcp__alpha__kubectl_get", "mcp__alpha__kubectl_logs"}; !slices.Equal(got, want) {
+		t.Errorf("ids = %v, want %v: beta's failure must not sink alpha's tools", got, want)
+	}
+	if got := c.Errors()["beta"]; !strings.Contains(got, errSpawn.Error()) {
+		t.Errorf("recorded error for beta = %q, want it to name %q", got, errSpawn)
+	}
+}
+
+func TestTriggerDuringRefreshCausesExactlyOneFollowUpWhoseResultWins(t *testing.T) {
+	fake := testfake.New("alpha", tool("kubectl_logs"), tool("kubectl_get"))
+	gate := holdLists(t, fake, 1)
+	c := newTestCatalog(t, stubSource{"alpha": listerFor(t, fake)}, fastTuning)
+
+	done := make(chan struct{})
+	go func() { c.RefreshAll(context.Background()); close(done) }()
+	waitFor(t, func() bool { return fake.ListCalls.Load() == 1 })
+
+	fake.SetTools(tool("kubectl_logs"))
+	c.Trigger("alpha")
+	c.Trigger("alpha")
+	c.Trigger("alpha")
+	gate.release(1)
+	<-done
+	c.WaitIdle()
+
+	if n := fake.ListCalls.Load(); n != 2 {
+		t.Errorf("tools/list calls = %d, want 2: one in flight plus one coalesced follow-up", n)
+	}
+	if got, want := ids(c), []string{"mcp__alpha__kubectl_logs"}; !slices.Equal(got, want) {
+		t.Errorf("ids = %v, want %v: the follow-up read is the one that must be committed", got, want)
+	}
+}
+
+func TestTriggerDuringTheFollowUpCausesAThirdRead(t *testing.T) {
+	fake := testfake.New("alpha", tool("kubectl_logs"))
+	gate := holdLists(t, fake, 3)
+	c := newTestCatalog(t, stubSource{"alpha": listerFor(t, fake)}, fastTuning)
+
+	done := make(chan struct{})
+	go func() { c.RefreshAll(context.Background()); close(done) }()
+
+	waitFor(t, func() bool { return fake.ListCalls.Load() == 1 })
+	c.Trigger("alpha")
+	gate.release(1)
+
+	waitFor(t, func() bool { return fake.ListCalls.Load() == 2 })
+	c.Trigger("alpha")
+	gate.release(2)
+
+	waitFor(t, func() bool { return fake.ListCalls.Load() == 3 })
+	gate.release(3)
+	<-done
+	c.WaitIdle()
+
+	if n := fake.ListCalls.Load(); n != 3 {
+		t.Errorf("tools/list calls = %d, want 3: the loop must converge on the trigger counter, not stop at a fixed bound", n)
+	}
+}
+
+func TestABurstOfTriggersCollapsesIntoOneRead(t *testing.T) {
+	fake := testfake.New("alpha", tool("kubectl_logs"))
+	tune := fastTuning
+	tune.debounce = 500 * time.Millisecond
+	c := newTestCatalog(t, stubSource{"alpha": listerFor(t, fake)}, tune)
+
+	// Spaced, because triggers issued back to back collapse on the trigger counter
+	// alone: each read is fast enough to finish between them, so only the debounce
+	// stops five triggers becoming five reads.
+	for range 5 {
+		c.Trigger("alpha")
+		if n := fake.ListCalls.Load(); n != 0 {
+			t.Fatalf("tools/list calls = %d before the debounce window elapsed, want 0", n)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	c.WaitIdle()
+
+	if n := fake.ListCalls.Load(); n != 1 {
+		t.Errorf("tools/list calls = %d, want 1: a burst inside the debounce window is one refresh", n)
+	}
+}
+
+func TestASlowBackendDoesNotBlockAFastOne(t *testing.T) {
+	// The slow backend sorts first, so a refresh that fanned out in name order
+	// rather than concurrently would never reach the fast one.
+	slow := &blockingLister{release: make(chan struct{}), tools: []*mcp.Tool{tool("slow_tool")}}
+	c := newTestCatalog(t, stubSource{
+		"blocked": slow,
+		"quick":   staticLister{tools: []*mcp.Tool{tool("kubectl_logs"), tool("kubectl_get")}},
+	}, fastTuning)
+
+	done := make(chan struct{})
+	go func() { c.RefreshAll(context.Background()); close(done) }()
+	waitFor(t, func() bool { return len(c.Entries()) == 2 })
+
+	if got := c.Errors()["blocked"]; got != "" {
+		t.Errorf("the slow backend was recorded as failed while still reading: %q", got)
+	}
+	close(slow.release)
+	<-done
+
+	if n := len(c.Entries()); n != 3 {
+		t.Errorf("entries = %d, want 3 once the slow backend answers", n)
+	}
+}
+
+func TestALifecycleTransitionAfterTheReadDoesNotCommit(t *testing.T) {
+	l := &scriptedLister{
+		reads: [][]*mcp.Tool{{tool("kubectl_logs"), tool("kubectl_get")}, {tool("replacement")}},
+		gens:  []uint64{1, 1, 2, 3},
+	}
+	c := newTestCatalog(t, stubSource{"alpha": l}, fastTuning)
+
+	c.Refresh(t.Context(), "alpha")
+	c.Refresh(t.Context(), "alpha")
+
+	if got, want := ids(c), []string{"mcp__alpha__kubectl_get", "mcp__alpha__kubectl_logs"}; !slices.Equal(got, want) {
+		t.Errorf("ids = %v, want %v: a read superseded by a lifecycle transition must not commit", got, want)
+	}
+	if got := c.Errors()["alpha"]; got != "" {
+		t.Errorf("recorded error %q: being superseded is not a backend failure", got)
+	}
+}
+
+func TestAPersistedCatalogAnswersBeforeAnyBackendIsRead(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "catalog.json")
+	written := newCatalog(stubSource{"alpha": staticLister{tools: []*mcp.Tool{tool("kubectl_logs")}}}, path, fastTuning)
+	written.RefreshAll(t.Context())
+
+	restarted := newCatalog(stubSource{"alpha": refusingLister{t: t}}, path, fastTuning)
+	if err := restarted.Load(); err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	if _, ok := restarted.Lookup("mcp__alpha__kubectl_logs"); !ok {
+		t.Error("the persisted catalog does not answer, so a restart serves nothing until every backend is re-listed")
+	}
+}
+
+func TestStopRefreshAwaitsTheInFlightRead(t *testing.T) {
+	// The first read commits, the second parks, so the assertions can tell an
+	// evicted catalog from an untouched one.
+	slow := &blockingLister{release: make(chan struct{}), tools: []*mcp.Tool{tool("kubectl_logs")}, passes: 1}
+	c := newTestCatalog(t, stubSource{"alpha": slow}, fastTuning)
+	c.Refresh(t.Context(), "alpha")
+
+	c.Trigger("alpha")
+	waitFor(t, func() bool { return slow.reading.Load() })
+
+	stopped := make(chan struct{})
+	go func() { c.StopRefresh("alpha"); close(stopped) }()
+	select {
+	case <-stopped:
+	case <-time.After(5 * time.Second):
+		t.Fatal("StopRefresh did not cancel and await the in-flight read, so a disable cannot stop the loop")
+	}
+
+	if got, want := ids(c), []string{"mcp__alpha__kubectl_logs"}; !slices.Equal(got, want) {
+		t.Errorf("ids = %v, want %v: our own cancellation is not a backend failure", got, want)
+	}
+	if got := c.Errors()["alpha"]; got != "" {
+		t.Errorf("recorded error %q for a refresh we cancelled ourselves", got)
+	}
+}
+
+// --- helpers ---
+
+var errSpawn = errors.New("spawn refused")
+
+type stubSource map[string]lister
+
+func (s stubSource) names() []string { return slices.Sorted(maps.Keys(s)) }
+
+func (s stubSource) lister(name string) (lister, bool) {
+	l, ok := s[name]
+	return l, ok
+}
+
+type staticLister struct{ tools []*mcp.Tool }
+
+func (l staticLister) ListTools(context.Context) ([]*mcp.Tool, error) { return l.tools, nil }
+func (l staticLister) Generation() uint64                             { return 1 }
+
+type errLister struct{ err error }
+
+func (l errLister) ListTools(context.Context) ([]*mcp.Tool, error) { return nil, l.err }
+func (l errLister) Generation() uint64                             { return 1 }
+
+type refusingLister struct{ t *testing.T }
+
+func (l refusingLister) ListTools(context.Context) ([]*mcp.Tool, error) {
+	l.t.Error("the restarted catalog listed a backend; the point of persistence is answering before that")
+	return nil, nil
+}
+func (l refusingLister) Generation() uint64 { return 1 }
+
+// blockingLister serves its first passes reads immediately and parks every read
+// after that until released or cancelled.
+type blockingLister struct {
+	release chan struct{}
+	tools   []*mcp.Tool
+	passes  int64
+	calls   atomic.Int64
+	reading atomic.Bool
+}
+
+func (l *blockingLister) ListTools(ctx context.Context) ([]*mcp.Tool, error) {
+	if l.calls.Add(1) <= l.passes {
+		return l.tools, nil
+	}
+	l.reading.Store(true)
+	defer l.reading.Store(false)
+	select {
+	case <-l.release:
+		return l.tools, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+func (l *blockingLister) Generation() uint64 { return 1 }
+
+// scriptedLister serves a canned sequence of reads and generations, so a test
+// can move the generation between the sample taken after a read and the check
+// taken at commit without depending on scheduling.
+type scriptedLister struct {
+	mu    sync.Mutex
+	reads [][]*mcp.Tool
+	gens  []uint64
+	read  int
+	gen   int
+}
+
+func (l *scriptedLister) ListTools(context.Context) ([]*mcp.Tool, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	tools := l.reads[min(l.read, len(l.reads)-1)]
+	l.read++
+	return tools, nil
+}
+
+func (l *scriptedLister) Generation() uint64 {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	g := l.gens[min(l.gen, len(l.gens)-1)]
+	l.gen++
+	return g
+}
+
+// sessionLister drives a testfake over a real client session, so coalescing is
+// asserted on the fake's tools/list counter rather than on a stub's bookkeeping.
+type sessionLister struct{ sess *mcp.ClientSession }
+
+func (l *sessionLister) ListTools(ctx context.Context) ([]*mcp.Tool, error) {
+	res, err := l.sess.ListTools(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	return res.Tools, nil
+}
+
+func (l *sessionLister) Generation() uint64 { return 1 }
+
+func listerFor(t *testing.T, f *testfake.Fake) *sessionLister {
+	t.Helper()
+	tr, err := f.Transport(context.Background())
+	if err != nil {
+		t.Fatalf("fake transport: %v", err)
+	}
+	sess, err := mcp.NewClient(&mcp.Implementation{Name: "catalog-test", Version: "test"}, nil).Connect(context.Background(), tr, nil)
+	if err != nil {
+		t.Fatalf("connect to fake: %v", err)
+	}
+	t.Cleanup(func() {
+		sess.Close()
+		f.Close()
+	})
+	return &sessionLister{sess: sess}
+}
+
+// listGate parks each of the first holds tools/list responses until released,
+// after the handler has captured the tool set. testfake's BeforeList runs before
+// the handler, so a set changed while a read is parked would leak into that read
+// and a test could not tell which read's result was committed.
+type listGate struct{ gates []chan struct{} }
+
+func holdLists(t *testing.T, f *testfake.Fake, holds int) *listGate {
+	t.Helper()
+	g := &listGate{}
+	for range holds {
+		g.gates = append(g.gates, make(chan struct{}))
+	}
+	f.Server().AddReceivingMiddleware(func(next mcp.MethodHandler) mcp.MethodHandler {
+		return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
+			res, err := next(ctx, method, req)
+			if method == "tools/list" {
+				if n := int(f.ListCalls.Load()); n >= 1 && n <= len(g.gates) {
+					<-g.gates[n-1]
+				}
+			}
+			return res, err
+		}
+	})
+	t.Cleanup(func() {
+		for _, gate := range g.gates {
+			select {
+			case <-gate:
+			default:
+				close(gate)
+			}
+		}
+	})
+	return g
+}
+
+func (g *listGate) release(n int) { close(g.gates[n-1]) }
+
+func newTestCatalog(t *testing.T, src backends, tune tuning) *Catalog {
+	t.Helper()
+	c := newCatalog(src, filepath.Join(t.TempDir(), "catalog.json"), tune)
+	t.Cleanup(func() { stopAll(c, src.names()) })
+	return c
+}
+
+// stopAll leaves no refresh loop running past the end of a test, which would
+// otherwise read a closed session or write to a removed temporary directory.
+func stopAll(c *Catalog, servers []string) {
+	for _, name := range servers {
+		c.StopRefresh(name)
+	}
+}
+
+// httpRegistry serves each fake over streamable HTTP so the catalog runs against
+// a real *backend.Registry. Stateless keeps the client from holding a standalone
+// SSE stream open, which would block the test server's shutdown.
+func httpRegistry(t *testing.T, fakes ...*testfake.Fake) *backend.Registry {
+	t.Helper()
+	cfg := &config.Config{Backends: make(map[string]config.Backend, len(fakes))}
+	for _, f := range fakes {
+		srv := httptest.NewServer(mcp.NewStreamableHTTPHandler(
+			func(*http.Request) *mcp.Server { return f.Server() },
+			&mcp.StreamableHTTPOptions{Stateless: true},
+		))
+		t.Cleanup(func() {
+			srv.CloseClientConnections()
+			srv.Close()
+			f.Close()
+		})
+		cfg.Backends[f.Name] = config.Backend{Name: f.Name, HTTPURL: srv.URL, TimeoutSec: 10}
+	}
+	return backend.NewRegistry(cfg, nil)
+}
+
+func ids(c *Catalog) []string {
+	out := make([]string, 0)
+	for _, e := range c.Entries() {
+		out = append(out, e.ID)
+	}
+	return out
+}
+
+func tool(name string) *mcp.Tool {
+	return &mcp.Tool{
+		Name:        name,
+		Description: name + " description",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"pod":{"type":"string"}}}`),
+	}
+}
+
+func waitFor(t *testing.T, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatal("condition not met within 5s")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}

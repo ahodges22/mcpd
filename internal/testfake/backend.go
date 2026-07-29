@@ -47,6 +47,10 @@ func New(name string, tools ...*mcp.Tool) *Fake {
 	return f
 }
 
+// Server exposes the underlying MCP server, so a test can serve the fake over a
+// real transport or add its own middleware.
+func (f *Fake) Server() *mcp.Server { return f.srv }
+
 // SetTools replaces the served tool set. The SDK notifies connected sessions,
 // so this doubles as the trigger for a tool-list-changed refresh.
 func (f *Fake) SetTools(tools ...*mcp.Tool) {
