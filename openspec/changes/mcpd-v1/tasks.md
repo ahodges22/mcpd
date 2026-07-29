@@ -122,7 +122,10 @@
       terminating children. Must call `catalog.Load()` at startup (it is what backs the
       spec's persistence requirement) and one startup `catalog.RefreshAll()`, because
       `catalog.Start` deliberately performs no immediate refresh to avoid doubling every
-      cold start's reads
+      cold start's reads. After `Load`, call `catalog.Drop(name)` for every
+      backend that loaded disabled: a crash between Task 5's override write and its tool
+      eviction leaves that backend's tools in the persisted catalog, and a disabled backend
+      is never re-listed, so nothing else would ever remove them
 - [ ] 11.3 Wire all four catalog refresh triggers: `catalog.Start(ctx)` covers TTL expiry, and
       `backend.Hooks{ToolListChanged, Reconnected}` both point at `Catalog.Trigger`. The
       mechanisms are built in Tasks 3 and 4; only the wiring is left, and an unwired hook is a
