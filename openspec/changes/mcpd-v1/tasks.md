@@ -60,12 +60,12 @@
 
 ## 6. Embeddings and rank fusion
 
-- [ ] 6.1 Write the failing tests: fusion degrades to lexical with no vectors; ranks are
+- [x] 6.1 Write the failing tests: fusion degrades to lexical with no vectors; ranks are
       fused rather than scores; an unreachable embeddings service is soft
-- [ ] 6.2 Port the prototype's lexical scorer, including its tool-name squashing
-- [ ] 6.3 Implement the embeddings client with batching and a content-hash cache
-- [ ] 6.4 Implement reciprocal rank fusion
-- [ ] 6.5 Tests green, then commit
+- [x] 6.2 Port the prototype's lexical scorer, including its tool-name squashing
+- [x] 6.3 Implement the embeddings client with batching and a content-hash cache
+- [x] 6.4 Implement reciprocal rank fusion
+- [x] 6.5 Tests green, then commit
 
 ## 7. Abstention signal
 
