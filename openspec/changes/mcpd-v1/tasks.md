@@ -87,17 +87,17 @@
 
 ## 9. Guard, status page, and inspector
 
-- [ ] 9.1 Write the failing tests: a foreign origin is rejected on both an MCP endpoint and
+- [x] 9.1 Write the failing tests: a foreign origin is rejected on both an MCP endpoint and
       the status API; an absent origin is accepted; a mutation is rejected on GET; a tool
       result containing markup renders as literal text
-- [ ] 9.2 Implement the guard: one shared cross-origin protection value, POST-only
+- [x] 9.2 Implement the guard: one shared cross-origin protection value, POST-only
       mutations, the callback exemption, and a deny handler carrying a reason
-- [ ] 9.3 Implement the status API and the embedded page, inserting all dynamic values as
+- [x] 9.3 Implement the status API and the embedded page, inserting all dynamic values as
       text
-- [ ] 9.4 Implement the inspector, rendering results as text and surfacing destructive
+- [x] 9.4 Implement the inspector, rendering results as text and surfacing destructive
       annotations
-- [ ] 9.5 Verify no markup-insertion API appears anywhere in the assets
-- [ ] 9.6 Tests green, then commit
+- [x] 9.5 Verify no markup-insertion API appears anywhere in the assets
+- [x] 9.6 Tests green, then commit
 
 ## 10. Downstream OAuth
 
