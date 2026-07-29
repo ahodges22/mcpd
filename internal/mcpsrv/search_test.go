@@ -54,6 +54,61 @@ func TestSearchToolsExplainsEmptyCatalogWhenNoBackends(t *testing.T) {
 	}
 }
 
+func TestSearchToolsExplainsColdStartDistinctlyFromNoBackends(t *testing.T) {
+	// Configured but never refreshed: Errors() is empty (nothing has ever been
+	// attempted, let alone failed) and every backend's health is still the
+	// constructor default, so this must not collapse into "no backends are
+	// configured" or into the connected-but-empty case below.
+	cfg := &config.Config{Backends: map[string]config.Backend{
+		"cold": {Name: "cold", HTTPURL: deadEndpoint(t)},
+	}}
+	ov, err := backend.LoadOverrides(filepath.Join(t.TempDir(), "overrides.json"))
+	if err != nil {
+		t.Fatalf("load overrides: %v", err)
+	}
+	reg := backend.NewRegistry(cfg, ov, backend.Hooks{})
+	cat := catalog.New(reg, filepath.Join(t.TempDir(), "catalog.json"))
+
+	client := connectClient(t, NewSearch(cat, reg, rank.Thresholds{}))
+
+	out := callSearch(t, client, "anything", 0)
+	if len(out.Results) != 0 {
+		t.Fatalf("results = %v, want none", out.Results)
+	}
+	if !strings.Contains(out.Message, "have not connected yet") {
+		t.Fatalf("message %q should say backends have not connected yet", out.Message)
+	}
+	if strings.Contains(out.Message, "no backends are configured") {
+		t.Fatalf("message %q collapses a cold start into the unconfigured case", out.Message)
+	}
+	if strings.Contains(out.Message, "none reported any tools") {
+		t.Fatalf("message %q collapses a cold start into the connected-but-empty case", out.Message)
+	}
+}
+
+func TestSearchToolsExplainsConnectedBackendReportingNoTools(t *testing.T) {
+	// A backend that connects successfully but serves zero tools deletes its
+	// own error record on commit (same as any other successful refresh), so
+	// Errors() being empty here must not read as "not connected".
+	reg := httpRegistry(t, testfake.New("empty"))
+	cat := catalog.New(reg, filepath.Join(t.TempDir(), "catalog.json"))
+	cat.RefreshAll(t.Context())
+	t.Cleanup(func() { cat.StopRefresh("empty") })
+
+	client := connectClient(t, NewSearch(cat, reg, rank.Thresholds{}))
+
+	out := callSearch(t, client, "anything", 0)
+	if len(out.Results) != 0 {
+		t.Fatalf("results = %v, want none", out.Results)
+	}
+	if !strings.Contains(out.Message, "none reported any tools") {
+		t.Fatalf("message %q should say the connected backend reported no tools", out.Message)
+	}
+	if strings.Contains(out.Message, "have not connected yet") {
+		t.Fatalf("message %q collapses a connected-but-empty backend into the cold-start case", out.Message)
+	}
+}
+
 func TestSearchToolsExplainsNoMatchAgainstNonEmptyCatalog(t *testing.T) {
 	reg := httpRegistry(t, testfake.New("github", tool("create_pull_request")))
 	cat := catalog.New(reg, filepath.Join(t.TempDir(), "catalog.json"))
@@ -108,6 +163,27 @@ func TestDescribeToolServesSchemaWithNoUpstreamCall(t *testing.T) {
 	}
 	if got := len(fake.Received()); got != before {
 		t.Fatalf("backend received %d new requests, want 0: %v", got-before, fake.Received())
+	}
+}
+
+func TestDescribeToolSurfacesDestructiveHint(t *testing.T) {
+	destructive := true
+	upstream := &mcp.Tool{
+		Name:        "delete_repo",
+		Description: "delete_repo description",
+		InputSchema: json.RawMessage(`{"type":"object"}`),
+		Annotations: &mcp.ToolAnnotations{DestructiveHint: &destructive},
+	}
+	reg := httpRegistry(t, testfake.New("github", upstream))
+	cat := catalog.New(reg, filepath.Join(t.TempDir(), "catalog.json"))
+	cat.RefreshAll(t.Context())
+	t.Cleanup(func() { cat.StopRefresh("github") })
+
+	client := connectClient(t, NewSearch(cat, reg, rank.Thresholds{}))
+	out := callDescribe(t, client, "mcp__github__delete_repo")
+
+	if out.Annotations == nil || out.Annotations.DestructiveHint == nil || !*out.Annotations.DestructiveHint {
+		t.Fatalf("annotations = %+v, want a destructive hint of true", out.Annotations)
 	}
 }
 

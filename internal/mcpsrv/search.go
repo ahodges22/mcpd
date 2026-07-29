@@ -40,10 +40,11 @@ type describeInput struct {
 }
 
 type describeOutput struct {
-	ID          string `json:"id"`
-	Server      string `json:"server"`
-	Description string `json:"description,omitempty"`
-	InputSchema any    `json:"input_schema,omitempty"`
+	ID          string               `json:"id"`
+	Server      string               `json:"server"`
+	Description string               `json:"description,omitempty"`
+	InputSchema any                  `json:"input_schema,omitempty"`
+	Annotations *mcp.ToolAnnotations `json:"annotations,omitempty"`
 }
 
 type callInput struct {
@@ -60,7 +61,7 @@ func NewSearch(cat *catalog.Catalog, reg *backend.Registry, th rank.Thresholds) 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "search_tools",
 		Description: "Search the catalog of every tool every connected backend offers.",
-	}, searchHandler(cat, th))
+	}, searchHandler(cat, reg, th))
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "describe_tool",
@@ -75,11 +76,11 @@ func NewSearch(cat *catalog.Catalog, reg *backend.Registry, th rank.Thresholds) 
 	return s
 }
 
-func searchHandler(cat *catalog.Catalog, th rank.Thresholds) mcp.ToolHandlerFor[searchInput, searchOutput] {
+func searchHandler(cat *catalog.Catalog, reg *backend.Registry, th rank.Thresholds) mcp.ToolHandlerFor[searchInput, searchOutput] {
 	return func(_ context.Context, _ *mcp.CallToolRequest, in searchInput) (*mcp.CallToolResult, searchOutput, error) {
 		entries := cat.Entries()
 		if len(entries) == 0 {
-			return nil, searchOutput{Message: explainEmptyCatalog(cat)}, nil
+			return nil, searchOutput{Message: explainEmptyCatalog(cat, reg)}, nil
 		}
 
 		limit := in.Limit
@@ -104,23 +105,42 @@ func searchHandler(cat *catalog.Catalog, th rank.Thresholds) mcp.ToolHandlerFor[
 }
 
 // explainEmptyCatalog names, per backend, why the catalog has nothing to
-// search: the model needs to know whether to wait for a backend to connect
-// or reword a query that nothing will ever answer.
-func explainEmptyCatalog(cat *catalog.Catalog) string {
+// search: the model needs to know whether to wait for a backend to connect,
+// give up because nothing is configured, or stop expecting tools from a
+// backend that connected but reported none, rather than always retrying.
+//
+// Errors() being empty does not mean every backend is fine: commit deletes a
+// server's error record on any successful refresh, including one that found
+// zero tools, and a backend that has never been refreshed yet has no error
+// either. Both are reachable and neither means "not connected", so this
+// checks each configured backend's own health rather than asserting one
+// blanket cause.
+func explainEmptyCatalog(cat *catalog.Catalog, reg *backend.Registry) string {
 	errs := cat.Errors()
-	if len(errs) == 0 {
-		return "no tools are available: the daemon has no backends connected"
+	if len(errs) > 0 {
+		names := make([]string, 0, len(errs))
+		for name := range errs {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		parts := make([]string, len(names))
+		for i, name := range names {
+			parts[i] = name + ": " + errs[name]
+		}
+		return "no tools are available: " + strings.Join(parts, "; ")
 	}
-	names := make([]string, 0, len(errs))
-	for name := range errs {
-		names = append(names, name)
+
+	names := reg.Names()
+	if len(names) == 0 {
+		return "no tools are available: no backends are configured"
 	}
-	sort.Strings(names)
-	parts := make([]string, len(names))
-	for i, name := range names {
-		parts[i] = name + ": " + errs[name]
+	health := reg.Health()
+	for _, name := range names {
+		if health[name].State == backend.StateUp {
+			return "no tools are available: backends are connected but none reported any tools"
+		}
 	}
-	return "no tools are available: " + strings.Join(parts, "; ")
+	return "no tools are available: backends are configured but have not connected yet"
 }
 
 func describeHandler(cat *catalog.Catalog) mcp.ToolHandlerFor[describeInput, describeOutput] {
@@ -134,6 +154,7 @@ func describeHandler(cat *catalog.Catalog) mcp.ToolHandlerFor[describeInput, des
 			Server:      entry.Server,
 			Description: entry.Description,
 			InputSchema: entry.Schema,
+			Annotations: entry.Annotations,
 		}, nil
 	}
 }

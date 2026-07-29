@@ -157,10 +157,11 @@ func callSearch(t *testing.T, client *mcp.ClientSession, query string, limit int
 }
 
 type describeOutputDTO struct {
-	ID          string `json:"id"`
-	Server      string `json:"server"`
-	Description string `json:"description,omitempty"`
-	InputSchema any    `json:"input_schema,omitempty"`
+	ID          string               `json:"id"`
+	Server      string               `json:"server"`
+	Description string               `json:"description,omitempty"`
+	InputSchema any                  `json:"input_schema,omitempty"`
+	Annotations *mcp.ToolAnnotations `json:"annotations,omitempty"`
 }
 
 func callDescribe(t *testing.T, client *mcp.ClientSession, id string) describeOutputDTO {

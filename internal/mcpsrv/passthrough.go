@@ -54,7 +54,21 @@ func (p *Passthrough) Server() *mcp.Server { return p.srv }
 //
 // A schema whose top-level "type" is not "object" is skipped rather than
 // advertised: the SDK panics on such a schema, and an upstream tool's schema
-// is not something this daemon controls or has validated in advance.
+// is not something this daemon controls or has validated in advance. A
+// skipped id is also actively removed if the server was still advertising it
+// under a prior, valid version: once this pass forgets an id, no later pass
+// will ever call RemoveTools for it, since removal is computed only against
+// what this method itself last remembered.
+//
+// Sync takes only its own mutex, and reaches the catalog exclusively through
+// Entries (which takes and releases the catalog's mutex internally, never
+// held concurrently with p.mu by any other path here). Sync is therefore safe
+// to call from any goroutine, including one invoked synchronously by a
+// catalog post-commit hook, as long as the hook fires after the catalog has
+// released its own mutex for that commit (the same ordering catalog.commit
+// already uses before calling persist) -- never from inside the commit's
+// critical section, since Entries would then observe a partial commit rather
+// than the one that triggered the hook.
 func (p *Passthrough) Sync() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -87,10 +101,15 @@ func (p *Passthrough) Sync() {
 		}
 		if !isObjectSchema(schema) {
 			slog.Warn("passthrough: refusing to advertise a tool with a non-object input schema", "id", id)
+			// The id is about to drop out of known below, so if it was advertised
+			// under a prior, valid schema, it must be actively removed here: once
+			// known forgets it, nothing else will ever call RemoveTools for it.
+			p.srv.RemoveTools(id)
 			continue
 		}
 		t := &mcp.Tool{Name: id, Description: e.Description, InputSchema: schema, Annotations: e.Annotations}
 		if !addToolSafely(p.srv, t, passthroughCallHandler(p.reg, e.Server, e.Tool)) {
+			p.srv.RemoveTools(id)
 			continue
 		}
 		added[id] = e
@@ -114,8 +133,12 @@ func isObjectSchema(schema json.RawMessage) bool {
 }
 
 // addToolSafely guards against any AddTool panic beyond the schema-type check
-// above (for example a future SDK validation this daemon has not seen yet),
-// so one malformed upstream tool cannot take the whole daemon down.
+// above. This is not a hypothetical: SDK v1.7.0's AddTool also panics on a
+// schema whose top-level type is "object" (isObjectSchema accepts it) if any
+// property sets "x-mcp-header" on a non-primitive type (mcp/streamable_headers.go's
+// validateParamHeaderAnnotations), which an upstream tool's schema is free to
+// do. This recover keeps one malformed upstream tool from taking the whole
+// daemon down.
 func addToolSafely(srv *mcp.Server, t *mcp.Tool, h mcp.ToolHandler) (ok bool) {
 	defer func() {
 		if r := recover(); r != nil {
