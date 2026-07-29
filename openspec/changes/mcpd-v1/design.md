@@ -64,7 +64,20 @@ concurrency:
 
 Paths, not a query parameter, because some clients normalise or drop query strings on MCP
 URLs. Mode is per client because stacking the facade behind a client that already has
-native tool search measured no token saving and ranks worse than either layer alone.
+native tool search ranks worse than either layer alone and saves nothing.
+
+That last claim is measured, not assumed. Against the Python prototype over a 583-tool
+catalog, a client with native tool search consumed 40,071 tokens through the facade versus
+40,129 tokens natively: a 58-token difference, or 0.14%. The facade's entire value
+proposition is token reduction, and against a client that already searches it delivers
+none, while adding a layer that must guess a query to hand to the proxy's search.
+
+### Ranking baseline to beat
+
+The prototype's lexical-only ranker scored top-1 11/15 and top-3 15/15 over that same
+583-tool catalog. Those 15 queries are carried forward verbatim as a regression baseline
+rather than reworded, so the fusion work has a fixed bar it must not regress. The eval's
+acceptance gate (80% top-1, 95% top-3) is set over the expanded set, not these 15.
 
 ### Reciprocal rank fusion, and abstention from raw evidence
 
