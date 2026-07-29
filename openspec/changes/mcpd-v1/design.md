@@ -87,9 +87,18 @@ source of silent mis-weighting, and degrades cleanly when one ranker is absent.
 Abstention deliberately does not read the fused score. Reciprocal rank fusion encodes rank
 position and ranker agreement, so the top result of any query scores about the same whether
 it is a perfect match or the least-bad of six hundred irrelevant tools. Confidence is
-therefore computed from the best raw cosine similarity and best raw lexical score, since
-cosine similarity is on an absolute scale comparable across queries, which is exactly the
-property fusion discards.
+therefore computed from the best raw cosine similarity, since cosine similarity is on an
+absolute scale comparable across queries, which is exactly the property fusion discards.
+
+Cosine is the only thresholded signal. An earlier draft also thresholded the raw lexical
+score, but the ported scorer is an unnormalised idf sum whose magnitude tracks matched-term
+count and term rarity, so its scores are not comparable across queries. Applying the rule
+below to a mixed-length query set finds no separating gap under any of five normalisation
+variants (raw, and divided by total idf, matchable idf, query length, and matched-term
+count), so the rule disables the lexical signal in every variant and there is nothing for an
+AND to bind. Cosine-only is also self-correcting: any weak-cosine answerable query drags the
+floor down and erases the gap, so the rule cannot mint a threshold that falsely flags. The
+lexical bound is still computed by the same rule and recorded, but nothing reads it.
 
 Thresholds are calibrated against three disjoint sets: answerable queries establish the
 floor true answers clear, a separate negative calibration set establishes the ceiling

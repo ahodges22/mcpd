@@ -69,11 +69,11 @@
 
 ## 7. Abstention signal
 
-- [ ] 7.1 Write the failing tests: overlapping evidence yields disabled abstention and an
+- [x] 7.1 Write the failing tests: overlapping evidence yields disabled abstention and an
       error naming the overlap; separated evidence yields a threshold inside the gap
-- [ ] 7.2 Implement the fixed selection rule against raw cosine and lexical evidence, never
+- [x] 7.2 Implement the fixed selection rule against raw cosine and lexical evidence, never
       the fused score
-- [ ] 7.3 Tests green, then commit
+- [x] 7.3 Tests green, then commit
 
 ## 8. The two MCP endpoints
 
