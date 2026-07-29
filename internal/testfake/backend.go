@@ -4,6 +4,8 @@ package testfake
 import (
 	"context"
 	"encoding/json"
+	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -12,9 +14,9 @@ import (
 
 var objectSchema = json.RawMessage(`{"type":"object"}`)
 
-// Fake is an in-process MCP server. Tests assert on its counters rather than on
-// a caller's return value, because a caller cannot tell a rejected request from
-// a completed one.
+// Fake is an in-process MCP server. Tests assert on its counters and its
+// received-request log rather than on a caller's return value, because a caller
+// cannot tell a rejected request from a completed one.
 //
 // Set the hooks before the first Transport call.
 type Fake struct {
@@ -35,6 +37,7 @@ type Fake struct {
 	mu       sync.Mutex
 	tools    []*mcp.Tool
 	sessions []*mcp.ServerSession
+	received []string
 }
 
 // New returns a fake serving tools, each of which counts a side effect and
@@ -42,7 +45,7 @@ type Fake struct {
 func New(name string, tools ...*mcp.Tool) *Fake {
 	f := &Fake{Name: name}
 	f.srv = mcp.NewServer(&mcp.Implementation{Name: name, Version: "test"}, nil)
-	f.srv.AddReceivingMiddleware(f.countLists)
+	f.srv.AddReceivingMiddleware(f.record)
 	f.SetTools(tools...)
 	return f
 }
@@ -110,8 +113,26 @@ func (f *Fake) callTool(ctx context.Context, req *mcp.CallToolRequest) (*mcp.Cal
 	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "ok:" + f.Name}}}, nil
 }
 
-func (f *Fake) countLists(next mcp.MethodHandler) mcp.MethodHandler {
+// Received reports every request this fake has received, in order, as its method
+// name with the tool name appended for a tools/call. Notifications are not
+// requests and are omitted.
+func (f *Fake) Received() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.received)
+}
+
+func (f *Fake) record(next mcp.MethodHandler) mcp.MethodHandler {
 	return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
+		if !strings.HasPrefix(method, "notifications/") {
+			name := method
+			if p, ok := req.GetParams().(*mcp.CallToolParamsRaw); ok {
+				name += ":" + p.Name
+			}
+			f.mu.Lock()
+			f.received = append(f.received, name)
+			f.mu.Unlock()
+		}
 		if method == "tools/list" {
 			f.ListCalls.Add(1)
 			if f.BeforeList != nil {

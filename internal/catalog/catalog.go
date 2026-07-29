@@ -257,6 +257,18 @@ func (c *Catalog) StopRefresh(server string) {
 	c.mu.Unlock()
 }
 
+// Drop evicts server's tools and its error record. A disable calls it once its
+// refresh loop has been stopped, so nothing can commit the tools it removes.
+func (c *Catalog) Drop(server string) {
+	c.mu.Lock()
+	dropped := c.dropLocked(server)
+	delete(c.errs, server)
+	c.mu.Unlock()
+	if dropped {
+		c.persist()
+	}
+}
+
 // WaitIdle returns when no backend has a refresh pending or in flight.
 func (c *Catalog) WaitIdle() {
 	c.mu.Lock()
@@ -336,8 +348,9 @@ func (c *Catalog) read(loop context.Context, server string) {
 
 	tools, err := l.ListTools(ctx)
 	switch {
-	case errors.Is(err, backend.ErrStaleGeneration), loop.Err() != nil:
-		// Superseded rather than failed: a stale generation, or a stop we asked for.
+	case errors.Is(err, backend.ErrStaleGeneration), errors.Is(err, backend.ErrDisabled), loop.Err() != nil:
+		// Superseded rather than failed: a stale generation, a backend the user
+		// turned off, or a stop we asked for.
 		// Neither marks the backend down nor evicts the tools it is still serving.
 		// The loop context is what is checked, so a read that exceeded the list
 		// timeout still falls through to the failure branch below.

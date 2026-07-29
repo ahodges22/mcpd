@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -45,7 +46,7 @@ func TestCallReachesTheOwningBackendOverOneNewSession(t *testing.T) {
 }
 
 func TestConnectFailureIsReportedRetryable(t *testing.T) {
-	r := NewRegistry(stdioConfig("alpha"), Hooks{})
+	r := NewRegistry(stdioConfig("alpha"), overridesAt(t, filepath.Join(t.TempDir(), "overrides.json")), Hooks{})
 	b, _ := r.Get("alpha")
 	b.dial = func(context.Context) (mcp.Transport, error) { return nil, errors.New("spawn refused") }
 
@@ -162,7 +163,7 @@ func TestStdioChildEnvIsExplicitlyConstructed(t *testing.T) {
 	cfg := &config.Config{Backends: map[string]config.Backend{
 		"alpha": {Name: "alpha", Command: "true", EnvPassthrough: []string{"AWS_*"}},
 	}}
-	r := NewRegistry(cfg, Hooks{})
+	r := NewRegistry(cfg, overridesAt(t, filepath.Join(t.TempDir(), "overrides.json")), Hooks{})
 	b, _ := r.Get("alpha")
 
 	tr, err := b.dial(t.Context())
@@ -191,7 +192,7 @@ func TestUnreachableBackendRetainsItsError(t *testing.T) {
 	cfg := &config.Config{Backends: map[string]config.Backend{
 		"alpha": {Name: "alpha", HTTPURL: endpoint},
 	}}
-	r := NewRegistry(cfg, Hooks{})
+	r := NewRegistry(cfg, overridesAt(t, filepath.Join(t.TempDir(), "overrides.json")), Hooks{})
 	b, _ := r.Get("alpha")
 
 	if _, err := b.ListTools(t.Context()); err == nil {
@@ -244,7 +245,7 @@ func TestRefreshInvalidatedMidFlightDoesNotCommit(t *testing.T) {
 }
 
 func TestCancelConnectAbortsAHungHandshake(t *testing.T) {
-	r := NewRegistry(stdioConfig("alpha"), Hooks{})
+	r := NewRegistry(stdioConfig("alpha"), overridesAt(t, filepath.Join(t.TempDir(), "overrides.json")), Hooks{})
 	b, _ := r.Get("alpha")
 	dialing := make(chan struct{})
 	b.dial = func(ctx context.Context) (mcp.Transport, error) {
@@ -386,7 +387,7 @@ func wire(t *testing.T, hooks Hooks, fakes ...*testfake.Fake) *Registry {
 	for _, f := range fakes {
 		names = append(names, f.Name)
 	}
-	r := NewRegistry(stdioConfig(names...), hooks)
+	r := NewRegistry(stdioConfig(names...), overridesAt(t, filepath.Join(t.TempDir(), "overrides.json")), hooks)
 	for _, f := range fakes {
 		b, ok := r.Get(f.Name)
 		if !ok {

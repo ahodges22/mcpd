@@ -1,0 +1,332 @@
+package backend
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"os"
+	"path/filepath"
+	"slices"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/ahodges/mcpd/internal/config"
+	"github.com/ahodges/mcpd/internal/testfake"
+)
+
+func TestADisabledOverrideOutlivesARestart(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+	declared := []byte(`{"backends":{"alpha":{"command":"unused"}}}`)
+	if err := os.WriteFile(cfgPath, declared, 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	statePath := filepath.Join(dir, "overrides.json")
+
+	r := NewRegistry(cfg, overridesAt(t, statePath), Hooks{})
+	if err := r.Disable("alpha"); err != nil {
+		t.Fatalf("disable: %v", err)
+	}
+
+	// The restart: a fresh registry over the same declarations and the same state.
+	restarted := NewRegistry(cfg, overridesAt(t, statePath), Hooks{})
+	b, _ := restarted.Get("alpha")
+	var dials atomic.Int64
+	b.dial = func(context.Context) (mcp.Transport, error) {
+		dials.Add(1)
+		return nil, errors.New("dialled a disabled backend")
+	}
+
+	if got := b.Health().State; got != StateDisabled {
+		t.Errorf("state after restart = %q, want %q", got, StateDisabled)
+	}
+	if _, err := b.Call(t.Context(), "kubectl_logs", nil); !errors.Is(err, ErrDisabled) {
+		t.Errorf("call err = %v, want ErrDisabled", err)
+	}
+	if n := dials.Load(); n != 0 {
+		t.Errorf("dials = %d, want 0: a disabled backend must not be connected on startup", n)
+	}
+	after, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	if !bytes.Equal(after, declared) {
+		t.Errorf("the daemon rewrote the user's configuration file: %s", after)
+	}
+}
+
+func TestADispatchCannotOutrunADisable(t *testing.T) {
+	fake := testfake.New("alpha", tool("open_pull_request"))
+	atWrite, release := make(chan struct{}), make(chan struct{})
+	var unpark sync.Once
+	// The parked write must be released even on a failure: an unreleased one blocks
+	// the session close in this test's cleanup.
+	releaseWrite := func() { unpark.Do(func() { close(release) }) }
+	var writes atomic.Int64
+	var atStop, atDrop []string
+
+	r := wire(t, Hooks{
+		StopRefresh: func(string) { atStop = fake.Received() },
+		DropTools:   func(string) { atDrop = fake.Received() },
+	}, fake)
+	// Registered after wire, so it runs before wire's session close: a parked write
+	// blocks that close.
+	t.Cleanup(releaseWrite)
+	b, _ := r.Get("alpha")
+	inner := b.dial
+	b.dial = func(ctx context.Context) (mcp.Transport, error) {
+		tr, err := inner(ctx)
+		if err != nil {
+			return nil, err
+		}
+		// The second tools/call parks between its enabled check and its request
+		// existing on the wire, which is the window the gate has to cover.
+		return &parkWrites{inner: tr, park: func(method string) {
+			if method == "tools/call" && writes.Add(1) == 2 {
+				close(atWrite)
+				<-release
+			}
+		}}, nil
+	}
+
+	if _, err := b.Call(t.Context(), "open_pull_request", nil); err != nil {
+		t.Fatalf("warm-up call: %v", err)
+	}
+
+	inflight := make(chan error, 1)
+	go func() {
+		_, err := b.Call(context.Background(), "open_pull_request", nil)
+		inflight <- err
+	}()
+	<-atWrite
+
+	disabled := make(chan error, 1)
+	go func() { disabled <- r.Disable("alpha") }()
+	select {
+	case err := <-disabled:
+		t.Fatalf("Disable returned (err=%v) while a dispatch held a lease: it did not drain the gate", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	releaseWrite()
+	if err := <-inflight; err != nil {
+		t.Errorf("the dispatch that already held a lease failed: %v", err)
+	}
+	if err := <-disabled; err != nil {
+		t.Fatalf("disable: %v", err)
+	}
+
+	// Every assertion is on what the upstream received. The caller cannot tell a
+	// rejected call from a completed one, so its return value proves nothing.
+	if _, err := b.Call(t.Context(), "open_pull_request", nil); !errors.Is(err, ErrDisabled) {
+		t.Errorf("call after the disable err = %v, want ErrDisabled", err)
+	}
+	final := fake.Received()
+	if n := countCalls(final); n != 2 {
+		t.Errorf("upstream received %d tools/call requests out of 3 attempts, want 2: %v", n, final)
+	}
+	if !slices.Equal(atStop, final) {
+		t.Errorf("the upstream received %v after the gate closed: it held %v when the teardown began", final[len(atStop):], atStop)
+	}
+	if !slices.Equal(atDrop, final) {
+		t.Errorf("the upstream received %v after the session was closed", final[len(atDrop):])
+	}
+}
+
+func TestEnableCannotInterleaveWithATeardown(t *testing.T) {
+	fake := testfake.New("alpha", tool("kubectl_logs"))
+	enabled := make(chan error, 1)
+	var r *Registry
+	r = wire(t, Hooks{StopRefresh: func(string) {
+		// A re-enable landing mid-teardown must wait for it: allowed through, it
+		// would clear the disabled state while the session is still being closed,
+		// and the next dispatch would spawn a second child behind the first.
+		go func() { enabled <- r.Enable("alpha") }()
+		select {
+		case err := <-enabled:
+			t.Errorf("Enable completed inside a teardown (err=%v): the two are not serialized", err)
+		case <-time.After(100 * time.Millisecond):
+		}
+	}}, fake)
+	b, _ := r.Get("alpha")
+
+	if _, err := b.Call(t.Context(), "kubectl_logs", nil); err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if err := r.Disable("alpha"); err != nil {
+		t.Fatalf("disable: %v", err)
+	}
+	select {
+	case err := <-enabled:
+		if err != nil {
+			t.Fatalf("enable: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the re-enable never completed after the teardown finished")
+	}
+
+	if got := b.Health().State; got != StateDown {
+		t.Errorf("state = %q, want %q: the enable ran after the teardown, so it must have won", got, StateDown)
+	}
+	if r.overrides.Disabled("alpha") {
+		t.Error("the persisted override still says disabled, so a restart would contradict the running daemon")
+	}
+	b.mu.Lock()
+	leaked := b.session != nil
+	b.mu.Unlock()
+	if leaked {
+		t.Error("a session survived the teardown, so the child it owns was never terminated")
+	}
+}
+
+func TestDisableInterruptsAHandshakeItCannotDrain(t *testing.T) {
+	// A tools/list takes no dispatch lease, so draining the gate does not await the
+	// handshake one of them started. Nothing but cancelling that handshake ends it,
+	// and connect holds the lifecycle mutex throughout, so taking that mutex first
+	// waits the whole handshake budget out instead of interrupting it.
+	r := NewRegistry(stdioConfig("alpha"), overridesAt(t, filepath.Join(t.TempDir(), "overrides.json")), Hooks{})
+	b, _ := r.Get("alpha")
+	dialing := make(chan struct{})
+	b.dial = func(ctx context.Context) (mcp.Transport, error) {
+		close(dialing)
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	go b.ListTools(context.Background())
+	<-dialing
+
+	done := make(chan error, 1)
+	go func() { done <- r.Disable("alpha") }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("disable: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Disable did not return within 5s of a handshake it cannot drain, whose budget is %s", b.ConnectTimeout())
+	}
+}
+
+func TestTheRefreshLoopIsStoppedWithTheGateClosedAndTheLifecycleMutexFree(t *testing.T) {
+	// Stopping the refresh loop awaits it, and a read inside that loop can be
+	// blocked in connect waiting for the lifecycle mutex. Awaiting the loop while
+	// holding that mutex is a deadlock rather than a slow path. The gate must
+	// already be closed, or a dispatch could still write while the tools go.
+	fake := testfake.New("alpha", tool("kubectl_logs"))
+	r := wire(t, Hooks{}, fake)
+	b, _ := r.Get("alpha")
+	var heldLife, gateOpen bool
+	// Assigned after wire, because the probe needs the backend it is asking about.
+	b.stopRefresh = func(string) {
+		if heldLife = !b.life.TryLock(); !heldLife {
+			b.life.Unlock()
+		}
+		if gateOpen = b.gate.TryRLock(); gateOpen {
+			b.gate.RUnlock()
+		}
+	}
+
+	if _, err := b.Call(t.Context(), "kubectl_logs", nil); err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if err := r.Disable("alpha"); err != nil {
+		t.Fatalf("disable: %v", err)
+	}
+
+	if heldLife {
+		t.Error("the refresh loop is awaited under the lifecycle mutex: a read blocked in connect can never exit, so the disable deadlocks")
+	}
+	if gateOpen {
+		t.Error("the refresh loop is stopped before the dispatch gate closed, so a dispatch could still be in flight")
+	}
+}
+
+func TestAHandshakeCompletingUnderADisableInstallsNoSession(t *testing.T) {
+	// connect holds the lifecycle mutex across a whole handshake, so a disable can
+	// be waiting for that mutex while a handshake completes, and a cancellation can
+	// arrive too late to stop it. Installing that session would leave the backend
+	// reporting down rather than disabled, and the next dispatch would use it.
+	fake := testfake.New("alpha", tool("kubectl_logs"))
+	r := wire(t, Hooks{}, fake)
+	b, _ := r.Get("alpha")
+	inner := b.dial
+	b.dial = func(ctx context.Context) (mcp.Transport, error) {
+		b.mu.Lock()
+		b.health.State = StateDisabled
+		b.mu.Unlock()
+		return inner(ctx)
+	}
+
+	sess, err := b.connect(t.Context())
+	if !errors.Is(err, ErrDisabled) {
+		t.Errorf("connect err = %v, want ErrDisabled", err)
+	}
+	if sess != nil {
+		t.Error("connect handed a session to its caller for a disabled backend")
+	}
+	b.mu.Lock()
+	installed := b.session
+	b.mu.Unlock()
+	if installed != nil {
+		t.Error("a session was installed on a disabled backend, so the next dispatch would write to it")
+	}
+	if got := b.Health().State; got != StateDisabled {
+		t.Errorf("state = %q, want %q: the handshake overwrote the disable", got, StateDisabled)
+	}
+}
+
+// parkWrites parks the daemon's side of the connection just before a request
+// reaches the transport, so a test can hold a dispatch that has passed its
+// enabled check but written nothing.
+type parkWrites struct {
+	inner mcp.Transport
+	park  func(method string)
+}
+
+func (t *parkWrites) Connect(ctx context.Context) (mcp.Connection, error) {
+	conn, err := t.inner.Connect(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &parkWritesConn{Connection: conn, park: t.park}, nil
+}
+
+type parkWritesConn struct {
+	mcp.Connection
+	park func(method string)
+}
+
+func (c *parkWritesConn) Write(ctx context.Context, msg jsonrpc.Message) error {
+	if req, ok := msg.(*jsonrpc.Request); ok {
+		c.park(req.Method)
+	}
+	return c.Connection.Write(ctx, msg)
+}
+
+func countCalls(received []string) int {
+	n := 0
+	for _, r := range received {
+		if r == "tools/call:open_pull_request" {
+			n++
+		}
+	}
+	return n
+}
+
+func overridesAt(t *testing.T, path string) *Overrides {
+	t.Helper()
+	ov, err := LoadOverrides(path)
+	if err != nil {
+		t.Fatalf("load overrides: %v", err)
+	}
+	return ov
+}

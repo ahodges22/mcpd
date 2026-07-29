@@ -667,7 +667,11 @@ func httpRegistry(t *testing.T, fakes ...*testfake.Fake) *backend.Registry {
 		})
 		cfg.Backends[f.Name] = config.Backend{Name: f.Name, HTTPURL: srv.URL, TimeoutSec: 10}
 	}
-	return backend.NewRegistry(cfg, backend.Hooks{})
+	ov, err := backend.LoadOverrides(filepath.Join(t.TempDir(), "overrides.json"))
+	if err != nil {
+		t.Fatalf("load overrides: %v", err)
+	}
+	return backend.NewRegistry(cfg, ov, backend.Hooks{})
 }
 
 func ids(c *Catalog) []string {

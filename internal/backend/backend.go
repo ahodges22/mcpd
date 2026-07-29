@@ -27,7 +27,9 @@ var ErrNotAttempted = errors.New("no send attempted")
 // while it was in flight, so its result was discarded rather than committed.
 var ErrStaleGeneration = errors.New("superseded by a lifecycle transition")
 
-var errDisabled = errors.New("backend disabled")
+// ErrDisabled reports that the backend is disabled by an override. It is not a
+// backend failure: nothing was attempted and nothing is wrong upstream.
+var ErrDisabled = errors.New("backend disabled")
 
 type State string
 
@@ -61,7 +63,7 @@ const (
 
 // Backend is one upstream MCP server, shared by every connected client.
 //
-// Lock order is gate, then life, then mu. Task 5's disable takes gate
+// Lock order is transition, then gate, then life, then mu. A disable takes gate
 // exclusively before life, so dispatch must never acquire them the other way
 // round.
 type Backend struct {
@@ -70,10 +72,16 @@ type Backend struct {
 	client      *mcp.Client
 	dial        func(context.Context) (mcp.Transport, error)
 	onReconnect func(server string)
+	stopRefresh func(server string)
+	dropTools   func(server string)
+	onEnable    func(server string)
 
-	gate sync.RWMutex // RLock is a dispatch lease; Lock closes and drains it
-	life sync.Mutex   // serializes lifecycle transitions
-	gen  atomic.Uint64
+	// transition serializes a whole user-initiated enable or disable, including
+	// the override write, which happens before the gate closes.
+	transition sync.Mutex
+	gate       sync.RWMutex // RLock is a dispatch lease; Lock closes and drains it
+	life       sync.Mutex   // serializes lifecycle transitions
+	gen        atomic.Uint64
 
 	mu            sync.Mutex
 	session       *mcp.ClientSession
@@ -149,7 +157,7 @@ func (b *Backend) ensureSession(ctx context.Context) (*mcp.ClientSession, error)
 	b.mu.Unlock()
 
 	if state == StateDisabled {
-		return nil, errDisabled
+		return nil, ErrDisabled
 	}
 	if sess != nil {
 		return sess, nil
@@ -164,7 +172,7 @@ func (b *Backend) connect(ctx context.Context) (*mcp.ClientSession, error) {
 	b.mu.Lock()
 	if b.health.State == StateDisabled {
 		b.mu.Unlock()
-		return nil, errDisabled
+		return nil, ErrDisabled
 	}
 	if sess := b.session; sess != nil {
 		b.mu.Unlock()
@@ -187,16 +195,21 @@ func (b *Backend) connect(ctx context.Context) (*mcp.ClientSession, error) {
 
 	transport, err := b.dial(ctx)
 	if err != nil {
-		b.noteConnectFailure(err)
-		return nil, fmt.Errorf("build transport: %w", err)
+		return nil, b.failConnect("build transport", err)
 	}
 	sess, err := b.client.Connect(ctx, transport, nil)
 	if err != nil {
-		b.noteConnectFailure(err)
-		return nil, fmt.Errorf("connect: %w", err)
+		return nil, b.failConnect("connect", err)
 	}
 
 	b.mu.Lock()
+	if b.health.State == StateDisabled {
+		// A disable landed while this handshake ran. Installing the session now
+		// would leave a live child behind a backend the user turned off.
+		b.mu.Unlock()
+		sess.Close()
+		return nil, ErrDisabled
+	}
 	b.session = sess
 	b.failures = 0
 	b.retryAt = time.Time{}
@@ -246,8 +259,70 @@ func (b *Backend) connectTimeout() time.Duration {
 	return defaultConnectTimeout
 }
 
-// closeSession ends the shared session if there is one. Task 5's disable builds
-// its teardown on this.
+// teardown is the kill switch. Every step's position is load bearing:
+//
+//   - the gate closes and drains first, so a dispatch that already holds a lease
+//     completes and no later one can write;
+//   - the state is set before anything is awaited, so no further handshake starts;
+//   - the in-flight handshake is cancelled before life is taken, because connect
+//     holds life for its whole duration and taking life without cancelling waits
+//     the handshake out instead of interrupting it;
+//   - the refresh loop is cancelled and awaited before life is taken, because a
+//     read blocked in connect's life.Lock would never exit and awaiting it under
+//     life is a deadlock; awaiting it before the session closes also keeps our own
+//     teardown from being recorded as a backend failure;
+//   - the tools are evicted last, once nothing is left that could commit them.
+func (b *Backend) teardown() {
+	b.gate.Lock()
+	defer b.gate.Unlock()
+
+	b.mu.Lock()
+	b.health.State = StateDisabled
+	b.health.LastErr = ""
+	b.health.ToolCount = 0
+	b.mu.Unlock()
+	b.gen.Add(1)
+
+	b.cancelConnect()
+	if b.stopRefresh != nil {
+		b.stopRefresh(b.name)
+	}
+
+	b.life.Lock()
+	b.closeSession()
+	b.life.Unlock()
+
+	if b.dropTools != nil {
+		b.dropTools(b.name)
+	}
+}
+
+// restore re-enables the backend, under life so it cannot race a teardown's
+// closeSession and leave the backend enabled with a child the teardown then
+// kills, or a second child spawned behind the first.
+func (b *Backend) restore() {
+	b.life.Lock()
+	b.mu.Lock()
+	disabled := b.health.State == StateDisabled
+	if disabled {
+		b.health.State = StateDown
+		b.health.LastErr = ""
+		b.failures, b.retryAt = 0, time.Time{}
+	}
+	b.mu.Unlock()
+	b.life.Unlock()
+	if !disabled {
+		return
+	}
+	b.gen.Add(1)
+	if b.onEnable != nil {
+		b.onEnable(b.name)
+	}
+}
+
+// closeSession ends the shared session if there is one, which for a stdio backend
+// terminates its child: the SDK's command transport closes stdin, then signals,
+// then kills.
 func (b *Backend) closeSession() {
 	b.mu.Lock()
 	sess := b.session
@@ -277,13 +352,20 @@ func (b *Backend) dropSession(sess *mcp.ClientSession, cause error) {
 	b.gen.Add(1)
 }
 
-func (b *Backend) noteConnectFailure(err error) {
+// failConnect records a failed handshake and reports it. A handshake our own
+// disable aborted is not a backend failure: it reports ErrDisabled and leaves the
+// health record saying disabled.
+func (b *Backend) failConnect(stage string, cause error) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if b.health.State == StateDisabled {
+		return ErrDisabled
+	}
 	b.failures++
 	b.health.State = StateDown
-	b.health.LastErr = err.Error()
+	b.health.LastErr = cause.Error()
 	b.retryAt = time.Now().Add(min(backoffBase<<min(b.failures-1, 8), backoffMax))
+	return fmt.Errorf("%s: %w", stage, cause)
 }
 
 func (b *Backend) noteErr(err error) {

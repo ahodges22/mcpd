@@ -2,6 +2,7 @@ package backend
 
 import (
 	"context"
+	"fmt"
 	"slices"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -11,9 +12,12 @@ import (
 
 const clientVersion = "0.1.0"
 
-// Hooks are the refresh triggers the catalog subscribes to. Any field may be
-// nil. Each is delivered on its own goroutine, so a hook may call back into the
-// daemon without regard for the lock a lifecycle transition is holding.
+// Hooks are the catalog operations a backend drives. Any field may be nil.
+//
+// The two refresh triggers are notifications, delivered without a lifecycle lock
+// held so a hook may call back into the daemon freely. The three a lifecycle
+// transition calls are synchronous, because a disable that returned while a
+// refresh could still commit would not be a kill switch.
 type Hooks struct {
 	// ToolListChanged fires when a backend reports its tool list has changed.
 	ToolListChanged func(server string)
@@ -21,23 +25,38 @@ type Hooks struct {
 	// a separate trigger because a tool-list-changed notification cannot be
 	// delivered while there is no session, so the list may have moved unseen.
 	Reconnected func(server string)
+	// StopRefresh must cancel a pending or in-flight refresh and return only once
+	// the refresh loop has exited. A disable calls it before closing the session.
+	StopRefresh func(server string)
+	// DropTools must evict a backend's tools from the catalog. A disable calls it
+	// last, once nothing is left that could commit them again.
+	DropTools func(server string)
+	// Refresh must re-read a backend's tools. An enable calls it so a re-enabled
+	// backend's tools reappear without waiting for the TTL tick.
+	Refresh func(server string)
 }
 
 // Registry owns one Backend per configured backend and routes calls by name.
 type Registry struct {
-	backends map[string]*Backend
-	names    []string
+	backends  map[string]*Backend
+	names     []string
+	overrides *Overrides
 }
 
 // NewRegistry builds a Backend per configured backend. Sessions are opened
 // lazily on first use.
-func NewRegistry(cfg *config.Config, hooks Hooks) *Registry {
+func NewRegistry(cfg *config.Config, ov *Overrides, hooks Hooks) *Registry {
 	r := &Registry{
-		backends: make(map[string]*Backend, len(cfg.Backends)),
-		names:    make([]string, 0, len(cfg.Backends)),
+		backends:  make(map[string]*Backend, len(cfg.Backends)),
+		names:     make([]string, 0, len(cfg.Backends)),
+		overrides: ov,
 	}
 	for name, spec := range cfg.Backends {
-		r.backends[name] = newBackend(name, spec, hooks)
+		b := newBackend(name, spec, hooks)
+		if ov.Disabled(name) {
+			b.health.State = StateDisabled
+		}
+		r.backends[name] = b
 		r.names = append(r.names, name)
 	}
 	slices.Sort(r.names)
@@ -64,6 +83,9 @@ func newBackend(name string, spec config.Backend, hooks Hooks) *Backend {
 		name:        name,
 		spec:        spec,
 		onReconnect: hooks.Reconnected,
+		stopRefresh: hooks.StopRefresh,
+		dropTools:   hooks.DropTools,
+		onEnable:    hooks.Refresh,
 		health: Health{
 			State:     StateDown,
 			Transport: "http",
@@ -90,4 +112,39 @@ func newBackend(name string, spec config.Backend, hooks Hooks) *Backend {
 	}
 	b.client = mcp.NewClient(&mcp.Implementation{Name: "mcpd", Version: clientVersion}, opts)
 	return b
+}
+
+// Disable is the kill switch: it closes the dispatch gate, cancels and awaits
+// everything in flight, closes the session, terminates a stdio child, and evicts
+// the backend's tools from the catalog. The override is persisted before any of
+// that begins, so a crash mid-teardown leaves the backend disabled rather than
+// silently re-enabled.
+func (r *Registry) Disable(name string) error {
+	b, ok := r.Get(name)
+	if !ok {
+		return fmt.Errorf("unknown backend %q", name)
+	}
+	b.transition.Lock()
+	defer b.transition.Unlock()
+	if err := r.overrides.set(name, true); err != nil {
+		return fmt.Errorf("disable %s: %w", name, err)
+	}
+	b.teardown()
+	return nil
+}
+
+// Enable clears the override and lets the backend connect again on its next use.
+// It runs under the same locks as Disable, so a re-enable cannot race a teardown.
+func (r *Registry) Enable(name string) error {
+	b, ok := r.Get(name)
+	if !ok {
+		return fmt.Errorf("unknown backend %q", name)
+	}
+	b.transition.Lock()
+	defer b.transition.Unlock()
+	if err := r.overrides.set(name, false); err != nil {
+		return fmt.Errorf("enable %s: %w", name, err)
+	}
+	b.restore()
+	return nil
 }

@@ -46,17 +46,17 @@
 
 ## 5. Lifecycle serialization and the kill switch
 
-- [ ] 5.1 Write the failing tests: disable beats an in-flight refresh; a pending retry does
+- [x] 5.1 Write the failing tests: disable beats an in-flight refresh; a pending retry does
       not respawn a disabled backend; a dispatch never writes after the gate closes,
       asserted on the fake's received-request log rather than the caller's return value; an
       override survives a restart
-- [ ] 5.2 Implement override persistence
-- [ ] 5.3 Implement disable in order: persist the override, close and drain the gate, cancel
+- [x] 5.2 Implement override persistence
+- [x] 5.3 Implement disable in order: persist the override, close and drain the gate, cancel
       and await outstanding tasks, close the session and terminate the child, bump the
       generation
-- [ ] 5.4 Implement enable under the same lock so a re-enable cannot race a teardown and
+- [x] 5.4 Implement enable under the same lock so a re-enable cannot race a teardown and
       leak a second child
-- [ ] 5.5 Tests green under `-race -count=5`, then commit
+- [x] 5.5 Tests green under `-race -count=5`, then commit
 
 ## 6. Embeddings and rank fusion
 
@@ -126,7 +126,10 @@
 - [ ] 11.3 Wire all four catalog refresh triggers: `catalog.Start(ctx)` covers TTL expiry, and
       `backend.Hooks{ToolListChanged, Reconnected}` both point at `Catalog.Trigger`. The
       mechanisms are built in Tasks 3 and 4; only the wiring is left, and an unwired hook is a
-      silently stale catalog
+      silently stale catalog. Task 5 added three more hooks that must also be wired, or a
+      disable stops being a kill switch: `StopRefresh` to `Catalog.StopRefresh`, `DropTools`
+      to `Catalog.Drop`, and `Refresh` to `Catalog.Trigger`. `NewRegistry` now also takes the
+      `*backend.Overrides` loaded from the state directory
 - [ ] 11.4 Write the systemd user unit, relying on the existing user environment import
       rather than an environment file
 - [ ] 11.5 Build, install, enable, and confirm the status endpoint answers with backends up.
