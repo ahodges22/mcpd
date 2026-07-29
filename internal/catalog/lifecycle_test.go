@@ -22,13 +22,18 @@ import (
 	"github.com/ahodges/mcpd/internal/testfake"
 )
 
-// childPIDFile names the file a helper child appends its pid to. Its presence in
-// the environment is also what turns this test binary into a stdio backend.
-const childPIDFile = "MCPD_TEST_CHILD_PIDFILE"
+const (
+	// childPIDFile names the file a helper child appends its pid to.
+	childPIDFile = "MCPD_TEST_CHILD_PIDFILE"
+	// childMarker turns this test binary into a stdio backend. It has to be argv[1]
+	// rather than an environment variable alone, because an exported variable would
+	// otherwise make this whole package exit zero having run no test at all.
+	childMarker = "mcpd-test-stdio-child"
+)
 
 func TestMain(m *testing.M) {
-	if path := os.Getenv(childPIDFile); path != "" {
-		serveAsChild(path)
+	if len(os.Args) > 1 && os.Args[1] == childMarker {
+		serveAsChild(os.Getenv(childPIDFile))
 		os.Exit(0)
 	}
 	os.Exit(m.Run())
@@ -37,6 +42,9 @@ func TestMain(m *testing.M) {
 // serveAsChild runs this binary as a real stdio MCP backend, so a disable can be
 // asserted against a process that genuinely exists.
 func serveAsChild(pidFile string) {
+	if pidFile == "" {
+		panic("child mode without " + childPIDFile)
+	}
 	f, err := os.OpenFile(pidFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		panic(err)
@@ -56,6 +64,7 @@ func TestDisableRemovesToolsAndTerminatesTheChild(t *testing.T) {
 	reg, c := lifecycle(t, dir, fastTuning, config.Backend{
 		Name:       "child",
 		Command:    self,
+		Args:       []string{childMarker},
 		Env:        map[string]string{childPIDFile: pidFile},
 		TimeoutSec: 30,
 	})
@@ -122,6 +131,12 @@ func TestALateRefreshCannotResurrectADisabledBackend(t *testing.T) {
 	}
 	if got := c.Errors()["alpha"]; got != "" {
 		t.Errorf("recorded error %q: being disabled is not a backend failure", got)
+	}
+	// The health record has to agree: the read we cancelled failed because we
+	// disabled the backend, and a disabled backend showing an error text reads as a
+	// broken one on the status surface.
+	if got := reg.Health()["alpha"]; got.State != backend.StateDisabled || got.LastErr != "" || got.ToolCount != 0 {
+		t.Errorf("health = %+v, want a disabled backend with no tools and no error", got)
 	}
 }
 

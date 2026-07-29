@@ -81,7 +81,10 @@ type Backend struct {
 	transition sync.Mutex
 	gate       sync.RWMutex // RLock is a dispatch lease; Lock closes and drains it
 	life       sync.Mutex   // serializes lifecycle transitions
-	gen        atomic.Uint64
+	// gen advances only while mu is held, which is what lets a read check it and
+	// write the health record in one critical section rather than straddling a
+	// transition and posting a tool count over a backend that stopped serving them.
+	gen atomic.Uint64
 
 	mu            sync.Mutex
 	session       *mcp.ClientSession
@@ -136,19 +139,34 @@ func (b *Backend) ListTools(ctx context.Context) ([]*mcp.Tool, error) {
 	gen := b.gen.Load()
 	res, err := sess.ListTools(ctx, nil)
 	if err != nil {
-		b.noteErr(err)
+		return nil, fmt.Errorf("backend %s: list tools: %w", b.name, b.noteListFailure(err))
+	}
+	if err := b.commitList(gen, res.Tools); err != nil {
 		return nil, fmt.Errorf("backend %s: list tools: %w", b.name, err)
 	}
-	if b.gen.Load() != gen {
-		return nil, fmt.Errorf("backend %s: list tools: %w", b.name, ErrStaleGeneration)
-	}
+	return res.Tools, nil
+}
 
+// commitList records a completed read, or reports why it was discarded. The
+// generation check and the health write are one critical section, so a read
+// superseded mid-flight discards its result rather than committing it.
+//
+// The state is checked as well as the generation, because a disable that lands
+// between ensureSession and the generation sample is invisible to the generation
+// check: that read's sample is already the post-disable value.
+func (b *Backend) commitList(gen uint64, tools []*mcp.Tool) error {
 	b.mu.Lock()
-	b.health.ToolCount = len(res.Tools)
+	defer b.mu.Unlock()
+	if b.health.State == StateDisabled {
+		return ErrDisabled
+	}
+	if b.gen.Load() != gen {
+		return ErrStaleGeneration
+	}
+	b.health.ToolCount = len(tools)
 	b.health.LastRefresh = time.Now()
 	b.health.LastErr = ""
-	b.mu.Unlock()
-	return res.Tools, nil
+	return nil
 }
 
 func (b *Backend) ensureSession(ctx context.Context) (*mcp.ClientSession, error) {
@@ -217,8 +235,8 @@ func (b *Backend) connect(ctx context.Context) (*mcp.ClientSession, error) {
 	b.health.LastErr = ""
 	reconnected := b.connected
 	b.connected = true
-	b.mu.Unlock()
 	b.gen.Add(1)
+	b.mu.Unlock()
 
 	go b.watch(sess)
 	// Only a reconnect is a trigger. Firing on the first connect would double every
@@ -280,8 +298,8 @@ func (b *Backend) teardown() {
 	b.health.State = StateDisabled
 	b.health.LastErr = ""
 	b.health.ToolCount = 0
-	b.mu.Unlock()
 	b.gen.Add(1)
+	b.mu.Unlock()
 
 	b.cancelConnect()
 	if b.stopRefresh != nil {
@@ -308,13 +326,13 @@ func (b *Backend) restore() {
 		b.health.State = StateDown
 		b.health.LastErr = ""
 		b.failures, b.retryAt = 0, time.Time{}
+		b.gen.Add(1)
 	}
 	b.mu.Unlock()
 	b.life.Unlock()
 	if !disabled {
 		return
 	}
-	b.gen.Add(1)
 	if b.onEnable != nil {
 		b.onEnable(b.name)
 	}
@@ -368,10 +386,18 @@ func (b *Backend) failConnect(stage string, cause error) error {
 	return fmt.Errorf("%s: %w", stage, cause)
 }
 
-func (b *Backend) noteErr(err error) {
+// noteListFailure records a failed read and reports it. A read our own disable
+// broke is not a backend failure: it reports ErrDisabled and leaves the health
+// record saying disabled, so the status surface cannot show a backend the user
+// turned off as a broken one.
+func (b *Backend) noteListFailure(cause error) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.health.LastErr = err.Error()
+	if b.health.State == StateDisabled {
+		return ErrDisabled
+	}
+	b.health.LastErr = cause.Error()
+	return cause
 }
 
 func (b *Backend) withTimeout(ctx context.Context) (context.Context, context.CancelFunc) {

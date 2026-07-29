@@ -284,6 +284,33 @@ func TestAHandshakeCompletingUnderADisableInstallsNoSession(t *testing.T) {
 	}
 }
 
+func TestAReadSupersededByADisableCommitsNoHealth(t *testing.T) {
+	// A disable that lands between ensureSession and the generation sample is
+	// invisible to the generation check, because the sample is already the
+	// post-disable value. Committing then would post "disabled, 2 tools".
+	fake := testfake.New("alpha", tool("kubectl_logs"), tool("kubectl_get"))
+	r := wire(t, Hooks{}, fake)
+	b, _ := r.Get("alpha")
+	if _, err := b.ListTools(t.Context()); err != nil {
+		t.Fatalf("baseline list: %v", err)
+	}
+	before := b.Health()
+	if err := r.Disable("alpha"); err != nil {
+		t.Fatalf("disable: %v", err)
+	}
+
+	err := b.commitList(b.Generation(), []*mcp.Tool{tool("kubectl_logs"), tool("kubectl_get")})
+	if !errors.Is(err, ErrDisabled) {
+		t.Errorf("commitList err = %v, want ErrDisabled", err)
+	}
+	if got := b.Health(); got.ToolCount != 0 || got.State != StateDisabled {
+		t.Errorf("health = %+v, want a disabled backend serving no tools", got)
+	}
+	if got := b.Health(); got.LastRefresh != before.LastRefresh {
+		t.Error("committed a refresh timestamp for a read the disable superseded")
+	}
+}
+
 // parkWrites parks the daemon's side of the connection just before a request
 // reaches the transport, so a test can hold a dispatch that has passed its
 // enabled check but written nothing.
