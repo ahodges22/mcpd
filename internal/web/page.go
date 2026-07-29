@@ -31,8 +31,8 @@ type backendStatus struct {
 }
 
 type statusView struct {
-	Backends  []backendStatus
-	ToolCount int
+	Backends  []backendStatus `json:"backends"`
+	ToolCount int             `json:"tool_count"`
 }
 
 type toolView struct {

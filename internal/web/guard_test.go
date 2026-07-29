@@ -102,9 +102,16 @@ func TestEveryMutationRouteIsRejectedOnGET(t *testing.T) {
 			continue
 		}
 		path := concretePath(rt.path, "alpha")
-		if res := h.get(t, path); res.status != http.StatusMethodNotAllowed {
+		// The GET carries a JSON content type, so only the method rule can reject it.
+		if res := h.get(t, path, contentType("application/json")); res.status != http.StatusMethodNotAllowed {
 			t.Errorf("GET %s = %d, want %d: a navigation or an image load reaches it",
 				path, res.status, http.StatusMethodNotAllowed)
+		}
+		// And a POST carrying what a cross-origin form submission can send is rejected
+		// by the JSON rule, which is the other half of the same requirement.
+		if res := h.post(t, path, contentType("application/x-www-form-urlencoded")); res.status != http.StatusUnsupportedMediaType {
+			t.Errorf("form POST %s = %d, want %d: a cross-origin form submission reaches it",
+				path, res.status, http.StatusUnsupportedMediaType)
 		}
 	}
 }
@@ -127,7 +134,9 @@ func TestNoRouteChangesStateOnGET(t *testing.T) {
 			reachable = append(reachable, rt.path)
 			continue
 		}
-		if res := h.get(t, concretePath(rt.path, "alpha")); res.status < 400 {
+		// The probe carries a JSON content type, so the method rule is the only thing
+		// that can reject it and the JSON rule cannot stand in for it.
+		if res := h.get(t, concretePath(rt.path, "alpha"), contentType("application/json")); res.status < 400 {
 			reachable = append(reachable, rt.path)
 		}
 	}

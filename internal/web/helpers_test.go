@@ -115,6 +115,12 @@ func crossSite() reqOpt {
 	return func(r *http.Request) { r.Header.Set("Sec-Fetch-Site", "cross-site") }
 }
 
+// contentType sets only the header, so a probe can isolate the method rule from the
+// JSON rule: without it a rejected GET proves nothing about which one refused it.
+func contentType(kind string) reqOpt {
+	return func(r *http.Request) { r.Header.Set("Content-Type", kind) }
+}
+
 func jsonBody(body string) reqOpt {
 	return func(r *http.Request) {
 		r.Header.Set("Content-Type", "application/json")

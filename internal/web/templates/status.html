@@ -7,7 +7,7 @@
 </head>
 <body>
 <h1>mcpd</h1>
-<p>{{.ToolCount}} tools in the catalog</p>
+<p>Tools in the catalog: {{.ToolCount}}</p>
 <p class="actions">
   <button class="act" data-post="/api/reconnect-all">Reconnect all</button>
   <button class="act" data-post="/api/reindex">Re-index catalog</button>
@@ -26,7 +26,7 @@
 <td>{{.ToolCount}}</td>
 <td>{{.RefreshedAt}}</td>
 <td>{{.AuthNote}}</td>
-<td class="err">{{.LastErr}} {{.CatalogError}}</td>
+<td class="err">{{.LastErr}}{{if .CatalogError}} {{.CatalogError}}{{end}}</td>
 <td>
 <a href="/inspect/{{.Name}}">Inspect</a>
 <button class="act" data-post="/api/backends/{{.Name}}/enable">Turn on</button>
