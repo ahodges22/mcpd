@@ -39,10 +39,6 @@ type Server struct {
 	reg   *backend.Registry
 	cat   *catalog.Catalog
 	guard *Guard
-	mux   *http.ServeMux
-	// registered is what was handed to the mux, which is what a test has to enumerate:
-	// http.ServeMux exposes no way to list the patterns it holds.
-	registered []route
 }
 
 // route is one registered path. Patterns carry no method, because the method check
@@ -55,19 +51,22 @@ type route struct {
 }
 
 func New(reg *backend.Registry, cat *catalog.Catalog, g *Guard) *Server {
-	s := &Server{reg: reg, cat: cat, guard: g, mux: http.NewServeMux()}
-	for _, rt := range s.routes() {
-		s.mux.Handle(rt.path, guardMethod(rt, rt.handler))
-		s.registered = append(s.registered, rt)
-	}
-	return s
+	return &Server{reg: reg, cat: cat, guard: g}
 }
 
 // Handler is the web surface behind the shared cross-origin guard and the
-// DNS-rebinding check. The Host check is outermost, because a rebound request is
+// DNS-rebinding check, with the Host check outermost because a rebound request is
 // misdirected before it is anything else.
+//
+// The mux is built here and kept local rather than held as a field: with no mux to
+// reach, routes cannot be registered anywhere but routes(), which is what makes the
+// GET-safety tests' enumeration of routes() sound rather than merely current.
 func (s *Server) Handler() http.Handler {
-	return s.guard.RequireLoopbackHost(s.guard.Protect(s.mux))
+	mux := http.NewServeMux()
+	for _, rt := range s.routes() {
+		mux.Handle(rt.path, guardMethod(rt, rt.handler))
+	}
+	return s.guard.RequireLoopbackHost(s.guard.Protect(mux))
 }
 
 func (s *Server) routes() []route {

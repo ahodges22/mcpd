@@ -63,7 +63,11 @@ func loopbackHost(host string) bool {
 		name = h
 	}
 	name = strings.TrimSuffix(strings.TrimPrefix(name, "["), "]")
-	if name == "localhost" {
+	// A host name is case-insensitive, and a single trailing dot is the legal absolute
+	// form, so the daemon's own address must not be refused in either spelling. Only
+	// one dot is stripped, because anything beyond that is not a host name.
+	name = strings.TrimSuffix(name, ".")
+	if strings.EqualFold(name, "localhost") {
 		return true
 	}
 	addr, err := netip.ParseAddr(name)

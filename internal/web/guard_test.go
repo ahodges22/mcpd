@@ -2,7 +2,6 @@ package web
 
 import (
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -123,7 +122,12 @@ func TestAReboundHostIsRejectedOnTheWebRoutes(t *testing.T) {
 			res.status, http.StatusOK)
 	}
 
-	for _, host := range []string{"127.0.0.1", "127.0.0.1:7420", "localhost", "localhost:7420", "[::1]", "[::1]:7420"} {
+	// The accepted names include the case variants and the absolute (trailing dot) form,
+	// both legal spellings of the daemon's own address.
+	for _, host := range []string{
+		"127.0.0.1", "127.0.0.1:7420", "127.0.0.1.", "localhost", "localhost:7420",
+		"[::1]", "[::1]:7420", "LOCALHOST", "LocalHost:7420", "localhost.",
+	} {
 		if !loopbackHost(host) {
 			t.Errorf("loopbackHost(%q) = false, want true", host)
 		}
@@ -132,7 +136,7 @@ func TestAReboundHostIsRejectedOnTheWebRoutes(t *testing.T) {
 	// substring or suffix comparison would accept an attacker-controlled host.
 	for _, host := range []string{
 		"", "evil.example", "evil.example:7420", "127.0.0.1.evil.example", "10.0.0.1",
-		"notlocalhost", "evil-localhost.example", "localhost.evil.example",
+		"notlocalhost", "evil-localhost.example", "localhost.evil.example", "localhost..",
 	} {
 		if loopbackHost(host) {
 			t.Errorf("loopbackHost(%q) = true, want false", host)
@@ -142,7 +146,7 @@ func TestAReboundHostIsRejectedOnTheWebRoutes(t *testing.T) {
 
 func TestEveryMutationRouteIsRejectedOnGET(t *testing.T) {
 	h := newHarness(t, testfake.New("alpha", tool("kubectl_logs")))
-	for _, rt := range h.server.registered {
+	for _, rt := range h.server.routes() {
 		if !rt.mutates {
 			continue
 		}
@@ -162,16 +166,18 @@ func TestEveryMutationRouteIsRejectedOnGET(t *testing.T) {
 }
 
 func TestNoRouteChangesStateOnGET(t *testing.T) {
-	// The set is derived from what was handed to the mux rather than from a literal, so
-	// a route added without a POST declaration is caught here. Task 10's OAuth callback
-	// becomes the single documented member.
+	// The set is derived from routes() rather than from a literal, so a route added
+	// without a POST declaration is caught here. Handler builds the mux from routes()
+	// and keeps it local, so there is no other place a route can be registered and this
+	// enumeration is complete by construction. Task 10's OAuth callback becomes the
+	// single documented member.
 	fake := testfake.New("alpha", tool("kubectl_logs"))
 	h := newHarness(t, fake)
 	h.index(t)
 	listsBefore := fake.ListCalls.Load()
 
 	var reachable []string
-	for _, rt := range h.server.registered {
+	for _, rt := range h.server.routes() {
 		if !rt.mutates {
 			continue
 		}
@@ -179,15 +185,9 @@ func TestNoRouteChangesStateOnGET(t *testing.T) {
 			reachable = append(reachable, rt.path)
 			continue
 		}
-		path := concretePath(rt.path, "alpha")
-		// The mux is asked which pattern answers the probe, so a catch-all cannot absorb
-		// it and report a rejection that belongs to a different route.
-		if _, pattern := h.server.mux.Handler(httptest.NewRequest(http.MethodGet, path, nil)); pattern != rt.path {
-			t.Errorf("GET %s resolves to pattern %q, want %q", path, pattern, rt.path)
-		}
 		// The probe carries a JSON content type, so the method rule is the only thing
 		// that can reject it and the JSON rule cannot stand in for it.
-		if res := h.get(t, path, contentType("application/json")); res.status < 400 {
+		if res := h.get(t, concretePath(rt.path, "alpha"), contentType("application/json")); res.status < 400 {
 			reachable = append(reachable, rt.path)
 		}
 	}
@@ -195,10 +195,11 @@ func TestNoRouteChangesStateOnGET(t *testing.T) {
 		t.Errorf("routes that change state on GET = %v, want none", reachable)
 	}
 
-	// A path outside the table must reach no handler at all. A catch-all root would
-	// answer these with the status page, and would equally hide a state-changing route
-	// registered outside the table, where this enumeration cannot see it.
-	for _, path := range []string{"/favicon.ico", "/oauth/callback", "/api/backends/alpha/authorize", "/nope"} {
+	// A path outside the table must reach no handler at all, which a catch-all root
+	// would answer with the status page. These paths are ones no later task registers:
+	// Task 10 adds /oauth/callback and /api/backends/{name}/authorize, so probing those
+	// here would fail on correct code rather than on a regression.
+	for _, path := range []string{"/favicon.ico", "/api/unknown", "/inspect", "/nope"} {
 		if res := h.get(t, path); res.status != http.StatusNotFound {
 			t.Errorf("GET %s = %d, want %d: an unregistered path is being answered", path, res.status, http.StatusNotFound)
 		}
