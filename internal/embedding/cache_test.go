@@ -121,6 +121,43 @@ func TestVectorizeCachesByContentHashSoAnUnchangedToolIsNeverReembedded(t *testi
 	}
 }
 
+func TestVectorizeKeepsPartialProgressAndReportsAnAccurateCountAcrossBatches(t *testing.T) {
+	// The real catalog is around 583 tools, far more than one batch: a cold
+	// start that hits a gateway hiccup partway through must keep the vectors
+	// it already paid for and count only what is genuinely still missing,
+	// not the whole catalog.
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if calls > 1 {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		var body struct{ Input []string }
+		json.NewDecoder(r.Body).Decode(&body)
+		writeEmbeddings(w, len(body.Input))
+	}))
+	defer srv.Close()
+
+	client := NewClient(srv.URL, "sk-test")
+	client.batchSize = 2
+	cache := NewCache(filepath.Join(t.TempDir(), "cache.json"))
+	entries := []catalog.Entry{
+		entry("t0", "d0"), entry("t1", "d1"), entry("t2", "d2"), entry("t3", "d3"), entry("t4", "d4"),
+	}
+
+	vecs, unvectorized := Vectorize(context.Background(), client, cache, entries)
+	if len(vecs) != 2 {
+		t.Fatalf("vecs = %v, want the 2 vectors the successful first batch fetched", vecs)
+	}
+	if unvectorized != 3 {
+		t.Fatalf("unvectorized = %d, want 3 (the failed batch plus the batch never attempted)", unvectorized)
+	}
+	if _, ok := cache.Get(cache.Key(entries[0])); !ok {
+		t.Error("a vector fetched before the failure was not cached")
+	}
+}
+
 func TestVectorizeReportsUnvectorizedWhenTheGatewayIsUnreachable(t *testing.T) {
 	client := NewClient("http://127.0.0.1:1", "sk-test")
 	cache := NewCache(filepath.Join(t.TempDir(), "cache.json"))

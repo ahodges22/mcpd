@@ -101,10 +101,12 @@ func Vectorize(ctx context.Context, client *Client, cache *Cache, entries []cata
 		return vecs, 0
 	}
 
+	// Embed returns a full-length slice, filled in as far as it got, even on
+	// error: a batch failure must not discard vectors earlier batches already
+	// fetched and paid for.
 	embedded, err := client.Embed(ctx, texts)
 	if err != nil {
-		slog.Warn("embeddings gateway unreachable, degrading to lexical-only", "unvectorized", len(missing), "error", err)
-		return vecs, len(missing)
+		slog.Warn("embeddings gateway error, degrading unresolved tools to lexical-only", "error", err)
 	}
 
 	unvectorized := 0

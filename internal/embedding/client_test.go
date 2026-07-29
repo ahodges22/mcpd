@@ -106,6 +106,37 @@ func TestEmbedBatchesRatherThanSendingOneRequestPerText(t *testing.T) {
 	}
 }
 
+func TestEmbedKeepsAlreadyFetchedVectorsWhenALaterBatchFails(t *testing.T) {
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if calls > 1 {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		var body struct{ Input []string }
+		json.NewDecoder(r.Body).Decode(&body)
+		writeEmbeddings(w, len(body.Input))
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL, "sk-test")
+	c.batchSize = 2
+	vecs, err := c.Embed(context.Background(), []string{"a", "b", "c", "d"})
+	if err == nil {
+		t.Fatal("expected an error from the second batch's 500")
+	}
+	if len(vecs) != 4 {
+		t.Fatalf("Embed returned %d slots, want 4 even on a partial failure", len(vecs))
+	}
+	if vecs[0] == nil || vecs[1] == nil {
+		t.Errorf("vecs = %v, want the first batch's vectors kept despite the second batch failing", vecs)
+	}
+	if vecs[2] != nil || vecs[3] != nil {
+		t.Errorf("vecs = %v, want the never-completed second batch's slots nil", vecs)
+	}
+}
+
 func TestEmbedFailureIsSoft(t *testing.T) {
 	// A client pointed at an address nothing listens on must return an error the
 	// caller can check, not panic, so a caller can fall back to lexical-only

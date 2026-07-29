@@ -56,18 +56,24 @@ type embedResponse struct {
 // rather than issuing one per text. It returns an error rather than
 // panicking when the gateway cannot be reached or answers with a
 // non-success status, so a caller can degrade to lexical-only ranking.
+//
+// On a batch failure partway through, Embed stops rather than trying later
+// batches, but the returned slice is still length len(texts): batches that
+// already succeeded are filled in, and the failed batch onward is left nil.
+// A caller must not discard the returned slice just because err is non-nil,
+// or it throws away embedding work it already paid for.
 func (c *Client) Embed(ctx context.Context, texts []string) ([][]float32, error) {
 	if len(texts) == 0 {
 		return nil, nil
 	}
-	out := make([][]float32, 0, len(texts))
+	out := make([][]float32, len(texts))
 	for start := 0; start < len(texts); start += c.batchSize {
 		end := min(start+c.batchSize, len(texts))
 		batch, err := c.embedBatch(ctx, texts[start:end])
 		if err != nil {
-			return nil, err
+			return out, fmt.Errorf("embed batch %d-%d of %d: %w", start, end, len(texts), err)
 		}
-		out = append(out, batch...)
+		copy(out[start:end], batch)
 	}
 	return out, nil
 }
