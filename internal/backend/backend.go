@@ -23,6 +23,10 @@ import (
 // can fail after its bytes were delivered and acted on.
 var ErrNotAttempted = errors.New("no send attempted")
 
+// ErrStaleGeneration reports that a lifecycle transition superseded an operation
+// while it was in flight, so its result was discarded rather than committed.
+var ErrStaleGeneration = errors.New("superseded by a lifecycle transition")
+
 var errDisabled = errors.New("backend disabled")
 
 type State string
@@ -49,6 +53,10 @@ var environ = os.Environ
 const (
 	backoffBase = 250 * time.Millisecond
 	backoffMax  = 30 * time.Second
+	// defaultConnectTimeout bounds a handshake when the backend declares no
+	// timeout. Unbounded, a hung spawn would hold the lifecycle mutex forever and
+	// a disable could never take it.
+	defaultConnectTimeout = 60 * time.Second
 )
 
 // Backend is one upstream MCP server, shared by every connected client.
@@ -66,11 +74,12 @@ type Backend struct {
 	life sync.Mutex   // serializes lifecycle transitions
 	gen  atomic.Uint64
 
-	mu       sync.Mutex
-	session  *mcp.ClientSession
-	health   Health
-	failures int
-	retryAt  time.Time
+	mu            sync.Mutex
+	session       *mcp.ClientSession
+	health        Health
+	failures      int
+	retryAt       time.Time
+	connectCancel context.CancelFunc
 }
 
 // Generation changes on every lifecycle transition, so an operation that
@@ -114,10 +123,14 @@ func (b *Backend) ListTools(ctx context.Context) ([]*mcp.Tool, error) {
 	if err != nil {
 		return nil, fmt.Errorf("backend %s: %w", b.name, err)
 	}
+	gen := b.gen.Load()
 	res, err := sess.ListTools(ctx, nil)
 	if err != nil {
 		b.noteErr(err)
 		return nil, fmt.Errorf("backend %s: list tools: %w", b.name, err)
+	}
+	if b.gen.Load() != gen {
+		return nil, fmt.Errorf("backend %s: list tools: %w", b.name, ErrStaleGeneration)
 	}
 
 	b.mu.Lock()
@@ -160,7 +173,15 @@ func (b *Backend) connect(ctx context.Context) (*mcp.ClientSession, error) {
 		b.mu.Unlock()
 		return nil, fmt.Errorf("backing off %s after: %s", wait.Round(time.Millisecond), last)
 	}
+	ctx, cancel := context.WithTimeout(ctx, b.connectTimeout())
+	b.connectCancel = cancel
 	b.mu.Unlock()
+	defer func() {
+		cancel()
+		b.mu.Lock()
+		b.connectCancel = nil
+		b.mu.Unlock()
+	}()
 
 	transport, err := b.dial(ctx)
 	if err != nil {
@@ -188,6 +209,25 @@ func (b *Backend) connect(ctx context.Context) (*mcp.ClientSession, error) {
 
 func (b *Backend) watch(sess *mcp.ClientSession) {
 	b.dropSession(sess, sess.Wait())
+}
+
+// cancelConnect aborts an in-flight handshake. A caller that takes life after
+// calling it is guaranteed the aborted handshake has finished, because connect
+// holds life for its whole duration.
+func (b *Backend) cancelConnect() {
+	b.mu.Lock()
+	cancel := b.connectCancel
+	b.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
+func (b *Backend) connectTimeout() time.Duration {
+	if b.spec.TimeoutSec > 0 {
+		return time.Duration(b.spec.TimeoutSec) * time.Second
+	}
+	return defaultConnectTimeout
 }
 
 // closeSession ends the shared session if there is one. Task 5's disable builds

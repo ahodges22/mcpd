@@ -187,8 +187,9 @@ func TestStdioChildEnvIsExplicitlyConstructed(t *testing.T) {
 }
 
 func TestUnreachableBackendRetainsItsError(t *testing.T) {
+	endpoint := deadEndpoint(t)
 	cfg := &config.Config{Backends: map[string]config.Backend{
-		"alpha": {Name: "alpha", HTTPURL: deadEndpoint(t)},
+		"alpha": {Name: "alpha", HTTPURL: endpoint},
 	}}
 	r := NewRegistry(cfg, nil)
 	b, _ := r.Get("alpha")
@@ -200,11 +201,76 @@ func TestUnreachableBackendRetainsItsError(t *testing.T) {
 	if h.State != StateDown {
 		t.Errorf("state = %q, want %q", h.State, StateDown)
 	}
-	if h.LastErr == "" {
-		t.Error("health lost the reason the backend is unreachable")
+	if !strings.Contains(h.LastErr, endpoint) {
+		t.Errorf("health error %q does not name the unreachable endpoint %s", h.LastErr, endpoint)
 	}
-	if h.Transport != "http" {
-		t.Errorf("transport = %q, want http", h.Transport)
+}
+
+func TestRefreshInvalidatedMidFlightDoesNotCommit(t *testing.T) {
+	fake := testfake.New("alpha", tool("kubectl_logs"), tool("kubectl_get"))
+	r := wire(t, nil, fake)
+	b, _ := r.Get("alpha")
+
+	if _, err := b.ListTools(t.Context()); err != nil {
+		t.Fatalf("baseline list: %v", err)
+	}
+	before := b.Health()
+	if before.ToolCount != 2 {
+		t.Fatalf("baseline tool count = %d, want 2", before.ToolCount)
+	}
+
+	// A lifecycle transition drops the shared session while the next list is in
+	// flight. The list itself still succeeds, on a session that is no longer the
+	// backend's, so only the generation reveals that its result is superseded.
+	fake.BeforeList = func() {
+		fake.SetTools(tool("kubectl_logs"))
+		b.mu.Lock()
+		sess := b.session
+		b.mu.Unlock()
+		b.dropSession(sess, nil)
+	}
+
+	_, err := b.ListTools(t.Context())
+	if !errors.Is(err, ErrStaleGeneration) {
+		t.Errorf("err = %v, want ErrStaleGeneration", err)
+	}
+	after := b.Health()
+	if after.ToolCount != before.ToolCount {
+		t.Errorf("committed tool count %d over %d: a result from a superseded generation must be discarded", after.ToolCount, before.ToolCount)
+	}
+	if !after.LastRefresh.Equal(before.LastRefresh) {
+		t.Error("committed a refresh timestamp from a superseded generation")
+	}
+}
+
+func TestCancelConnectAbortsAHungHandshake(t *testing.T) {
+	r := NewRegistry(stdioConfig("alpha"), nil)
+	b, _ := r.Get("alpha")
+	dialing := make(chan struct{})
+	b.dial = func(ctx context.Context) (mcp.Transport, error) {
+		close(dialing)
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := b.Call(t.Context(), "kubectl_logs", nil)
+		done <- err
+	}()
+	<-dialing
+	b.cancelConnect()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrNotAttempted) {
+			t.Errorf("err = %v, want ErrNotAttempted: an aborted handshake sent nothing", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("cancelConnect did not abort the handshake")
+	}
+	if !b.life.TryLock() {
+		t.Error("the lifecycle mutex is still held, so a disable would block behind the abandoned handshake")
 	}
 }
 
