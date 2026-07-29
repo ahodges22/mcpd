@@ -16,9 +16,13 @@ const rrfK = 60
 // instead of the fused score, because reciprocal rank fusion makes the top
 // result of any query score about the same regardless of whether it is a
 // perfect match or the least-bad of many irrelevant tools.
+// HasCosine distinguishes "no entry was scored semantically" from a genuine
+// cosine of zero, which abstention needs: without it, the lexical-only
+// degraded mode reads as every query being maximally unlike every tool.
 type Evidence struct {
 	BestCosine  float64
 	BestLexical float64
+	HasCosine   bool
 }
 
 // Fuse orders entries by summing 1/(rrfK+rank) across a lexical ranking and
@@ -104,7 +108,7 @@ func Fuse(query string, entries []catalog.Entry, vecs map[string][]float32, qvec
 	if limit > 0 && len(fused) > limit {
 		fused = fused[:limit]
 	}
-	return fused, Evidence{BestCosine: bestCosine, BestLexical: bestLexical}
+	return fused, Evidence{BestCosine: bestCosine, BestLexical: bestLexical, HasCosine: len(semantic) > 0}
 }
 
 func cosine(a, b []float32) float64 {

@@ -16,6 +16,9 @@ func TestFuseDegradesToLexicalWithoutVectors(t *testing.T) {
 	if ev.BestCosine != 0 {
 		t.Errorf("BestCosine = %v, want 0 with no vectors available", ev.BestCosine)
 	}
+	if ev.HasCosine {
+		t.Error("HasCosine must be false with no vectors, so abstention can tell an absent reading from a zero one")
+	}
 }
 
 // rrfEntries returns a catalog where "alpha" ranks 1st lexically and 3rd
@@ -69,6 +72,9 @@ func TestFuseUsesReciprocalRankNotScoreBlending(t *testing.T) {
 	}
 	if math.Abs(ev.BestCosine-1.0) > 1e-9 {
 		t.Errorf("Evidence.BestCosine = %v, want 1.0 (beta_tool's exact cosine match)", ev.BestCosine)
+	}
+	if !ev.HasCosine {
+		t.Error("Evidence.HasCosine = false, want true once any entry was scored semantically")
 	}
 }
 
