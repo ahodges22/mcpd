@@ -16,9 +16,12 @@ const rrfK = 60
 // instead of the fused score, because reciprocal rank fusion makes the top
 // result of any query score about the same regardless of whether it is a
 // perfect match or the least-bad of many irrelevant tools.
-// HasCosine distinguishes "no entry was scored semantically" from a genuine
-// cosine of zero, which abstention needs: without it, the lexical-only
-// degraded mode reads as every query being maximally unlike every tool.
+// HasCosine is true only when at least one genuinely comparable vector was
+// scored, which is stronger than "a comparison was attempted": it
+// distinguishes an absent reading from a genuine cosine of zero. Abstention
+// needs that distinction, because without it the lexical-only degraded mode,
+// and any input that makes every comparison degenerate, read as every query
+// being maximally unlike every tool.
 type Evidence struct {
 	BestCosine  float64
 	BestLexical float64
@@ -31,10 +34,11 @@ type Evidence struct {
 // normalising one against the other is a silent source of mis-weighting.
 //
 // vecs holds a cached vector per entry ID; qvec is the query's own vector.
-// An entry missing from vecs, or a nil qvec, contributes no semantic term
-// and ranks on its lexical score alone, which is how ranking degrades
-// cleanly with no embeddings at all, or with a partially warm cache after
-// new tools appear.
+// An entry missing from vecs, or one whose vector cosine cannot compare
+// against qvec, contributes no semantic term and ranks on its lexical score
+// alone, which is how ranking degrades cleanly with no embeddings at all,
+// with a partially warm cache after new tools appear, and with a cache that
+// outlived a change to the embedding model's dimension.
 func Fuse(query string, entries []catalog.Entry, vecs map[string][]float32, qvec []float32, limit int) ([]Result, Evidence) {
 	lexical := Lexical(query, entries)
 	lexRank := make(map[string]int, len(lexical))
@@ -51,13 +55,17 @@ func Fuse(query string, entries []catalog.Entry, vecs map[string][]float32, qvec
 		score float64
 	}
 	var semantic []semScore
-	if qvec != nil {
+	if len(qvec) > 0 {
 		for _, e := range entries {
-			v, ok := vecs[e.ID]
+			v, cached := vecs[e.ID]
+			if !cached {
+				continue
+			}
+			sim, ok := cosine(qvec, v)
 			if !ok {
 				continue
 			}
-			semantic = append(semantic, semScore{e.ID, cosine(qvec, v)})
+			semantic = append(semantic, semScore{e.ID, sim})
 		}
 		sort.SliceStable(semantic, func(i, j int) bool {
 			if semantic[i].score != semantic[j].score {
@@ -111,9 +119,14 @@ func Fuse(query string, entries []catalog.Entry, vecs map[string][]float32, qvec
 	return fused, Evidence{BestCosine: bestCosine, BestLexical: bestLexical, HasCosine: len(semantic) > 0}
 }
 
-func cosine(a, b []float32) float64 {
+// cosine reports the similarity of two vectors, and whether they were
+// comparable at all. Mismatched widths and zero-magnitude vectors have no
+// defined similarity, and a 0 returned for them is indistinguishable from a
+// genuine orthogonal reading, which abstention would read as real evidence
+// that nothing matches.
+func cosine(a, b []float32) (float64, bool) {
 	if len(a) != len(b) || len(a) == 0 {
-		return 0
+		return 0, false
 	}
 	var dot, normA, normB float64
 	for i := range a {
@@ -122,7 +135,7 @@ func cosine(a, b []float32) float64 {
 		normB += float64(b[i]) * float64(b[i])
 	}
 	if normA == 0 || normB == 0 {
-		return 0
+		return 0, false
 	}
-	return dot / (math.Sqrt(normA) * math.Sqrt(normB))
+	return dot / (math.Sqrt(normA) * math.Sqrt(normB)), true
 }

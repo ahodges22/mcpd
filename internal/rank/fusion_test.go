@@ -101,6 +101,70 @@ func TestFuseFallsBackToLexicalOnlyForANewlyAppearedTool(t *testing.T) {
 	}
 }
 
+// TestFuseReportsCosineEvidenceOnlyWhenSomethingWasComparable pins
+// Evidence.HasCosine to "at least one genuinely comparable vector was scored"
+// rather than "a comparison was attempted". Each degenerate input below makes
+// cosine degenerate to 0 for every entry, which abstention would otherwise
+// read as a real similarity of zero and use to flag every single query. The
+// realistic route in is a warm cache outliving a change to the embedding
+// model's dimension: cached vectors of the old width scored against a query
+// vector of the new one.
+func TestFuseReportsCosineEvidenceOnlyWhenSomethingWasComparable(t *testing.T) {
+	entries := []catalog.Entry{
+		{ID: "mcp__x__alpha_tool", Server: "x", Tool: "alpha_tool", Description: "alpha alpha alpha tool"},
+		{ID: "mcp__x__beta_tool", Server: "x", Tool: "beta_tool", Description: "mentions alpha once"},
+	}
+	cases := []struct {
+		name           string
+		vecs           map[string][]float32
+		qvec           []float32
+		wantHasCosine  bool
+		wantBestCosine float64
+	}{
+		{
+			name: "every cached vector is a different width from the query vector",
+			vecs: map[string][]float32{"mcp__x__alpha_tool": {1, 0, 0}, "mcp__x__beta_tool": {0, 1, 0}},
+			qvec: []float32{1, 0},
+		},
+		{
+			name: "the query vector is empty but not nil",
+			vecs: map[string][]float32{"mcp__x__alpha_tool": {1, 0}, "mcp__x__beta_tool": {0, 1}},
+			qvec: []float32{},
+		},
+		{
+			name: "the query vector has zero magnitude",
+			vecs: map[string][]float32{"mcp__x__alpha_tool": {1, 0}, "mcp__x__beta_tool": {0, 1}},
+			qvec: []float32{0, 0},
+		},
+		{
+			name:           "one comparable vector among degenerate ones still counts",
+			vecs:           map[string][]float32{"mcp__x__alpha_tool": {1, 0}, "mcp__x__beta_tool": {0, 0}},
+			qvec:           []float32{1, 0},
+			wantHasCosine:  true,
+			wantBestCosine: 1.0,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ev := Fuse("alpha", entries, tc.vecs, tc.qvec, 10)
+
+			if ev.HasCosine != tc.wantHasCosine {
+				t.Errorf("HasCosine = %v, want %v", ev.HasCosine, tc.wantHasCosine)
+			}
+			if math.Abs(ev.BestCosine-tc.wantBestCosine) > 1e-9 {
+				t.Errorf("BestCosine = %v, want %v", ev.BestCosine, tc.wantBestCosine)
+			}
+			if len(got) != len(entries) {
+				t.Errorf("got %d results, want all %d: an incomparable vector must count as absent, not drop the tool", len(got), len(entries))
+			}
+			if !tc.wantHasCosine && (Thresholds{Cosine: 0.30, Enabled: true}).LowConfidence(ev) {
+				t.Error("calibrated abstention flagged a query for which no cosine was ever computed")
+			}
+		})
+	}
+}
+
 func TestFuseRespectsLimit(t *testing.T) {
 	entries := referenceCatalog()
 	got, _ := Fuse("get", entries, nil, nil, 1)
