@@ -65,10 +65,11 @@ const (
 // exclusively before life, so dispatch must never acquire them the other way
 // round.
 type Backend struct {
-	name   string
-	spec   config.Backend
-	client *mcp.Client
-	dial   func(context.Context) (mcp.Transport, error)
+	name        string
+	spec        config.Backend
+	client      *mcp.Client
+	dial        func(context.Context) (mcp.Transport, error)
+	onReconnect func(server string)
 
 	gate sync.RWMutex // RLock is a dispatch lease; Lock closes and drains it
 	life sync.Mutex   // serializes lifecycle transitions
@@ -80,6 +81,7 @@ type Backend struct {
 	failures      int
 	retryAt       time.Time
 	connectCancel context.CancelFunc
+	connected     bool // a session has existed, so the next connect is a reconnect
 }
 
 // Generation changes on every lifecycle transition, so an operation that
@@ -200,10 +202,17 @@ func (b *Backend) connect(ctx context.Context) (*mcp.ClientSession, error) {
 	b.retryAt = time.Time{}
 	b.health.State = StateUp
 	b.health.LastErr = ""
+	reconnected := b.connected
+	b.connected = true
 	b.mu.Unlock()
 	b.gen.Add(1)
 
 	go b.watch(sess)
+	// Only a reconnect is a trigger. Firing on the first connect would double every
+	// cold refresh, because it is the refresh's own read that opens the session.
+	if reconnected && b.onReconnect != nil {
+		go b.onReconnect(b.name)
+	}
 	return sess, nil
 }
 

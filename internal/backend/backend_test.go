@@ -20,7 +20,7 @@ import (
 func TestCallReachesTheOwningBackendOverOneNewSession(t *testing.T) {
 	alpha := testfake.New("alpha", tool("kubectl_logs"))
 	beta := testfake.New("beta", tool("kubectl_logs"))
-	r := wire(t, nil, alpha, beta)
+	r := wire(t, Hooks{}, alpha, beta)
 
 	b, ok := r.Get("alpha")
 	if !ok {
@@ -45,7 +45,7 @@ func TestCallReachesTheOwningBackendOverOneNewSession(t *testing.T) {
 }
 
 func TestConnectFailureIsReportedRetryable(t *testing.T) {
-	r := NewRegistry(stdioConfig("alpha"), nil)
+	r := NewRegistry(stdioConfig("alpha"), Hooks{})
 	b, _ := r.Get("alpha")
 	b.dial = func(context.Context) (mcp.Transport, error) { return nil, errors.New("spawn refused") }
 
@@ -62,7 +62,7 @@ func TestConcurrentCallsShareOneSession(t *testing.T) {
 	fake := testfake.New("alpha", tool("kubectl_logs"))
 	release := make(chan struct{})
 	fake.OnCall = func(context.Context, *mcp.CallToolRequest) { <-release }
-	r := wire(t, nil, fake)
+	r := wire(t, Hooks{}, fake)
 	b, _ := r.Get("alpha")
 
 	const clients = 8
@@ -162,7 +162,7 @@ func TestStdioChildEnvIsExplicitlyConstructed(t *testing.T) {
 	cfg := &config.Config{Backends: map[string]config.Backend{
 		"alpha": {Name: "alpha", Command: "true", EnvPassthrough: []string{"AWS_*"}},
 	}}
-	r := NewRegistry(cfg, nil)
+	r := NewRegistry(cfg, Hooks{})
 	b, _ := r.Get("alpha")
 
 	tr, err := b.dial(t.Context())
@@ -191,7 +191,7 @@ func TestUnreachableBackendRetainsItsError(t *testing.T) {
 	cfg := &config.Config{Backends: map[string]config.Backend{
 		"alpha": {Name: "alpha", HTTPURL: endpoint},
 	}}
-	r := NewRegistry(cfg, nil)
+	r := NewRegistry(cfg, Hooks{})
 	b, _ := r.Get("alpha")
 
 	if _, err := b.ListTools(t.Context()); err == nil {
@@ -208,7 +208,7 @@ func TestUnreachableBackendRetainsItsError(t *testing.T) {
 
 func TestRefreshInvalidatedMidFlightDoesNotCommit(t *testing.T) {
 	fake := testfake.New("alpha", tool("kubectl_logs"), tool("kubectl_get"))
-	r := wire(t, nil, fake)
+	r := wire(t, Hooks{}, fake)
 	b, _ := r.Get("alpha")
 
 	if _, err := b.ListTools(t.Context()); err != nil {
@@ -244,7 +244,7 @@ func TestRefreshInvalidatedMidFlightDoesNotCommit(t *testing.T) {
 }
 
 func TestCancelConnectAbortsAHungHandshake(t *testing.T) {
-	r := NewRegistry(stdioConfig("alpha"), nil)
+	r := NewRegistry(stdioConfig("alpha"), Hooks{})
 	b, _ := r.Get("alpha")
 	dialing := make(chan struct{})
 	b.dial = func(ctx context.Context) (mcp.Transport, error) {
@@ -277,7 +277,7 @@ func TestCancelConnectAbortsAHungHandshake(t *testing.T) {
 func TestToolListChangedReachesTheRegistryCallback(t *testing.T) {
 	fake := testfake.New("alpha", tool("kubectl_logs"))
 	changed := make(chan string, 4)
-	r := wire(t, func(name string) { changed <- name }, fake)
+	r := wire(t, Hooks{ToolListChanged: func(name string) { changed <- name }}, fake)
 	b, _ := r.Get("alpha")
 
 	if _, err := b.ListTools(t.Context()); err != nil {
@@ -295,6 +295,36 @@ func TestToolListChangedReachesTheRegistryCallback(t *testing.T) {
 	}
 }
 
+func TestReconnectFiresOnlyAfterASessionIsLost(t *testing.T) {
+	fake := testfake.New("alpha", tool("kubectl_logs"))
+	reconnected := make(chan string, 4)
+	r := wire(t, Hooks{Reconnected: func(name string) { reconnected <- name }}, fake)
+	b, _ := r.Get("alpha")
+
+	if _, err := b.ListTools(t.Context()); err != nil {
+		t.Fatalf("first list: %v", err)
+	}
+	select {
+	case name := <-reconnected:
+		t.Fatalf("reconnect hook fired for %q on the first connect, which would double every cold refresh", name)
+	default:
+	}
+
+	b.closeSession()
+	if _, err := b.ListTools(t.Context()); err != nil {
+		t.Fatalf("list after reconnect: %v", err)
+	}
+
+	select {
+	case name := <-reconnected:
+		if name != "alpha" {
+			t.Errorf("hook named %q, want alpha", name)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no reconnect trigger; a tool list that changed while the session was down would never be re-read")
+	}
+}
+
 func TestServerInitiatedRequestsAreNotForwarded(t *testing.T) {
 	fake := testfake.New("alpha", tool("kubectl_logs"))
 	roots := make(chan error, 1)
@@ -302,7 +332,7 @@ func TestServerInitiatedRequestsAreNotForwarded(t *testing.T) {
 		_, err := req.Session.ListRoots(ctx, nil)
 		roots <- err
 	}
-	r := wire(t, nil, fake)
+	r := wire(t, Hooks{}, fake)
 	b, _ := r.Get("alpha")
 
 	if _, err := b.Call(t.Context(), "kubectl_logs", nil); err != nil {
@@ -350,13 +380,13 @@ func (c *deliverThenConn) Write(ctx context.Context, msg jsonrpc.Message) error 
 // wire builds a registry over fakes and points each backend at its fake. dial
 // is a package-internal seam: a production backend dials a child process or an
 // HTTP endpoint.
-func wire(t *testing.T, onChanged func(string), fakes ...*testfake.Fake) *Registry {
+func wire(t *testing.T, hooks Hooks, fakes ...*testfake.Fake) *Registry {
 	t.Helper()
 	names := make([]string, 0, len(fakes))
 	for _, f := range fakes {
 		names = append(names, f.Name)
 	}
-	r := NewRegistry(stdioConfig(names...), onChanged)
+	r := NewRegistry(stdioConfig(names...), hooks)
 	for _, f := range fakes {
 		b, ok := r.Get(f.Name)
 		if !ok {
@@ -376,7 +406,7 @@ func wire(t *testing.T, onChanged func(string), fakes ...*testfake.Fake) *Regist
 // wireDelivering wires one fake behind a deliverThen wrapper.
 func wireDelivering(t *testing.T, fake *testfake.Fake, after func(mcp.Connection) error) *Registry {
 	t.Helper()
-	r := wire(t, nil, fake)
+	r := wire(t, Hooks{}, fake)
 	b, _ := r.Get(fake.Name)
 	b.dial = func(ctx context.Context) (mcp.Transport, error) {
 		inner, err := fake.Transport(ctx)

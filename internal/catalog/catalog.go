@@ -22,12 +22,17 @@ import (
 )
 
 const (
-	// DefaultTTL caps the refresh backoff, so a backend reporting its tool list
-	// changed continuously is polled at this rate rather than spun on.
+	// DefaultTTL is both the period of the TTL trigger and the cap on the refresh
+	// backoff, so a backend reporting its tool list changed continuously is polled
+	// at this rate rather than spun on.
 	DefaultTTL = time.Hour
 
 	defaultDebounce    = 250 * time.Millisecond
 	defaultBackoffBase = 250 * time.Millisecond
+	// defaultListTimeout bounds one tools/list. Without it a backend that accepts
+	// the connection and never answers parks its refresh loop for good: config's
+	// per-backend timeout is optional and defaults to none.
+	defaultListTimeout = 30 * time.Second
 )
 
 // CanonicalID is the only identifier a tool is addressed by. The format is fixed:
@@ -73,6 +78,7 @@ type tuning struct {
 	debounce    time.Duration
 	backoffBase time.Duration
 	ttl         time.Duration
+	listTimeout time.Duration
 }
 
 // serverState is one backend's refresh bookkeeping. triggers is what decides
@@ -92,6 +98,11 @@ type Catalog struct {
 	path     string
 	tune     tuning
 
+	saveMu sync.Mutex // serializes marshal-through-rename, so no save lands out of order
+	// beforeRename is a test seam: it forces two saves to interleave, which is the
+	// only way to observe an out-of-order rename deterministically.
+	beforeRename func()
+
 	mu      sync.Mutex
 	idle    sync.Cond
 	index   map[string]Entry
@@ -105,6 +116,7 @@ func New(reg *backend.Registry, path string) *Catalog {
 		debounce:    defaultDebounce,
 		backoffBase: defaultBackoffBase,
 		ttl:         DefaultTTL,
+		listTimeout: defaultListTimeout,
 	})
 }
 
@@ -141,6 +153,25 @@ func (c *Catalog) Errors() map[string]string {
 	return maps.Clone(c.errs)
 }
 
+// Start runs the TTL trigger until ctx is done: every backend is re-listed on
+// each tick. This is what recovers a backend that was unreachable when the daemon
+// started, and what keeps a backend that never sends tool-list-changed (the
+// notification is optional) from going stale.
+func (c *Catalog) Start(ctx context.Context) {
+	go func() {
+		tick := time.NewTicker(c.tune.ttl)
+		defer tick.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-tick.C:
+				c.RefreshAll(ctx)
+			}
+		}
+	}()
+}
+
 // Trigger records that server's tool list may have changed. The counter advances
 // immediately, so a read already in flight cannot satisfy the trigger: the
 // trigger means that read is answering a superseded question. Starting a fresh
@@ -148,6 +179,9 @@ func (c *Catalog) Errors() map[string]string {
 func (c *Catalog) Trigger(server string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if _, ok := c.backends.lister(server); !ok {
+		return
+	}
 	st := c.stateLocked(server)
 	st.triggers++
 	if st.running || st.armed {
@@ -157,14 +191,17 @@ func (c *Catalog) Trigger(server string) {
 	st.timer = time.AfterFunc(c.tune.debounce, func() { c.debounced(server, st) })
 }
 
-// Refresh reads server now, bypassing the debounce, and returns once its refresh
-// loop has finished.
+// Refresh requests a read of server without waiting out the debounce, and returns
+// once its refresh loop has finished. ctx bounds the wait, not the work: a caller
+// that gives up must not cancel a refresh other triggers are relying on, and a
+// read that is already running is bounded by the list timeout instead. If a loop
+// is mid-backoff the wait includes the remainder of that sleep.
 func (c *Catalog) Refresh(ctx context.Context, server string) {
 	c.mu.Lock()
 	st := c.stateLocked(server)
 	st.triggers++
 	c.disarmLocked(st)
-	c.startLocked(ctx, server, st)
+	c.startLocked(server, st)
 	done := st.done
 	c.mu.Unlock()
 
@@ -225,15 +262,19 @@ func (c *Catalog) debounced(server string, st *serverState) {
 		return // disarmed while this timer waited for the lock
 	}
 	st.armed = false
-	c.startLocked(context.Background(), server, st)
+	c.startLocked(server, st)
 	c.idle.Broadcast()
 }
 
-func (c *Catalog) startLocked(parent context.Context, server string, st *serverState) {
+// startLocked runs the loop on a catalog-owned context rather than the context of
+// whichever caller happened to start it. A manual re-index whose HTTP request is
+// abandoned must not cancel a loop that a notification is waiting on; StopRefresh
+// is the only way to end one.
+func (c *Catalog) startLocked(server string, st *serverState) {
 	if st.running {
 		return
 	}
-	ctx, cancel := context.WithCancel(parent)
+	ctx, cancel := context.WithCancel(context.Background())
 	st.running = true
 	st.cancel = cancel
 	st.done = make(chan struct{})
@@ -271,16 +312,21 @@ func (c *Catalog) loop(ctx context.Context, cancel context.CancelFunc, server st
 	}
 }
 
-func (c *Catalog) read(ctx context.Context, server string) {
+func (c *Catalog) read(loop context.Context, server string) {
 	l, ok := c.backends.lister(server)
 	if !ok {
 		return
 	}
+	ctx, cancel := context.WithTimeout(loop, c.tune.listTimeout)
+	defer cancel()
+
 	tools, err := l.ListTools(ctx)
 	switch {
-	case errors.Is(err, backend.ErrStaleGeneration), ctx.Err() != nil:
-		// Superseded rather than failed. Neither marks the backend down nor evicts
-		// the tools it is still serving.
+	case errors.Is(err, backend.ErrStaleGeneration), loop.Err() != nil:
+		// Superseded rather than failed: a stale generation, or a stop we asked for.
+		// Neither marks the backend down nor evicts the tools it is still serving.
+		// The loop context is what is checked, so a read that exceeded the list
+		// timeout still falls through to the failure branch below.
 		return
 	case err != nil:
 		c.exclude(server, err)
@@ -384,7 +430,9 @@ type document struct {
 }
 
 // Load reads the persisted catalog, so search answers before any backend has
-// been re-listed. An absent file is a first run, not an error.
+// been re-listed. An absent file is a first run, not an error. Entries for
+// backends that are no longer configured are discarded: nothing else would ever
+// remove them, and search would offer tools no backend can serve.
 func (c *Catalog) Load() error {
 	raw, err := os.ReadFile(c.path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -397,22 +445,34 @@ func (c *Catalog) Load() error {
 	if err := json.Unmarshal(raw, &doc); err != nil {
 		return fmt.Errorf("parse catalog: %w", err)
 	}
+	configured := c.backends.names()
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.index = make(map[string]Entry, len(doc.Tools))
 	for _, e := range doc.Tools {
-		c.index[e.ID] = e
+		if slices.Contains(configured, e.Server) {
+			c.index[e.ID] = e
+		}
 	}
 	return nil
 }
 
+// Save replaces the persisted catalog atomically. It holds saveMu across the
+// whole marshal-through-rename, because concurrent saves from a fan-out would
+// otherwise let an older snapshot rename over a newer one.
 func (c *Catalog) Save() error {
+	c.saveMu.Lock()
+	defer c.saveMu.Unlock()
+
 	c.mu.Lock()
 	raw, err := json.Marshal(document{Tools: c.sortedLocked()})
 	c.mu.Unlock()
 	if err != nil {
 		return fmt.Errorf("marshal catalog: %w", err)
+	}
+	if c.beforeRename != nil {
+		c.beforeRename()
 	}
 
 	dir := filepath.Dir(c.path)

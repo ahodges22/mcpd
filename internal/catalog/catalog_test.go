@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -22,7 +23,12 @@ import (
 	"github.com/ahodges/mcpd/internal/testfake"
 )
 
-var fastTuning = tuning{debounce: time.Millisecond, backoffBase: time.Millisecond, ttl: 20 * time.Millisecond}
+var fastTuning = tuning{
+	debounce:    time.Millisecond,
+	backoffBase: time.Millisecond,
+	ttl:         20 * time.Millisecond,
+	listTimeout: 5 * time.Second,
+}
 
 func TestCanonicalIdsFlattenEveryBackendThroughARealRegistry(t *testing.T) {
 	reg := httpRegistry(t, testfake.New("github", tool("create_pull_request")), testfake.New("infra", tool("kubectl_logs")))
@@ -47,22 +53,125 @@ func TestCanonicalIdsFlattenEveryBackendThroughARealRegistry(t *testing.T) {
 }
 
 func TestDeadBackendDoesNotSinkTheCatalog(t *testing.T) {
-	c := newTestCatalog(t, stubSource{
-		"alpha": staticLister{tools: []*mcp.Tool{tool("kubectl_logs"), tool("kubectl_get")}},
-		"beta":  errLister{err: errSpawn},
-	}, fastTuning)
+	// A failed read excludes the backend; a superseded one is not a failure and
+	// must leave both its tools and its error record alone.
+	for _, tc := range []struct {
+		name     string
+		err      error
+		wantErr  string
+		wantKept bool
+	}{
+		{name: "a failed read excludes the backend", err: errSpawn, wantErr: errSpawn.Error()},
+		{name: "a superseded read changes nothing", err: fmt.Errorf("backend beta: list tools: %w", backend.ErrStaleGeneration), wantKept: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			beta := serving(tool("beta_tool"))
+			c := newTestCatalog(t, stubSource{
+				"alpha": serving(tool("kubectl_logs"), tool("kubectl_get")),
+				"beta":  beta,
+			}, fastTuning)
 
-	// Refreshed in order rather than through RefreshAll: the failure has to be
-	// processed after the success, or an implementation that discards the whole
-	// catalog on one failure passes on scheduling luck.
-	c.Refresh(t.Context(), "alpha")
-	c.Refresh(t.Context(), "beta")
+			// Refreshed in order rather than through RefreshAll: the failure has to be
+			// processed after the successes, or an implementation that discards the whole
+			// catalog on one failure passes on scheduling luck.
+			c.Refresh(t.Context(), "alpha")
+			c.Refresh(t.Context(), "beta")
+			beta.set(tc.err)
+			c.Refresh(t.Context(), "beta")
 
-	if got, want := ids(c), []string{"mcp__alpha__kubectl_get", "mcp__alpha__kubectl_logs"}; !slices.Equal(got, want) {
-		t.Errorf("ids = %v, want %v: beta's failure must not sink alpha's tools", got, want)
+			want := []string{"mcp__alpha__kubectl_get", "mcp__alpha__kubectl_logs"}
+			if tc.wantKept {
+				want = append(want, "mcp__beta__beta_tool")
+				slices.Sort(want)
+			}
+			if got := ids(c); !slices.Equal(got, want) {
+				t.Errorf("ids = %v, want %v", got, want)
+			}
+			if got := c.Errors()["beta"]; !strings.Contains(got, tc.wantErr) || (tc.wantErr == "" && got != "") {
+				t.Errorf("recorded error for beta = %q, want %q", got, tc.wantErr)
+			}
+		})
 	}
-	if got := c.Errors()["beta"]; !strings.Contains(got, errSpawn.Error()) {
-		t.Errorf("recorded error for beta = %q, want it to name %q", got, errSpawn)
+}
+
+func TestADownBackendIsRelistedWhenItRecovers(t *testing.T) {
+	alpha := failing(errSpawn)
+	tune := fastTuning
+	tune.ttl = 20 * time.Millisecond
+	c := newTestCatalog(t, stubSource{"alpha": alpha}, tune)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	c.RefreshAll(ctx)
+	if c.Errors()["alpha"] == "" {
+		t.Fatal("a backend that failed to list was not recorded")
+	}
+
+	c.Start(ctx)
+	alpha.set(nil, tool("kubectl_logs"))
+
+	// Nothing else can re-list it: tool-list-changed needs a live session and a
+	// reconnect needs one to have been lost. Without the TTL trigger a backend that
+	// was down at startup stays invisible until an operator re-indexes by hand.
+	waitFor(t, func() bool {
+		_, ok := c.Lookup("mcp__alpha__kubectl_logs")
+		return ok
+	})
+	if got := c.Errors()["alpha"]; got != "" {
+		t.Errorf("recorded error %q survived a successful re-list", got)
+	}
+}
+
+func TestAHungListBecomesARecordedFailure(t *testing.T) {
+	hung := serving(tool("kubectl_logs"))
+	hung.block = make(chan struct{}) // never released
+	tune := fastTuning
+	tune.listTimeout = 20 * time.Millisecond
+	c := newTestCatalog(t, stubSource{"alpha": hung}, tune)
+
+	done := make(chan struct{})
+	go func() { c.Refresh(context.Background(), "alpha"); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("an unanswered tools/list parked the refresh loop, so WaitIdle and RefreshAll would never return")
+	}
+
+	if c.Errors()["alpha"] == "" {
+		t.Error("a backend that never answered records no error, so it looks healthy while never refreshing")
+	}
+	c.WaitIdle()
+}
+
+func TestAPathologicalBackendBacksOffAndIsCappedAtTheTTL(t *testing.T) {
+	measured := newCatalog(stubSource{}, filepath.Join(t.TempDir(), "catalog.json"), tuning{
+		backoffBase: 250 * time.Millisecond,
+		ttl:         time.Second,
+	})
+	for i, want := range []time.Duration{250 * time.Millisecond, 500 * time.Millisecond, time.Second, time.Second, time.Second} {
+		if got := measured.backoff(i + 1); got != want {
+			t.Errorf("backoff(%d) = %s, want %s", i+1, got, want)
+		}
+	}
+
+	// A backend that reports a change on every read must be polled at the cap, not
+	// spun on.
+	var c *Catalog
+	alpha := serving(tool("kubectl_logs"))
+	alpha.onRead = func() { c.Trigger("alpha") }
+	tune := fastTuning
+	tune.backoffBase, tune.ttl = 10*time.Millisecond, 20*time.Millisecond
+	c = newTestCatalog(t, stubSource{"alpha": alpha}, tune)
+
+	go c.Refresh(context.Background(), "alpha")
+	time.Sleep(200 * time.Millisecond)
+
+	switch n := alpha.calls.Load(); {
+	case n > 30:
+		t.Errorf("reads = %d in 200ms with a 10ms base and a 20ms cap: the loop is spinning rather than backing off", n)
+	case n < 2:
+		t.Errorf("reads = %d: the loop stopped instead of polling at the cap", n)
 	}
 }
 
@@ -117,6 +226,31 @@ func TestTriggerDuringTheFollowUpCausesAThirdRead(t *testing.T) {
 	}
 }
 
+func TestAnAbandonedRefreshDoesNotDropAPendingTrigger(t *testing.T) {
+	fake := testfake.New("alpha", tool("kubectl_logs"), tool("kubectl_get"))
+	gate := holdLists(t, fake, 1)
+	c := newTestCatalog(t, stubSource{"alpha": listerFor(t, fake)}, fastTuning)
+
+	// A manual re-index arrives on a request context and the client disconnects
+	// while the read is in flight. The notification that landed in between belongs
+	// to the daemon, not to that request.
+	ctx, cancel := context.WithCancel(context.Background())
+	go c.Refresh(ctx, "alpha")
+	waitFor(t, func() bool { return fake.ListCalls.Load() == 1 })
+
+	fake.SetTools(tool("kubectl_logs"))
+	c.Trigger("alpha")
+	cancel()
+	gate.release(1)
+
+	waitFor(t, func() bool { return fake.ListCalls.Load() == 2 })
+	c.WaitIdle()
+
+	if got, want := ids(c), []string{"mcp__alpha__kubectl_logs"}; !slices.Equal(got, want) {
+		t.Errorf("ids = %v, want %v: the follow-up read must still commit", got, want)
+	}
+}
+
 func TestABurstOfTriggersCollapsesIntoOneRead(t *testing.T) {
 	fake := testfake.New("alpha", tool("kubectl_logs"))
 	tune := fastTuning
@@ -143,10 +277,11 @@ func TestABurstOfTriggersCollapsesIntoOneRead(t *testing.T) {
 func TestASlowBackendDoesNotBlockAFastOne(t *testing.T) {
 	// The slow backend sorts first, so a refresh that fanned out in name order
 	// rather than concurrently would never reach the fast one.
-	slow := &blockingLister{release: make(chan struct{}), tools: []*mcp.Tool{tool("slow_tool")}}
+	slow := serving(tool("slow_tool"))
+	slow.block = make(chan struct{})
 	c := newTestCatalog(t, stubSource{
 		"blocked": slow,
-		"quick":   staticLister{tools: []*mcp.Tool{tool("kubectl_logs"), tool("kubectl_get")}},
+		"quick":   serving(tool("kubectl_logs"), tool("kubectl_get")),
 	}, fastTuning)
 
 	done := make(chan struct{})
@@ -156,7 +291,7 @@ func TestASlowBackendDoesNotBlockAFastOne(t *testing.T) {
 	if got := c.Errors()["blocked"]; got != "" {
 		t.Errorf("the slow backend was recorded as failed while still reading: %q", got)
 	}
-	close(slow.release)
+	close(slow.block)
 	<-done
 
 	if n := len(c.Entries()); n != 3 {
@@ -184,9 +319,13 @@ func TestALifecycleTransitionAfterTheReadDoesNotCommit(t *testing.T) {
 
 func TestAPersistedCatalogAnswersBeforeAnyBackendIsRead(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "catalog.json")
-	written := newCatalog(stubSource{"alpha": staticLister{tools: []*mcp.Tool{tool("kubectl_logs")}}}, path, fastTuning)
+	written := newCatalog(stubSource{
+		"alpha": serving(tool("kubectl_logs")),
+		"ghost": serving(tool("removed_tool")),
+	}, path, fastTuning)
 	written.RefreshAll(t.Context())
 
+	// ghost is gone from the config on restart, as after a rename.
 	restarted := newCatalog(stubSource{"alpha": refusingLister{t: t}}, path, fastTuning)
 	if err := restarted.Load(); err != nil {
 		t.Fatalf("load: %v", err)
@@ -195,12 +334,56 @@ func TestAPersistedCatalogAnswersBeforeAnyBackendIsRead(t *testing.T) {
 	if _, ok := restarted.Lookup("mcp__alpha__kubectl_logs"); !ok {
 		t.Error("the persisted catalog does not answer, so a restart serves nothing until every backend is re-listed")
 	}
+	if _, ok := restarted.Lookup("mcp__ghost__removed_tool"); ok {
+		t.Error("a de-configured backend's tools were restored; nothing ever removes them and every call to one fails at dispatch")
+	}
+}
+
+func TestAnOlderSnapshotCannotRenameOverANewerOne(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "catalog.json")
+	src := stubSource{"alpha": serving(tool("kubectl_logs")), "beta": serving(tool("beta_tool"))}
+	c := newCatalog(src, path, fastTuning)
+	t.Cleanup(func() { stopAll(c, src.names()) })
+
+	// The first save marshals one backend and parks before its rename. If a second
+	// save can marshal both backends and land while it waits, the parked save then
+	// renames the older document over the newer one, and a restart loses a backend
+	// that was listed successfully.
+	var once sync.Once
+	parked, resume := make(chan struct{}), make(chan struct{})
+	c.beforeRename = func() {
+		once.Do(func() {
+			close(parked)
+			<-resume
+		})
+	}
+
+	go c.Refresh(context.Background(), "alpha")
+	<-parked
+	second := make(chan struct{})
+	go func() { c.Refresh(context.Background(), "beta"); close(second) }()
+	select {
+	case <-second:
+	case <-time.After(200 * time.Millisecond):
+		// Serialised behind the parked save, which is the point.
+	}
+	close(resume)
+	<-second
+
+	reloaded := newCatalog(src, path, fastTuning)
+	if err := reloaded.Load(); err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if got, want := len(reloaded.Entries()), 2; got != want {
+		t.Errorf("persisted %d entries, want %d: an older snapshot renamed over a newer one", got, want)
+	}
 }
 
 func TestStopRefreshAwaitsTheInFlightRead(t *testing.T) {
 	// The first read commits, the second parks, so the assertions can tell an
 	// evicted catalog from an untouched one.
-	slow := &blockingLister{release: make(chan struct{}), tools: []*mcp.Tool{tool("kubectl_logs")}, passes: 1}
+	slow := serving(tool("kubectl_logs"))
+	slow.block, slow.passes = make(chan struct{}), 1
 	c := newTestCatalog(t, stubSource{"alpha": slow}, fastTuning)
 	c.Refresh(t.Context(), "alpha")
 
@@ -236,16 +419,6 @@ func (s stubSource) lister(name string) (lister, bool) {
 	return l, ok
 }
 
-type staticLister struct{ tools []*mcp.Tool }
-
-func (l staticLister) ListTools(context.Context) ([]*mcp.Tool, error) { return l.tools, nil }
-func (l staticLister) Generation() uint64                             { return 1 }
-
-type errLister struct{ err error }
-
-func (l errLister) ListTools(context.Context) ([]*mcp.Tool, error) { return nil, l.err }
-func (l errLister) Generation() uint64                             { return 1 }
-
 type refusingLister struct{ t *testing.T }
 
 func (l refusingLister) ListTools(context.Context) ([]*mcp.Tool, error) {
@@ -254,30 +427,54 @@ func (l refusingLister) ListTools(context.Context) ([]*mcp.Tool, error) {
 }
 func (l refusingLister) Generation() uint64 { return 1 }
 
-// blockingLister serves its first passes reads immediately and parks every read
-// after that until released or cancelled.
-type blockingLister struct {
-	release chan struct{}
-	tools   []*mcp.Tool
+// fakeLister is one configurable stand-in for a backend: it serves a tool set or
+// an error, either of which a test can swap mid-run, optionally parks every read
+// after the first passes of them, and optionally runs a hook inside each read.
+type fakeLister struct {
 	passes  int64
+	block   chan struct{}
+	onRead  func()
 	calls   atomic.Int64
 	reading atomic.Bool
+
+	mu    sync.Mutex
+	tools []*mcp.Tool
+	err   error
 }
 
-func (l *blockingLister) ListTools(ctx context.Context) ([]*mcp.Tool, error) {
-	if l.calls.Add(1) <= l.passes {
-		return l.tools, nil
-	}
-	l.reading.Store(true)
-	defer l.reading.Store(false)
-	select {
-	case <-l.release:
-		return l.tools, nil
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
+func serving(tools ...*mcp.Tool) *fakeLister { return &fakeLister{tools: tools} }
+
+func failing(err error) *fakeLister { return &fakeLister{err: err} }
+
+func (l *fakeLister) set(err error, tools ...*mcp.Tool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.tools, l.err = tools, err
 }
-func (l *blockingLister) Generation() uint64 { return 1 }
+
+func (l *fakeLister) ListTools(ctx context.Context) ([]*mcp.Tool, error) {
+	reads := l.calls.Add(1)
+	if l.onRead != nil {
+		l.onRead()
+	}
+	if l.block != nil && reads > l.passes {
+		l.reading.Store(true)
+		defer l.reading.Store(false)
+		select {
+		case <-l.block:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.err != nil {
+		return nil, l.err
+	}
+	return l.tools, nil
+}
+
+func (l *fakeLister) Generation() uint64 { return 1 }
 
 // scriptedLister serves a canned sequence of reads and generations, so a test
 // can move the generation between the sample taken after a read and the check
@@ -407,7 +604,7 @@ func httpRegistry(t *testing.T, fakes ...*testfake.Fake) *backend.Registry {
 		})
 		cfg.Backends[f.Name] = config.Backend{Name: f.Name, HTTPURL: srv.URL, TimeoutSec: 10}
 	}
-	return backend.NewRegistry(cfg, nil)
+	return backend.NewRegistry(cfg, backend.Hooks{})
 }
 
 func ids(c *Catalog) []string {

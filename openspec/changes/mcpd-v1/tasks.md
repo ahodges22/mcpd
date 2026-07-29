@@ -120,12 +120,16 @@
 - [ ] 11.2 Implement `cmd/mcpd serve`: one mux, both MCP handlers sharing the guard's
       protection value, overrides loaded before connecting, graceful shutdown draining and
       terminating children
-- [ ] 11.3 Write the systemd user unit, relying on the existing user environment import
+- [ ] 11.3 Wire all four catalog refresh triggers: `catalog.Start(ctx)` covers TTL expiry, and
+      `backend.Hooks{ToolListChanged, Reconnected}` both point at `Catalog.Trigger`. The
+      mechanisms are built in Tasks 3 and 4; only the wiring is left, and an unwired hook is a
+      silently stale catalog
+- [ ] 11.4 Write the systemd user unit, relying on the existing user environment import
       rather than an environment file
-- [ ] 11.4 Build, install, enable, and confirm the status endpoint answers with backends up.
+- [ ] 11.5 Build, install, enable, and confirm the status endpoint answers with backends up.
       A backend that is down here is a missing passthrough variable, to be added rather than
       worked around by inheriting everything
-- [ ] 11.5 Commit
+- [ ] 11.6 Commit
 
 ## 12. Client wiring
 
