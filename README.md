@@ -1,0 +1,83 @@
+# mcpd
+
+A local MCP proxy: one daemon fronting many MCP backends for every coding agent on
+this machine, with built-in tool search, a status UI, and browser-triggered OAuth.
+
+Status: **in development.** Phase 0 (OAuth feasibility) is complete; see
+[`PHASE0.md`](PHASE0.md). No daemon yet.
+
+## Why
+
+Four local agents (Claude Code, Codex, Cursor CLI, OpenCode, plus Zed over ACP) each
+maintain their own MCP configuration against the same backends. That produces four
+problems at once:
+
+1. **Token bloat in clients without native tool search.** Cursor CLI and OpenCode
+   load every tool schema up front. Claude Code and Codex have native tool search and
+   do not.
+2. **OAuth-gated backends are unusable through a proxy** without an OAuth client.
+3. **No visibility when a backend dies.** Failures are silent, and over ACP there is
+   no MCP status surface at all.
+4. **Config sprawl.** Adding a backend means editing four files.
+
+## Shape
+
+```
+                    +------------------------------ mcpd (systemd --user) ---+
+claude code --+     |                                                        |
+codex       --+---> |  /mcp/passthrough  -+                                  |
+              |     |                     +-> session manager --> backends   |
+cursor cli  --+---> |  /mcp/search       -+        |                         |
+opencode    --+     |                              +- catalog + embeddings   |
+zed (acp)   --+     |  /            web UI  -------+                         |
+                    |  /oauth/callback      -------+- token store            |
+                    +--------------------------------------------------------+
+                       127.0.0.1:7420 (loopback only)
+```
+
+Clients that already have native tool search get `/mcp/passthrough`, so their own
+search ranks against real schemas. Clients that do not get `/mcp/search`, a
+three-tool facade (`search_tools`, `describe_tool`, `call_tool`). Stacking two
+search layers ranks worse than either alone, which is why the mode is per client.
+
+## Design
+
+The full design lives outside this repo, in the Obsidian vault:
+`_plans/art-agent-scratch/2026-07-28-mcpd-local-mcp-proxy-design.md`, with the
+implementation plan alongside it. Both went through ten rounds of adversarial review.
+
+Load-bearing decisions, in case the spec is not to hand:
+
+- **At-most-once `tools/call`.** Reconnect only when no send was attempted. A write
+  that returns an error is not evidence the upstream did not act, so it is never
+  replayed. The catalog includes tools that mutate infrastructure and open pull
+  requests.
+- **Least-privilege child environments.** Every stdio child gets a constructed
+  `cmd.Env`: a curated base, plus that backend's declared `env`, plus its declared
+  `env_passthrough`. Never `nil`, which would inherit every credential the daemon
+  holds and hand them to third-party npm code.
+- **Origin-guarded loopback.** DNS-rebinding protection stays on, and one
+  `http.CrossOriginProtection` is shared between the MCP endpoints and the web routes
+  so the two cannot drift apart.
+- **Config is yours.** `~/.config/mcpd/config.json` is written by you and never by
+  the daemon. Runtime state lives under `~/.local/state/mcpd/`.
+
+## Build
+
+```bash
+go build ./...
+go test ./... -race
+```
+
+Requires Go 1.25 or later, for `http.CrossOriginProtection`.
+
+## Phase 0 probe
+
+```bash
+go run ./cmd/oauthprobe -server https://mcp.notion.com/mcp
+go run ./cmd/oauthprobe -server https://mcp.notion.com/mcp -register  # creates a client
+```
+
+Answers whether a server supports metadata discovery, Dynamic Client Registration,
+and a plain-HTTP loopback redirect URI. Useful for any new OAuth-gated backend, not
+just Notion.
