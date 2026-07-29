@@ -60,16 +60,25 @@ service SHALL degrade ranking to lexical-only rather than failing the request.
 
 ### Requirement: Abstention is computed from raw evidence
 
-The facade SHALL signal low confidence from the best raw cosine similarity and the best
-raw lexical score, and SHALL NOT derive confidence from the fused score. The fused score
+The facade SHALL signal low confidence from the best raw cosine similarity, and SHALL NOT
+derive confidence from the fused score.
+
+Cosine is the only thresholded signal. The lexical scorer is an unnormalised idf sum whose
+magnitude tracks matched-term count and term rarity, so its scores are not comparable
+across queries: applying this requirement's own calibration rule to a mixed-length query
+set finds no separating gap under any of five normalisation variants (raw, and divided by
+total idf, matchable idf, query length, and matched-term count). A signal the rule disables
+in every variant cannot be part of an AND. Cosine similarity is on an absolute scale and is
+comparable across queries, which is the property this requirement depends on. The lexical
+bound is still computed by the same rule and recorded, but nothing reads it. The fused score
 encodes rank position and ranker agreement rather than relevance: the top result of a
 hopeless query scores about the same as the top result of an easy one, so no threshold on
 it can distinguish the two.
 
 #### Scenario: A query nothing serves is flagged
 
-- **WHEN** a query has no good match in the catalog and both raw signals fall below their
-  thresholds
+- **WHEN** a query has no good match in the catalog and the best raw cosine similarity
+  falls below its threshold
 - **THEN** candidates are still returned but flagged low-confidence rather than presented
   as answers
 

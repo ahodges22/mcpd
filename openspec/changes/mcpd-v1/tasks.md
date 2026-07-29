@@ -160,11 +160,20 @@
       any tuning
 - [ ] 13.3 Write the separate negative calibration and negative validation query sets
 - [ ] 13.4 Implement `cmd/evalrank`, exiting non-zero when any expected tool is absent
-      rather than scoring a shrunken denominator
-- [ ] 13.5 Record the baseline, then calibrate thresholds and score the validation set
+      rather than scoring a shrunken denominator, and asserting the catalog is fully
+      vectorized before calibrating: a partially warm cache reports comparable cosine
+      evidence over only a subset, biasing the answerable floor down and potentially
+      erasing a real gap
+- [ ] 13.5 Include the embedding model and dimension in the cache key, and decide the
+      on-disk format change and pruning that implies. A calibrated cosine threshold is only
+      valid for the model that produced the vectors, so a model swap behind an unchanged key
+      silently invalidates it. Complementary to Task 7's comparability check, which catches
+      a gateway remap behind an unchanged model name but cannot catch a model change at
+      unchanged dimension
+- [ ] 13.6 Record the baseline, then calibrate thresholds and score the validation set
       exactly once
-- [ ] 13.6 Iterate on fusion only if the gate fails, watching the held-out versus tuned gap
-- [ ] 13.7 Commit
+- [ ] 13.7 Iterate on fusion only if the gate fails, watching the held-out versus tuned gap
+- [ ] 13.8 Commit
 
 ## 14. Live provider acceptance
 
