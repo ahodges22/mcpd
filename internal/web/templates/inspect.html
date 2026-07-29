@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>mcpd inspector: {{.Name}}</title>
+<link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+<h1>{{.Name}}</h1>
+<p><a href="/">Back to status</a></p>
+{{if not .Tools}}<p class="note">No tools in the catalog for this backend.</p>{{end}}
+{{range .Tools}}
+<section class="tool" data-id="{{.ID}}" data-confirm="{{.Confirm}}">
+<h2>{{.Tool}}</h2>
+{{if .Confirm}}<p class="warn">This tool is {{.Confirm}}, so invoking it asks for confirmation.</p>{{end}}
+<p class="desc">{{.Description}}</p>
+<pre class="schema">{{.Schema}}</pre>
+<label>Arguments as JSON <textarea class="args" rows="4" cols="60">{}</textarea></label>
+<button class="invoke">Invoke</button>
+<pre class="result"></pre>
+</section>
+{{end}}
+<script src="/assets/app.js"></script>
+</body>
+</html>

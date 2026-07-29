@@ -62,6 +62,31 @@ Load-bearing decisions, in case the spec is not to hand:
 - **Config is yours.** `~/.config/mcpd/config.json` is written by you and never by
   the daemon. Runtime state lives under `~/.local/state/mcpd/`.
 
+## Security posture
+
+State it plainly, because the mitigations only make sense against it.
+
+- **Local processes are trusted.** mcpd has no user authentication. Any process
+  running as this user can reach the daemon and can therefore call any tool any
+  backend offers. This is not equivalent to the situation before mcpd existed:
+  introducing an HTTP surface where there was none is a real increase in exposure,
+  and everything below exists because of it.
+- **A hostile stdio backend is not contained.** It runs as the same user, so it can
+  read the token store and every other credential file this account owns. The
+  constructed `cmd.Env` addresses accidental credential grants and makes what a
+  backend was given auditable. It is not a sandbox.
+- **Browser-originated requests are the part that is actually mitigated.** The
+  listener binds loopback only. One `http.CrossOriginProtection` is shared by the MCP
+  endpoints and the web routes, so a page in an open tab on another origin is
+  rejected on both, and the SDK's DNS-rebinding check stays enabled. Every state
+  change requires a POST with a JSON content type, which a cross-origin form
+  submission cannot produce, so no state change is reachable by navigation or an
+  image load. The OAuth callback is the single exemption, being necessarily a
+  top-level GET, and is protected by its one-time `state` nonce instead. Pages carry
+  `Content-Security-Policy: default-src 'self'`, all backend-derived text is escaped
+  by `html/template` or inserted with `textContent`, and a test walks the embedded
+  assets to keep it that way.
+
 ## Build
 
 ```bash

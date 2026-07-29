@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>mcpd</title>
+<link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+<h1>mcpd</h1>
+<p>{{.ToolCount}} tools in the catalog</p>
+<p class="actions">
+  <button class="act" data-post="/api/reconnect-all">Reconnect all</button>
+  <button class="act" data-post="/api/reindex">Re-index catalog</button>
+</p>
+<p class="note" id="note"></p>
+<table>
+<thead>
+<tr><th>Backend</th><th>State</th><th>Transport</th><th>Tools</th><th>Last read</th><th>Auth</th><th>Error</th><th>Actions</th></tr>
+</thead>
+<tbody>
+{{range .Backends}}
+<tr>
+<td>{{.Name}}</td>
+<td class="state">{{.Label}}</td>
+<td>{{.Transport}}</td>
+<td>{{.ToolCount}}</td>
+<td>{{.RefreshedAt}}</td>
+<td>{{.AuthNote}}</td>
+<td class="err">{{.LastErr}} {{.CatalogError}}</td>
+<td>
+<a href="/inspect/{{.Name}}">Inspect</a>
+<button class="act" data-post="/api/backends/{{.Name}}/enable">Turn on</button>
+<button class="act" data-post="/api/backends/{{.Name}}/disable">Turn off</button>
+<button class="act" data-post="/api/backends/{{.Name}}/reconnect">Reconnect</button>
+{{if .OAuth}}<button class="act" data-post="/api/backends/{{.Name}}/authorize">Authenticate</button>{{end}}
+</td>
+</tr>
+{{end}}
+</tbody>
+</table>
+<script src="/assets/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,44 @@
+body {
+  font: 14px/1.5 system-ui, sans-serif;
+  margin: 2rem;
+  max-width: 70rem;
+}
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+th,
+td {
+  border-bottom: 1px solid #ddd;
+  padding: 0.35rem 0.6rem;
+  text-align: left;
+  vertical-align: top;
+}
+
+.err,
+.warn {
+  color: #a00;
+}
+
+.note {
+  color: #555;
+}
+
+.tool {
+  border-top: 1px solid #ddd;
+  padding-top: 0.5rem;
+}
+
+pre {
+  background: #f6f6f6;
+  overflow-x: auto;
+  padding: 0.5rem;
+  white-space: pre-wrap;
+}
+
+textarea {
+  display: block;
+  font-family: ui-monospace, monospace;
+}
