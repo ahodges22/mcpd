@@ -77,13 +77,13 @@
 
 ## 8. The two MCP endpoints
 
-- [ ] 8.1 Write the failing tests: the facade advertises exactly three tools; pass-through
+- [x] 8.1 Write the failing tests: the facade advertises exactly three tools; pass-through
       advertises canonical names; a call reaches the owning backend; an empty catalog is
       explained rather than silently empty
-- [ ] 8.2 Implement the facade server with `search_tools`, `describe_tool`, `call_tool`
-- [ ] 8.3 Implement the pass-through server, syncing tools on catalog change so the SDK
+- [x] 8.2 Implement the facade server with `search_tools`, `describe_tool`, `call_tool`
+- [x] 8.3 Implement the pass-through server, syncing tools on catalog change so the SDK
       emits tool-list-changed
-- [ ] 8.4 Tests green, then commit
+- [x] 8.4 Tests green, then commit
 
 ## 9. Guard, status page, and inspector
 
@@ -126,19 +126,31 @@
       backend that loaded disabled: a crash between Task 5's override write and its tool
       eviction leaves that backend's tools in the persisted catalog, and a disabled backend
       is never re-listed, so nothing else would ever remove them
-- [ ] 11.3 Wire all four catalog refresh triggers: `catalog.Start(ctx)` covers TTL expiry, and
+- [ ] 11.3 Wire embeddings into ranking: add the gateway URL, key, and model to config, call
+      `embedding.Vectorize` at catalog-refresh time per the spec, and supply the query vector
+      to `rank.Fuse`. Until this lands, fusion degenerates to lexical-only and abstention is
+      provably inert (`qvec` always nil, so `HasCosine` is always false), which makes Tasks 6
+      and 7 dead code in production
+- [ ] 11.4 Wire `mcpsrv.Passthrough.Sync` to a catalog POST-COMMIT hook, invoked outside the
+      catalog mutex. The existing tool-list-changed hook fires pre-commit and so would sync
+      against stale entries, and `Sync` holds its own lock across `cat.Entries()`. Without
+      this, nothing calls `Sync` and the pass-through tool set never changes after startup.
+      **Contract, verified by review:** fire the hook only after `c.mu` is released for that
+      commit, at the same point `commit`/`exclude`/`Drop` already call `persist()`. Never
+      from inside the locked critical section
+- [ ] 11.5 Wire all four catalog refresh triggers: `catalog.Start(ctx)` covers TTL expiry, and
       `backend.Hooks{ToolListChanged, Reconnected}` both point at `Catalog.Trigger`. The
       mechanisms are built in Tasks 3 and 4; only the wiring is left, and an unwired hook is a
       silently stale catalog. Task 5 added three more hooks that must also be wired, or a
       disable stops being a kill switch: `StopRefresh` to `Catalog.StopRefresh`, `DropTools`
       to `Catalog.Drop`, and `Refresh` to `Catalog.Trigger`. `NewRegistry` now also takes the
       `*backend.Overrides` loaded from the state directory
-- [ ] 11.4 Write the systemd user unit, relying on the existing user environment import
+- [ ] 11.6 Write the systemd user unit, relying on the existing user environment import
       rather than an environment file
-- [ ] 11.5 Build, install, enable, and confirm the status endpoint answers with backends up.
+- [ ] 11.7 Build, install, enable, and confirm the status endpoint answers with backends up.
       A backend that is down here is a missing passthrough variable, to be added rather than
       worked around by inheriting everything
-- [ ] 11.6 Commit
+- [ ] 11.8 Commit
 
 ## 12. Client wiring
 
