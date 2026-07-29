@@ -10,15 +10,15 @@
 
 ## 2. Config and least-privilege child environments
 
-- [ ] 2.1 Write the failing tests: a declared passthrough grants `AWS_*` and `KUBECONFIG`;
+- [x] 2.1 Write the failing tests: a declared passthrough grants `AWS_*` and `KUBECONFIG`;
       a backend declaring nothing receives no credentials; the constructed environment is
       never the unset value
-- [ ] 2.2 Implement `internal/config`: loading, validation, `${VAR}` expansion, curated
+- [x] 2.2 Implement `internal/config`: loading, validation, `${VAR}` expansion, curated
       base plus declared `env` plus declared `env_passthrough`
-- [ ] 2.3 Migrate the prototype's backend list to `testdata/config.example.json`, using
+- [x] 2.3 Migrate the prototype's backend list to `testdata/config.example.json`, using
       placeholder hostnames, `${GH_PAT}` rather than a shell-only variable, and
       `env_passthrough` for the infrastructure CLI backend
-- [ ] 2.4 Tests green, then commit
+- [x] 2.4 Tests green, then commit
 
 ## 3. Backend sessions and at-most-once dispatch
 
