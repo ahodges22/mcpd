@@ -123,6 +123,55 @@ func TestADownBackendIsRelistedWhenItRecovers(t *testing.T) {
 	}
 }
 
+func TestAChattyBackendDoesNotStopTheTTLTriggerForOthers(t *testing.T) {
+	// chatty reports a change on every read, so by design its refresh loop never
+	// exits. A tick that waited on that loop would freeze the TTL trigger for every
+	// other backend for the life of the process.
+	var c *Catalog
+	chatty := serving(tool("chatty_tool"))
+	chatty.onRead = func() { c.Trigger("chatty") }
+	quiet := serving(tool("quiet_tool"))
+	tune := fastTuning
+	tune.backoffBase, tune.ttl = 10*time.Millisecond, 20*time.Millisecond
+	c = newTestCatalog(t, stubSource{"chatty": chatty, "quiet": quiet}, tune)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	c.Start(ctx)
+	waitFor(t, func() bool {
+		_, ok := c.Lookup("mcp__quiet__quiet_tool")
+		return ok
+	})
+
+	// quiet never notifies, so only a later tick can notice this.
+	quiet.set(nil, tool("renamed_tool"))
+	waitFor(t, func() bool {
+		_, ok := c.Lookup("mcp__quiet__renamed_tool")
+		return ok
+	})
+}
+
+func TestTheListDeadlineDoesNotTruncateTheHandshake(t *testing.T) {
+	// A backend allowed a longer handshake than the catalog's list budget must not be
+	// cut off at the list budget: a cold npx fetch is slower than any list.
+	const handshake = 200 * time.Millisecond
+	slow := serving(tool("kubectl_logs"))
+	slow.block, slow.connect = make(chan struct{}), handshake
+	tune := fastTuning
+	tune.listTimeout = 20 * time.Millisecond
+	c := newTestCatalog(t, stubSource{"alpha": slow}, tune)
+
+	start := time.Now()
+	c.Refresh(t.Context(), "alpha")
+
+	if elapsed := time.Since(start); elapsed < handshake {
+		t.Errorf("the read was abandoned after %s, but this backend's handshake budget alone is %s: a backend with a slow cold start would never be catalogued", elapsed, handshake)
+	}
+	if c.Errors()["alpha"] == "" {
+		t.Error("a read that exhausted its whole budget was not recorded as a failure")
+	}
+}
+
 func TestAHungListBecomesARecordedFailure(t *testing.T) {
 	hung := serving(tool("kubectl_logs"))
 	hung.block = make(chan struct{}) // never released
@@ -419,7 +468,16 @@ func (s stubSource) lister(name string) (lister, bool) {
 	return l, ok
 }
 
-type refusingLister struct{ t *testing.T }
+// noHandshake gives a stub lister the third lister method. Zero means the stub
+// never connects, so the catalog's read budget is its list budget alone.
+type noHandshake struct{ connect time.Duration }
+
+func (h noHandshake) ConnectTimeout() time.Duration { return h.connect }
+
+type refusingLister struct {
+	noHandshake
+	t *testing.T
+}
 
 func (l refusingLister) ListTools(context.Context) ([]*mcp.Tool, error) {
 	l.t.Error("the restarted catalog listed a backend; the point of persistence is answering before that")
@@ -431,6 +489,7 @@ func (l refusingLister) Generation() uint64 { return 1 }
 // an error, either of which a test can swap mid-run, optionally parks every read
 // after the first passes of them, and optionally runs a hook inside each read.
 type fakeLister struct {
+	noHandshake
 	passes  int64
 	block   chan struct{}
 	onRead  func()
@@ -480,6 +539,7 @@ func (l *fakeLister) Generation() uint64 { return 1 }
 // can move the generation between the sample taken after a read and the check
 // taken at commit without depending on scheduling.
 type scriptedLister struct {
+	noHandshake
 	mu    sync.Mutex
 	reads [][]*mcp.Tool
 	gens  []uint64
@@ -505,7 +565,10 @@ func (l *scriptedLister) Generation() uint64 {
 
 // sessionLister drives a testfake over a real client session, so coalescing is
 // asserted on the fake's tools/list counter rather than on a stub's bookkeeping.
-type sessionLister struct{ sess *mcp.ClientSession }
+type sessionLister struct {
+	noHandshake
+	sess *mcp.ClientSession
+}
 
 func (l *sessionLister) ListTools(ctx context.Context) ([]*mcp.Tool, error) {
 	res, err := l.sess.ListTools(ctx, nil)

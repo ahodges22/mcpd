@@ -232,6 +232,13 @@ func (b *Backend) cancelConnect() {
 	}
 }
 
+// ConnectTimeout reports the handshake budget this backend is configured to
+// allow. A caller that imposes its own deadline on an operation which may have to
+// connect must allow at least this much on top of its own budget, or it silently
+// truncates a handshake the configuration permits. A cold `npx` fetch is the case
+// this exists for.
+func (b *Backend) ConnectTimeout() time.Duration { return b.connectTimeout() }
+
 func (b *Backend) connectTimeout() time.Duration {
 	if b.spec.TimeoutSec > 0 {
 		return time.Duration(b.spec.TimeoutSec) * time.Second

@@ -29,9 +29,11 @@ const (
 
 	defaultDebounce    = 250 * time.Millisecond
 	defaultBackoffBase = 250 * time.Millisecond
-	// defaultListTimeout bounds one tools/list. Without it a backend that accepts
+	// defaultListTimeout bounds the list itself. Without it a backend that accepts
 	// the connection and never answers parks its refresh loop for good: config's
-	// per-backend timeout is optional and defaults to none.
+	// per-backend timeout is optional and defaults to none. It is added to the
+	// backend's own handshake budget rather than replacing it, so a slow cold start
+	// is never truncated by a deadline the user did not configure.
 	defaultListTimeout = 30 * time.Second
 )
 
@@ -52,6 +54,8 @@ type Entry struct {
 type lister interface {
 	ListTools(context.Context) ([]*mcp.Tool, error)
 	Generation() uint64
+	// ConnectTimeout is the handshake budget the read deadline must sit on top of.
+	ConnectTimeout() time.Duration
 }
 
 // backends is the part of *backend.Registry the catalog reads.
@@ -156,7 +160,8 @@ func (c *Catalog) Errors() map[string]string {
 // Start runs the TTL trigger until ctx is done: every backend is re-listed on
 // each tick. This is what recovers a backend that was unreachable when the daemon
 // started, and what keeps a backend that never sends tool-list-changed (the
-// notification is optional) from going stale.
+// notification is optional) from going stale. ctx stops the ticker; it does not
+// bound the refreshes the ticker starts.
 func (c *Catalog) Start(ctx context.Context) {
 	go func() {
 		tick := time.NewTicker(c.tune.ttl)
@@ -166,7 +171,13 @@ func (c *Catalog) Start(ctx context.Context) {
 			case <-ctx.Done():
 				return
 			case <-tick.C:
-				c.RefreshAll(ctx)
+				// Trigger rather than RefreshAll: a tick must never wait on a refresh
+				// loop. A backend that notifies continuously has a loop that by design
+				// never exits, and waiting on it would stop the TTL trigger for every
+				// other backend for the life of the process.
+				for _, name := range c.backends.names() {
+					c.Trigger(name)
+				}
 			}
 		}
 	}()
@@ -317,7 +328,10 @@ func (c *Catalog) read(loop context.Context, server string) {
 	if !ok {
 		return
 	}
-	ctx, cancel := context.WithTimeout(loop, c.tune.listTimeout)
+	// The backend's handshake budget is added rather than shared: a read that has to
+	// connect gets the connect budget the config allows plus the list budget, so this
+	// deadline can never cut a handshake short.
+	ctx, cancel := context.WithTimeout(loop, l.ConnectTimeout()+c.tune.listTimeout)
 	defer cancel()
 
 	tools, err := l.ListTools(ctx)
