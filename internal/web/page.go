@@ -149,9 +149,11 @@ func render(w http.ResponseWriter, page string, data any) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	// Script and style are served from /assets, never inline, so 'self' is enough
-	// and inline script stays absent where the asset test can see it.
-	w.Header().Set("Content-Security-Policy", "default-src 'self'")
+	// Script and style are served from /assets, never inline, so 'self' is enough and
+	// inline script stays absent where the asset test can see it. frame-ancestors
+	// closes clickjacking of the one-click disable, reconnect and re-index buttons,
+	// which neither the Host nor the origin check covers.
+	w.Header().Set("Content-Security-Policy", "default-src 'self'; frame-ancestors 'none'")
 	w.Write(buf.Bytes())
 }
 

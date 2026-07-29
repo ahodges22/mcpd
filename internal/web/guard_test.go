@@ -2,6 +2,7 @@ package web
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -95,9 +96,53 @@ func TestThePolicyCannotDivergeBetweenSurfaces(t *testing.T) {
 	}
 }
 
+func TestAReboundHostIsRejectedOnTheWebRoutes(t *testing.T) {
+	// CrossOriginProtection reads only Sec-Fetch-Site and Origin, so a browser on a
+	// rebound name passes it: it believes it is same-origin, and may set a JSON content
+	// type freely. The Host header is the only field left that names the attacker. The
+	// MCP endpoints get this check from the SDK's handler; these routes get it here.
+	fake := testfake.New("alpha", tool("kubectl_logs"))
+	h := newHarness(t, fake)
+	h.index(t)
+
+	res := h.post(t, "/api/backends/alpha/disable", rebound("evil.example"))
+	if !res.denied() || !strings.Contains(res.body, rebindReason) {
+		t.Errorf("a rebound disable = %d %q, want %d carrying the Host rejection",
+			res.status, res.body, http.StatusForbidden)
+	}
+	if got := h.reg.Health()["alpha"].State; got == backend.StateDisabled {
+		t.Error("a rebound page disabled a backend, so every web mutation route is reachable from a remote page")
+	}
+	// Reads are covered too: cross-origin protection allows every safe method, so
+	// without the Host check a rebound page could also read the status surface.
+	if res := h.get(t, "/api/status", rebound("evil.example")); !res.denied() {
+		t.Errorf("a rebound status read = %d, want %d", res.status, http.StatusForbidden)
+	}
+	if res := h.get(t, "/api/status"); res.status != http.StatusOK {
+		t.Errorf("a loopback status read = %d, want %d: the daemon's own address must still work",
+			res.status, http.StatusOK)
+	}
+
+	for _, host := range []string{"127.0.0.1", "127.0.0.1:7420", "localhost", "localhost:7420", "[::1]", "[::1]:7420"} {
+		if !loopbackHost(host) {
+			t.Errorf("loopbackHost(%q) = false, want true", host)
+		}
+	}
+	// The rejected names include ones that merely contain a loopback name, because a
+	// substring or suffix comparison would accept an attacker-controlled host.
+	for _, host := range []string{
+		"", "evil.example", "evil.example:7420", "127.0.0.1.evil.example", "10.0.0.1",
+		"notlocalhost", "evil-localhost.example", "localhost.evil.example",
+	} {
+		if loopbackHost(host) {
+			t.Errorf("loopbackHost(%q) = true, want false", host)
+		}
+	}
+}
+
 func TestEveryMutationRouteIsRejectedOnGET(t *testing.T) {
 	h := newHarness(t, testfake.New("alpha", tool("kubectl_logs")))
-	for _, rt := range h.server.routes() {
+	for _, rt := range h.server.registered {
 		if !rt.mutates {
 			continue
 		}
@@ -117,16 +162,16 @@ func TestEveryMutationRouteIsRejectedOnGET(t *testing.T) {
 }
 
 func TestNoRouteChangesStateOnGET(t *testing.T) {
-	// The set is derived from the routes that are registered rather than from a
-	// literal, so a route added without a POST declaration is caught here. Task 10's
-	// OAuth callback becomes the single documented member.
+	// The set is derived from what was handed to the mux rather than from a literal, so
+	// a route added without a POST declaration is caught here. Task 10's OAuth callback
+	// becomes the single documented member.
 	fake := testfake.New("alpha", tool("kubectl_logs"))
 	h := newHarness(t, fake)
 	h.index(t)
 	listsBefore := fake.ListCalls.Load()
 
 	var reachable []string
-	for _, rt := range h.server.routes() {
+	for _, rt := range h.server.registered {
 		if !rt.mutates {
 			continue
 		}
@@ -134,14 +179,29 @@ func TestNoRouteChangesStateOnGET(t *testing.T) {
 			reachable = append(reachable, rt.path)
 			continue
 		}
+		path := concretePath(rt.path, "alpha")
+		// The mux is asked which pattern answers the probe, so a catch-all cannot absorb
+		// it and report a rejection that belongs to a different route.
+		if _, pattern := h.server.mux.Handler(httptest.NewRequest(http.MethodGet, path, nil)); pattern != rt.path {
+			t.Errorf("GET %s resolves to pattern %q, want %q", path, pattern, rt.path)
+		}
 		// The probe carries a JSON content type, so the method rule is the only thing
 		// that can reject it and the JSON rule cannot stand in for it.
-		if res := h.get(t, concretePath(rt.path, "alpha"), contentType("application/json")); res.status < 400 {
+		if res := h.get(t, path, contentType("application/json")); res.status < 400 {
 			reachable = append(reachable, rt.path)
 		}
 	}
 	if len(reachable) != 0 {
 		t.Errorf("routes that change state on GET = %v, want none", reachable)
+	}
+
+	// A path outside the table must reach no handler at all. A catch-all root would
+	// answer these with the status page, and would equally hide a state-changing route
+	// registered outside the table, where this enumeration cannot see it.
+	for _, path := range []string{"/favicon.ico", "/oauth/callback", "/api/backends/alpha/authorize", "/nope"} {
+		if res := h.get(t, path); res.status != http.StatusNotFound {
+			t.Errorf("GET %s = %d, want %d: an unregistered path is being answered", path, res.status, http.StatusNotFound)
+		}
 	}
 
 	if got := h.reg.Health()["alpha"].State; got != backend.StateUp {

@@ -40,6 +40,9 @@ type Server struct {
 	cat   *catalog.Catalog
 	guard *Guard
 	mux   *http.ServeMux
+	// registered is what was handed to the mux, which is what a test has to enumerate:
+	// http.ServeMux exposes no way to list the patterns it holds.
+	registered []route
 }
 
 // route is one registered path. Patterns carry no method, because the method check
@@ -55,16 +58,23 @@ func New(reg *backend.Registry, cat *catalog.Catalog, g *Guard) *Server {
 	s := &Server{reg: reg, cat: cat, guard: g, mux: http.NewServeMux()}
 	for _, rt := range s.routes() {
 		s.mux.Handle(rt.path, guardMethod(rt, rt.handler))
+		s.registered = append(s.registered, rt)
 	}
 	return s
 }
 
-// Handler is the web surface behind the shared cross-origin guard.
-func (s *Server) Handler() http.Handler { return s.guard.Protect(s.mux) }
+// Handler is the web surface behind the shared cross-origin guard and the
+// DNS-rebinding check. The Host check is outermost, because a rebound request is
+// misdirected before it is anything else.
+func (s *Server) Handler() http.Handler {
+	return s.guard.RequireLoopbackHost(s.guard.Protect(s.mux))
+}
 
 func (s *Server) routes() []route {
 	return []route{
-		{method: http.MethodGet, path: "/", handler: s.statusPage},
+		// Exact match rather than a subtree: a catch-all root answers every unknown path
+		// with the status page, which hides anything registered outside this table.
+		{method: http.MethodGet, path: "/{$}", handler: s.statusPage},
 		{method: http.MethodGet, path: "/api/status", handler: s.statusAPI},
 		{method: http.MethodGet, path: "/inspect/{name}", handler: s.inspectPage},
 		{method: http.MethodGet, path: "/assets/", handler: http.FileServerFS(assetFS).ServeHTTP},

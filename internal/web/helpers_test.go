@@ -115,6 +115,17 @@ func crossSite() reqOpt {
 	return func(r *http.Request) { r.Header.Set("Sec-Fetch-Site", "cross-site") }
 }
 
+// rebound is what a browser sends once the attacker's name resolves to loopback: it
+// believes it is on its own origin, so every origin signal says same-origin and the
+// Host header is the only field that still names the attacker.
+func rebound(host string) reqOpt {
+	return func(r *http.Request) {
+		r.Host = host
+		r.Header.Set("Origin", "http://"+host)
+		r.Header.Set("Sec-Fetch-Site", "same-origin")
+	}
+}
+
 // contentType sets only the header, so a probe can isolate the method rule from the
 // JSON rule: without it a rejected GET proves nothing about which one refused it.
 func contentType(kind string) reqOpt {

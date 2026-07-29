@@ -4,13 +4,20 @@ package web
 
 import (
 	"mime"
+	"net"
 	"net/http"
+	"net/netip"
+	"strings"
 )
 
 // denyReason is sent on a cross-origin rejection. The default deny response is
 // bare, and an operator reading a browser console needs to know which of the two
 // guards refused the request.
 const denyReason = "cross-origin request rejected: mcpd is a loopback daemon and serves no other origin"
+
+// rebindReason is sent when the Host header names something other than loopback,
+// which is what a rebound name looks like by the time it reaches this daemon.
+const rebindReason = "request rejected: the Host header is not a loopback address"
 
 // Guard holds the one cross-origin protection value every surface enforces. The
 // MCP endpoints and the web routes share it rather than constructing one each,
@@ -21,17 +28,51 @@ type Guard struct {
 }
 
 func NewGuard() *Guard {
-	p := http.NewCrossOriginProtection()
-	p.SetDenyHandler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		http.Error(w, denyReason, http.StatusForbidden)
+	g := &Guard{protection: http.NewCrossOriginProtection()}
+	g.protection.SetDenyHandler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		deny(w, denyReason)
 	}))
-	return &Guard{protection: p}
+	return g
 }
 
 // Protect wraps h in the shared cross-origin policy. The MCP handlers are wrapped
 // with this rather than through StreamableHTTPOptions.CrossOriginProtection, which
 // is deprecated, applies nothing when nil, and ignores the deny handler.
 func (g *Guard) Protect(h http.Handler) http.Handler { return g.protection.Handler(h) }
+
+// RequireLoopbackHost is the DNS-rebinding check, and it is not redundant with the
+// cross-origin policy: CrossOriginProtection reads only Sec-Fetch-Site and Origin,
+// and a browser on a rebound name believes it is same-origin, so it sends
+// Sec-Fetch-Site: same-origin and passes every other guard here, JSON content type
+// included. Only the Host header still names the attacker. The MCP endpoints get
+// the equivalent check from the SDK's own handler, which is why
+// DisableLocalhostProtection is left alone; this is the web routes' half.
+func (g *Guard) RequireLoopbackHost(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !loopbackHost(r.Host) {
+			deny(w, rebindReason)
+			return
+		}
+		h.ServeHTTP(w, r)
+	})
+}
+
+func loopbackHost(host string) bool {
+	name := host
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		name = h
+	}
+	name = strings.TrimSuffix(strings.TrimPrefix(name, "["), "]")
+	if name == "localhost" {
+		return true
+	}
+	addr, err := netip.ParseAddr(name)
+	return err == nil && addr.IsLoopback()
+}
+
+func deny(w http.ResponseWriter, reason string) {
+	http.Error(w, reason, http.StatusForbidden)
+}
 
 // guardMethod is the POST-plus-JSON rule. Cross-origin protection cannot do this
 // job: GET, HEAD and OPTIONS are safe methods to it and are always allowed, so

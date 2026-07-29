@@ -19,7 +19,13 @@ import (
 
 const scriptPayload = `<script>alert("pwned")</script>`
 
-func TestAMaliciousToolResultIsInert(t *testing.T) {
+// TestAMaliciousToolResultIsCarriedAsEscapedJSON pins the transport half of "a
+// malicious tool result is inert" and nothing more: the payload leaves the daemon as
+// escaped JSON text under a nosniff header. The DOM half, that the value is inserted
+// through textContent and never as markup, is owned by
+// TestNoMarkupInsertionAPIInTheAssets, which is the test that fails if setText
+// changes. This one passes either way, and its name now says only what it proves.
+func TestAMaliciousToolResultIsCarriedAsEscapedJSON(t *testing.T) {
 	fake := testfake.New("alpha", tool("kubectl_logs"))
 	fake.Server().AddTool(
 		&mcp.Tool{Name: "echo", InputSchema: json.RawMessage(`{"type":"object"}`)},
@@ -69,8 +75,9 @@ func TestAMaliciousToolDescriptionIsInert(t *testing.T) {
 	if !strings.Contains(res.body, "&lt;script&gt;") {
 		t.Errorf("the description was not rendered as escaped text: %s", res.body)
 	}
-	if got := res.header.Get("Content-Security-Policy"); got != "default-src 'self'" {
-		t.Errorf("Content-Security-Policy = %q, want default-src 'self'", got)
+	const csp = "default-src 'self'; frame-ancestors 'none'"
+	if got := res.header.Get("Content-Security-Policy"); got != csp {
+		t.Errorf("Content-Security-Policy = %q, want %q", got, csp)
 	}
 }
 

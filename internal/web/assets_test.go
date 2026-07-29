@@ -8,9 +8,21 @@ import (
 
 // TestNoMarkupInsertionAPIInTheAssets is a regression gate rather than a one-time
 // check: every backend-derived string, tool results most of all, reaches the DOM
-// through textContent. A one-off grep would not survive the next edit.
+// through textContent. A one-off grep would not survive the next edit. This test owns
+// the DOM half of "a malicious tool result is inert"; the transport half belongs to
+// TestAMaliciousToolResultIsCarriedAsEscapedJSON.
 func TestNoMarkupInsertionAPIInTheAssets(t *testing.T) {
 	banned := []string{"innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval(", "new Function("}
+
+	app, err := fs.ReadFile(assetFS, "assets/app.js")
+	if err != nil {
+		t.Fatalf("read app.js: %v", err)
+	}
+	// The sink is asserted positively as well as by the ban below, so deleting the
+	// helper is as visible as changing what it assigns to.
+	if !strings.Contains(string(app), "el.textContent = text;") {
+		t.Error("app.js has no textContent sink: the single insertion point is gone or renamed")
+	}
 
 	for _, tree := range []fs.FS{assetFS, templateFS} {
 		err := fs.WalkDir(tree, ".", func(path string, d fs.DirEntry, err error) error {
