@@ -22,16 +22,16 @@
 
 ## 3. Backend sessions and at-most-once dispatch
 
-- [ ] 3.1 Write `internal/testfake`: an in-process MCP backend counting list calls and side
+- [x] 3.1 Write `internal/testfake`: an in-process MCP backend counting list calls and side
       effects, with a hook to hold a list in flight
-- [ ] 3.2 Write the failing tests: a call reaches the owning backend; a backend that commits
+- [x] 3.2 Write the failing tests: a call reaches the owning backend; a backend that commits
       a side effect then drops the connection yields exactly one side effect and an
       outcome-unknown error; a write that errors after delivery does not replay
-- [ ] 3.3 Implement `internal/backend/backend.go`: transport construction with explicit
+- [x] 3.3 Implement `internal/backend/backend.go`: transport construction with explicit
       `cmd.Env`, reconnect with backoff, health record, and the `RWMutex` dispatch gate
-- [ ] 3.4 Implement `internal/backend/registry.go`: routing, lifecycle mutex, generation
+- [x] 3.4 Implement `internal/backend/registry.go`: routing, lifecycle mutex, generation
       counter, and the tool-list-changed callback
-- [ ] 3.5 Tests green under `-race`, then commit
+- [x] 3.5 Tests green under `-race`, then commit
 
 ## 4. Catalog with coalescing refresh
 
