@@ -74,7 +74,7 @@ type Backend struct {
 	onReconnect func(server string)
 	stopRefresh func(server string)
 	dropTools   func(server string)
-	onEnable    func(server string)
+	refresh     func(server string)
 
 	// transition serializes a whole user-initiated enable or disable, including
 	// the override write, which happens before the gate closes.
@@ -277,7 +277,19 @@ func (b *Backend) connectTimeout() time.Duration {
 	return defaultConnectTimeout
 }
 
-// teardown is the kill switch. Every step's position is load bearing:
+// teardownMode distinguishes the kill switch from a reconnect. Only the kill
+// switch latches StateDisabled and evicts the tools: a reconnect leaves the
+// entries in place, because a down backend deliberately keeps them and a
+// vanish-and-reappear would churn every connected pass-through client.
+type teardownMode int
+
+const (
+	forDisable teardownMode = iota
+	forReconnect
+)
+
+// teardown ends the shared session, and for forDisable is the kill switch. Every
+// step's position is load bearing:
 //
 //   - the gate closes and drains first, so a dispatch that already holds a lease
 //     completes and no later one can write;
@@ -290,14 +302,18 @@ func (b *Backend) connectTimeout() time.Duration {
 //     life is a deadlock; awaiting it before the session closes also keeps our own
 //     teardown from being recorded as a backend failure;
 //   - the tools are evicted last, once nothing is left that could commit them.
-func (b *Backend) teardown() {
+func (b *Backend) teardown(mode teardownMode) {
 	b.gate.Lock()
 	defer b.gate.Unlock()
 
 	b.mu.Lock()
-	b.health.State = StateDisabled
+	if mode == forDisable {
+		b.health.State = StateDisabled
+		b.health.ToolCount = 0
+	} else {
+		b.health.State = StateDown
+	}
 	b.health.LastErr = ""
-	b.health.ToolCount = 0
 	b.gen.Add(1)
 	b.mu.Unlock()
 
@@ -308,9 +324,17 @@ func (b *Backend) teardown() {
 
 	b.life.Lock()
 	b.closeSession()
+	if mode == forReconnect {
+		// The backoff is cleared here, not above: the cancelled handshake has finished
+		// by the time life is held, and failConnect would otherwise re-arm the very
+		// window an explicit reconnect exists to clear.
+		b.mu.Lock()
+		b.failures, b.retryAt = 0, time.Time{}
+		b.mu.Unlock()
+	}
 	b.life.Unlock()
 
-	if b.dropTools != nil {
+	if mode == forDisable && b.dropTools != nil {
 		b.dropTools(b.name)
 	}
 }
@@ -333,8 +357,8 @@ func (b *Backend) restore() {
 	if !disabled {
 		return
 	}
-	if b.onEnable != nil {
-		b.onEnable(b.name)
+	if b.refresh != nil {
+		b.refresh(b.name)
 	}
 }
 

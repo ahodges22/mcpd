@@ -85,7 +85,7 @@ func newBackend(name string, spec config.Backend, hooks Hooks) *Backend {
 		onReconnect: hooks.Reconnected,
 		stopRefresh: hooks.StopRefresh,
 		dropTools:   hooks.DropTools,
-		onEnable:    hooks.Refresh,
+		refresh:     hooks.Refresh,
 		health: Health{
 			State:     StateDown,
 			Transport: "http",
@@ -129,7 +129,32 @@ func (r *Registry) Disable(name string) error {
 	if err := r.overrides.set(name, true); err != nil {
 		return fmt.Errorf("disable %s: %w", name, err)
 	}
-	b.teardown()
+	b.teardown(forDisable)
+	return nil
+}
+
+// Reconnect ends the shared session so the next dispatch or list re-dials, and
+// clears the backoff window, without which a backend inside it would ignore the
+// user's explicit request. It writes no override, because the user's enable and
+// disable intent is unchanged, and it refuses a disabled backend rather than
+// resurrecting a child the kill switch killed. The state check is inside the
+// transition lock, so it cannot straddle a concurrent Disable.
+func (r *Registry) Reconnect(name string) error {
+	b, ok := r.Get(name)
+	if !ok {
+		return fmt.Errorf("unknown backend %q", name)
+	}
+	b.transition.Lock()
+	defer b.transition.Unlock()
+	if b.Health().State == StateDisabled {
+		return fmt.Errorf("reconnect %s: %w", name, ErrDisabled)
+	}
+	b.teardown(forReconnect)
+	// A refresh rather than an eviction: the tools stay in the catalog, and this is
+	// what re-dials instead of waiting for the next client request.
+	if b.refresh != nil {
+		b.refresh(name)
+	}
 	return nil
 }
 

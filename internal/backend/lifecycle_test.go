@@ -311,6 +311,53 @@ func TestAReadSupersededByADisableCommitsNoHealth(t *testing.T) {
 	}
 }
 
+func TestReconnectRefusesADisabledBackend(t *testing.T) {
+	// Reconnecting a disabled backend would resurrect the child the kill switch
+	// killed, so the refusal is asserted on the dial count rather than on the error.
+	fake := testfake.New("alpha", tool("kubectl_logs"))
+	r := wire(t, Hooks{}, fake)
+	b, _ := r.Get("alpha")
+	if err := r.Disable("alpha"); err != nil {
+		t.Fatalf("disable: %v", err)
+	}
+	dialsBefore := fake.Dials.Load()
+
+	if err := r.Reconnect("alpha"); !errors.Is(err, ErrDisabled) {
+		t.Errorf("reconnect err = %v, want ErrDisabled", err)
+	}
+	if n := fake.Dials.Load(); n != dialsBefore {
+		t.Errorf("dials = %d, want %d: reconnect spawned a child behind a disabled backend", n, dialsBefore)
+	}
+	if got := b.Health().State; got != StateDisabled {
+		t.Errorf("state = %q, want %q: reconnect cleared the user's disable", got, StateDisabled)
+	}
+}
+
+func TestReconnectClearsTheBackoffWindow(t *testing.T) {
+	// A backend inside its retry window ignores every dispatch until the window
+	// expires. Reconnect that did not clear it would be a button that does nothing.
+	fake := testfake.New("alpha", tool("kubectl_logs"))
+	r := wire(t, Hooks{}, fake)
+	b, _ := r.Get("alpha")
+	b.mu.Lock()
+	b.failures, b.retryAt = 4, time.Now().Add(time.Hour)
+	b.health.State, b.health.LastErr = StateDown, "spawn refused"
+	b.mu.Unlock()
+
+	if err := r.Reconnect("alpha"); err != nil {
+		t.Fatalf("reconnect: %v", err)
+	}
+	if _, err := b.Call(t.Context(), "kubectl_logs", nil); err != nil {
+		t.Fatalf("call after a reconnect: %v", err)
+	}
+	if n := fake.SideEffects.Load(); n != 1 {
+		t.Errorf("side effects = %d, want 1: the dispatch was still inside the backoff window", n)
+	}
+	if got := b.Health().State; got != StateUp {
+		t.Errorf("state = %q, want %q", got, StateUp)
+	}
+}
+
 // parkWrites parks the daemon's side of the connection just before a request
 // reaches the transport, so a test can hold a dispatch that has passed its
 // enabled check but written nothing.
