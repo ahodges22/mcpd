@@ -1,6 +1,8 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -41,6 +43,9 @@ func TestChildEnv_GrantsDeclaredPassthrough(t *testing.T) {
 		if !slices.Contains(got, want) {
 			t.Errorf("missing %q in child env %v", want, got)
 		}
+	}
+	if slices.ContainsFunc(got, func(kv string) bool { return strings.HasPrefix(kv, "GH_PAT=") }) {
+		t.Errorf("undeclared GH_PAT leaked to child env %v", got)
 	}
 }
 
@@ -105,5 +110,20 @@ func TestLoad_ExampleConfigHasNoInternalHostnames(t *testing.T) {
 	}
 	if auth := github.Headers["Authorization"]; !strings.Contains(auth, "${GH_PAT}") {
 		t.Errorf("github backend must reference ${GH_PAT}, got %q", auth)
+	}
+}
+
+// A bare "*" strips to an empty prefix, which strings.HasPrefix matches against every
+// key: that pattern would hand the child the daemon's entire environment. Load must
+// reject it rather than silently honouring a blanket grant.
+func TestLoad_RejectsBlanketEnvPassthrough(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	body := `{"backends": {"art": {"command": "art-mcp-server", "env_passthrough": ["*"]}}}`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if _, err := Load(path); err == nil {
+		t.Fatal("Load accepted an env_passthrough of \"*\", which would grant the entire environment")
 	}
 }

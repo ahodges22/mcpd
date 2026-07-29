@@ -113,6 +113,11 @@ func Load(path string) (*Config, error) {
 		if b.IsStdio() == (b.HTTPURL != "") {
 			return nil, fmt.Errorf("backend %q must declare exactly one of command or http_url", name)
 		}
+		for _, pat := range b.EnvPassthrough {
+			if prefix, ok := strings.CutSuffix(pat, "*"); ok && prefix == "" {
+				return nil, fmt.Errorf("backend %q env_passthrough %q would grant its entire environment", name, pat)
+			}
+		}
 		b.Name = name
 		c.Backends[name] = b
 	}
