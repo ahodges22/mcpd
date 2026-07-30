@@ -428,6 +428,38 @@ func TestAnOlderSnapshotCannotRenameOverANewerOne(t *testing.T) {
 	}
 }
 
+func TestThePostCommitHookRunsOnEveryMutationWithTheCommitAlreadyVisible(t *testing.T) {
+	// The pass-through endpoint's tool set tracks the catalog through this hook and
+	// nothing else, so a path that mutates the index without firing it leaves the
+	// endpoint advertising tools no backend serves.
+	alpha := serving(tool("kubectl_logs"))
+	c := newTestCatalog(t, stubSource{"alpha": alpha}, fastTuning)
+
+	var seen [][]string
+	c.OnCommit(func() {
+		// Entries takes c.mu, so a hook fired inside the commit's critical section
+		// deadlocks here rather than quietly reading a half-applied index.
+		seen = append(seen, ids(c))
+	})
+
+	c.Refresh(t.Context(), "alpha") // commit
+	alpha.set(errors.New("upstream gone"))
+	c.Refresh(t.Context(), "alpha") // exclude
+	alpha.set(nil, tool("kubectl_logs"))
+	c.Refresh(t.Context(), "alpha") // commit again
+	c.Drop("alpha")                 // drop
+
+	want := [][]string{{"mcp__alpha__kubectl_logs"}, {}, {"mcp__alpha__kubectl_logs"}, {}}
+	if len(seen) != len(want) {
+		t.Fatalf("the hook fired %d times (%v), want once per mutation: %v", len(seen), seen, want)
+	}
+	for i := range want {
+		if !slices.Equal(seen[i], want[i]) {
+			t.Errorf("hook call %d saw %v, want %v", i, seen[i], want[i])
+		}
+	}
+}
+
 func TestStopRefreshAwaitsTheInFlightRead(t *testing.T) {
 	// The first read commits, the second parks, so the assertions can tell an
 	// evicted catalog from an untouched one.

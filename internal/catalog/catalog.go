@@ -106,6 +106,8 @@ type Catalog struct {
 	// beforeRename is a test seam: it forces two saves to interleave, which is the
 	// only way to observe an out-of-order rename deterministically.
 	beforeRename func()
+	// onCommit is set once before any refresh starts, so it is not guarded.
+	onCommit func()
 
 	mu      sync.Mutex
 	idle    sync.Cond
@@ -136,6 +138,13 @@ func newCatalog(src backends, path string, tune tuning) *Catalog {
 	c.idle.L = &c.mu
 	return c
 }
+
+// OnCommit registers a hook to run after every change to the index has been
+// committed and c.mu released, which is what lets the hook read Entries and see
+// the whole of the commit that fired it rather than part of it. It is what the
+// pass-through endpoint tracks the catalog by. It must be set before the first
+// refresh starts, and there is one hook: a second call replaces the first.
+func (c *Catalog) OnCommit(hook func()) { c.onCommit = hook }
 
 func (c *Catalog) Entries() []Entry {
 	c.mu.Lock()
@@ -265,7 +274,7 @@ func (c *Catalog) Drop(server string) {
 	delete(c.errs, server)
 	c.mu.Unlock()
 	if dropped {
-		c.persist()
+		c.committed()
 	}
 }
 
@@ -379,7 +388,7 @@ func (c *Catalog) commit(server string, l lister, gen uint64, tools []*mcp.Tool)
 	delete(c.errs, server)
 	c.mu.Unlock()
 
-	c.persist()
+	c.committed()
 }
 
 func (c *Catalog) exclude(server string, cause error) {
@@ -389,7 +398,7 @@ func (c *Catalog) exclude(server string, cause error) {
 	c.mu.Unlock()
 
 	if dropped {
-		c.persist()
+		c.committed()
 	}
 }
 
@@ -522,6 +531,15 @@ func (c *Catalog) Save() error {
 		return fmt.Errorf("replace catalog: %w", err)
 	}
 	return nil
+}
+
+// committed is every mutation path's tail: persist the new index, then tell
+// whoever is tracking it. Both run with c.mu released.
+func (c *Catalog) committed() {
+	c.persist()
+	if c.onCommit != nil {
+		c.onCommit()
+	}
 }
 
 func (c *Catalog) persist() {
