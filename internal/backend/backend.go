@@ -370,9 +370,10 @@ func (b *Backend) connectTimeout() time.Duration {
 // entries in place, because a down backend deliberately keeps them and a
 // vanish-and-reappear would churn every connected pass-through client.
 //
-// forShutdown is a reconnect's teardown that nothing follows: the tools stay in
-// the persisted catalog for the next start to serve, no override is written, and
-// stopping stays latched so nothing re-dials the child that was just terminated.
+// forShutdown is a reconnect's teardown that nothing follows: the tools stay in the
+// persisted catalog for the next start to serve, no override is written, any disabled
+// marking is left alone, and the shutdown latch is set. The latch is what makes it
+// terminal, refusing every dial, while beginTransition refuses every transition.
 type teardownMode int
 
 const (

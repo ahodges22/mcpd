@@ -63,6 +63,9 @@ func TestDeadBackendDoesNotSinkTheCatalog(t *testing.T) {
 	}{
 		{name: "a failed read excludes the backend", err: errSpawn, wantErr: errSpawn.Error()},
 		{name: "a superseded read changes nothing", err: fmt.Errorf("backend beta: list tools: %w", backend.ErrStaleGeneration), wantKept: true},
+		// A refresh that outlives a shutdown must not evict what the shutdown kept for the
+		// next start: a detached re-index is the way one gets here.
+		{name: "a read refused by a shutdown changes nothing", err: fmt.Errorf("backend beta: %w", backend.ErrShutdown), wantKept: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			beta := serving(tool("beta_tool"))

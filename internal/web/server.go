@@ -66,6 +66,9 @@ type route struct {
 	handler      http.HandlerFunc
 }
 
+// New builds the web surface. All four arguments are required: the routes dereference
+// every one of them, so a nil is a wiring mistake that fails at the first request
+// rather than a case to answer for.
 func New(reg *backend.Registry, cat *catalog.Catalog, g *Guard, oauth *oauthstore.Store) *Server {
 	return &Server{reg: reg, cat: cat, guard: g, oauth: oauth}
 }
@@ -353,8 +356,12 @@ func awaitTransition(timeout time.Duration, op func() error) (finished bool, err
 }
 
 func transitionStatus(err error) int {
-	if errors.Is(err, backend.ErrDisabled) {
+	switch {
+	case errors.Is(err, backend.ErrDisabled):
 		return http.StatusConflict
+	case errors.Is(err, backend.ErrShutdown):
+		// A daemon on its way out is unavailable, not broken.
+		return http.StatusServiceUnavailable
 	}
 	return http.StatusInternalServerError
 }

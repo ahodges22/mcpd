@@ -129,10 +129,10 @@
       draining the dispatch gate has no cancellable variant, so one `tools/call` on a backend
       with no configured `timeout` blocks process exit until the client gives up. That is the
       known unbounded-call limitation surfacing in a new place; decide deliberately whether
-      to bound the shutdown from outside and exit regardless. Must call `catalog.Load()` at startup (it is what
-      backs the spec's persistence requirement) and one startup `catalog.RefreshAll()`,
-      because `catalog.Start` deliberately performs no immediate refresh to avoid doubling
-      every cold start's reads
+      to bound the shutdown from outside and exit regardless. Must call `catalog.Load()` at
+      startup (it is what backs the spec's persistence requirement) and one startup
+      `catalog.RefreshAll()`, because `catalog.Start` deliberately performs no immediate
+      refresh to avoid doubling every cold start's reads
 - [ ] 11.2a Immediately after `catalog.Load()`, call `catalog.Drop(name)` for every backend
       that loaded disabled, and pin it with a test. A crash between Task 5's override write
       and its tool eviction leaves that backend's tools in the persisted catalog, and a
@@ -159,7 +159,8 @@
       11.4's post-commit hook, which fires from each refresh goroutine, so several
       `Vectorize` calls can run at once. `Cache` is safe for that. Note the hook also fires
       from `Drop` inside a lifecycle teardown, with that backend's dispatch gate held closed
-      (see 11.4), so a gateway call wired to it delays every disable by its own timeout;
+      (see 11.4), so a gateway call wired to it delays every disable by its own timeout, and
+      anything that waits on a tool call there deadlocks the daemon permanently;
       (e) the tool-search spec's "the status surface reports how many tools are
       unvectorized" has no field anywhere. `Vectorize` returns the count, but neither
       `backend.Health` nor `web.statusView` can carry it, so one of them gains a field and
@@ -178,9 +179,11 @@
       refresh:** `Drop` is called from inside `Backend.teardown`, which holds that backend's
       dispatch gate closed until it returns, so the hook can run inside a lifecycle
       transition. `Sync` is safe there (it takes only its own lock, and reaches the catalog
-      solely through `Entries`), but anything else wired to the hook must neither dispatch a
-      tool call nor block, or a disable waits on it. Construct the pass-through after
-      `catalog.Load()`, because `NewPassthrough` syncs in its constructor and would otherwise
+      solely through `Entries`), but a hook that waits on a tool call **deadlocks the daemon
+      permanently, not just slowly**: the dispatch lease it needs is the gate the teardown is
+      holding, and that teardown is waiting for the hook to return. Construct the
+      pass-through after `catalog.Load()`, because `NewPassthrough` syncs in its constructor
+      and would otherwise
       serve an empty tool set until the first refresh commits
 - [ ] 11.5 Wire all four catalog refresh triggers: `catalog.Start(ctx)` covers TTL expiry, and
       `backend.Hooks{ToolListChanged, Reconnected}` both point at `Catalog.Trigger`. The

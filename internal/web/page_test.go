@@ -135,6 +135,21 @@ func TestDisablingFromTheAPILeavesTheUsersConfigUntouched(t *testing.T) {
 	}
 }
 
+func TestATransitionAfterAShutdownIsUnavailableRatherThanAnError(t *testing.T) {
+	h := newHarness(t, testfake.New("alpha", tool("kubectl_logs")))
+	h.reg.Shutdown()
+
+	res := h.post(t, "/api/backends/alpha/reconnect")
+	if res.status != http.StatusServiceUnavailable {
+		t.Errorf("reconnect after a shutdown = %d (%s), want %d: a daemon on its way out is not broken",
+			res.status, res.body, http.StatusServiceUnavailable)
+	}
+	// The reads keep answering, so the page can still say what happened.
+	if got := h.get(t, "/api/status"); got.status != http.StatusOK {
+		t.Errorf("status read after a shutdown = %d, want %d", got.status, http.StatusOK)
+	}
+}
+
 func TestADisabledBackendRendersAsDisabledRatherThanFailing(t *testing.T) {
 	h := newHarness(t, testfake.New("alpha", tool("kubectl_logs")))
 	h.index(t)
