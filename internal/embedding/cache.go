@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
+	"sync"
 
 	"github.com/ahodges/mcpd/internal/catalog"
 )
@@ -16,8 +18,16 @@ import (
 // Cache persists embedding vectors keyed by a content hash of a tool's name,
 // description, and schema, so a tool whose content has not changed is never
 // re-embedded, and a renamed or reworded tool naturally misses.
+//
+// Every method is safe to call concurrently: the catalog fans out one refresh
+// goroutine per backend, so one cache is shared by as many Vectorize calls as
+// there are backends.
 type Cache struct {
-	path    string
+	path string
+
+	saveMu sync.Mutex // serializes marshal-through-rename, so no save lands out of order
+
+	mu      sync.Mutex
 	vectors map[string][]float32
 }
 
@@ -36,11 +46,15 @@ func (c *Cache) Key(e catalog.Entry) string {
 }
 
 func (c *Cache) Get(key string) ([]float32, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	v, ok := c.vectors[key]
 	return v, ok
 }
 
 func (c *Cache) Put(key string, vec []float32) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.vectors[key] = vec
 }
 
@@ -58,17 +72,44 @@ func (c *Cache) Load() error {
 	if err := json.Unmarshal(raw, &vectors); err != nil {
 		return fmt.Errorf("parse embedding cache: %w", err)
 	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.vectors = vectors
 	return nil
 }
 
+// Save replaces the persisted cache atomically, holding saveMu across the whole
+// marshal-through-rename so a save from one refresh cannot rename an older
+// snapshot over a newer one, and a crash mid-write leaves no torn file for Load.
 func (c *Cache) Save() error {
+	c.saveMu.Lock()
+	defer c.saveMu.Unlock()
+
+	c.mu.Lock()
 	raw, err := json.Marshal(c.vectors)
+	c.mu.Unlock()
 	if err != nil {
 		return fmt.Errorf("marshal embedding cache: %w", err)
 	}
-	if err := os.WriteFile(c.path, raw, 0o600); err != nil {
+
+	dir := filepath.Dir(c.path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("create state directory: %w", err)
+	}
+	tmp, err := os.CreateTemp(dir, ".embeddings-*")
+	if err != nil {
+		return fmt.Errorf("create temporary embedding cache: %w", err)
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.Write(raw); err != nil {
+		tmp.Close()
 		return fmt.Errorf("write embedding cache: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("write embedding cache: %w", err)
+	}
+	if err := os.Rename(tmp.Name(), c.path); err != nil {
+		return fmt.Errorf("replace embedding cache: %w", err)
 	}
 	return nil
 }

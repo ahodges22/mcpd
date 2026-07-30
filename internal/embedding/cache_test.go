@@ -3,9 +3,11 @@ package embedding
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/ahodges/mcpd/internal/catalog"
@@ -80,6 +82,53 @@ func TestCacheSaveThenLoadRoundTripsToDisk(t *testing.T) {
 	got, ok := reloaded.Get(key)
 	if !ok || len(got) != 2 || got[0] != 0.5 || got[1] != -0.25 {
 		t.Fatalf("reloaded cache = %v, %v, want the saved vector", got, ok)
+	}
+}
+
+func TestOneCacheServesTheCatalogsPerBackendFanOut(t *testing.T) {
+	// catalog.RefreshAll runs one goroutine per backend, so a cache wired into a
+	// per-backend refresh is written by all of them at once, while a save of the
+	// whole cache runs alongside. Unsynchronised that is a concurrent map write.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct{ Input []string }
+		json.NewDecoder(r.Body).Decode(&body)
+		writeEmbeddings(w, len(body.Input))
+	}))
+	defer srv.Close()
+
+	client := NewClient(srv.URL, "sk-test")
+	path := filepath.Join(t.TempDir(), "cache.json")
+	cache := NewCache(path)
+
+	const backends = 8
+	var wg sync.WaitGroup
+	for b := range backends {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			e := entry(fmt.Sprintf("tool%d", b), fmt.Sprintf("description %d", b))
+			if _, unvectorized := Vectorize(context.Background(), client, cache, []catalog.Entry{e}); unvectorized != 0 {
+				t.Errorf("backend %d: unvectorized = %d, want 0", b, unvectorized)
+			}
+			if err := cache.Save(); err != nil {
+				t.Errorf("backend %d: Save: %v", b, err)
+			}
+		}()
+	}
+	wg.Wait()
+
+	if err := cache.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	reloaded := NewCache(path)
+	if err := reloaded.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	for b := range backends {
+		e := entry(fmt.Sprintf("tool%d", b), fmt.Sprintf("description %d", b))
+		if _, ok := reloaded.Get(reloaded.Key(e)); !ok {
+			t.Errorf("tool%d's vector did not survive the concurrent fan-out and save", b)
+		}
 	}
 }
 
