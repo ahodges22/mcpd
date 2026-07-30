@@ -423,6 +423,19 @@ func (s *Store) path(server string) string {
 	return filepath.Join(s.dir, "oauth-"+url.PathEscape(server)+".json")
 }
 
+// TokenExpiry reports when server's stored access token expires, which the status
+// surface lists. It is the only field of the record that ever leaves this package:
+// the rest of it is the credential. A backend with no stored token, or one whose
+// record cannot be read, reports nothing rather than a zero time that renders as a
+// real reading.
+func (s *Store) TokenExpiry(server string) (time.Time, bool) {
+	rec, err := s.load(server)
+	if err != nil || rec == nil || rec.Expiry.IsZero() {
+		return time.Time{}, false
+	}
+	return rec.Expiry, true
+}
+
 func (s *Store) load(server string) (*record, error) {
 	raw, err := os.ReadFile(s.path(server))
 	if errors.Is(err, os.ErrNotExist) {

@@ -15,7 +15,7 @@
 <p class="note" id="note"></p>
 <table>
 <thead>
-<tr><th>Backend</th><th>State</th><th>Transport</th><th>Tools</th><th>Last read</th><th>Auth</th><th>Error</th><th>Actions</th></tr>
+<tr><th>Backend</th><th>State</th><th>Transport</th><th>Tools</th><th>Last read</th><th>Auth</th><th>Token expiry</th><th>Error</th><th>Actions</th></tr>
 </thead>
 <tbody>
 {{range .Backends}}
@@ -26,6 +26,7 @@
 <td>{{.ToolCount}}</td>
 <td>{{.RefreshedAt}}</td>
 <td>{{.AuthNote}}</td>
+<td class="expiry">{{.TokenExpiry}}</td>
 <td class="err">{{.LastErr}}{{if .CatalogError}} {{.CatalogError}}{{end}}</td>
 <td>
 <a href="/inspect/{{.Name}}">Inspect</a>

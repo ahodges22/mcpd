@@ -28,6 +28,7 @@ type backendStatus struct {
 	Label        string `json:"label"`
 	CatalogError string `json:"catalog_error,omitempty"`
 	OAuth        bool   `json:"oauth"`
+	TokenExpiry  string `json:"token_expiry,omitempty"`
 }
 
 type statusView struct {
@@ -62,9 +63,21 @@ func (s *Server) snapshot() statusView {
 			Label:        stateLabel(h),
 			CatalogError: errs[name],
 			OAuth:        h.AuthNote != "",
+			TokenExpiry:  s.tokenExpiry(name),
 		})
 	}
 	return out
+}
+
+// tokenExpiry renders the stored token's expiry, so the surface distinguishes a
+// token about to lapse from one the daemon has stopped refreshing. Only the expiry
+// is read: the token itself never reaches a response or a page.
+func (s *Server) tokenExpiry(name string) string {
+	exp, ok := s.oauth.TokenExpiry(name)
+	if !ok {
+		return ""
+	}
+	return exp.Format(time.RFC3339)
 }
 
 // stateLabel renders a health state for a human. StateDown cannot distinguish a

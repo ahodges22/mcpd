@@ -277,6 +277,27 @@ func (d *daemon) navigate(target string) response {
 	return response{status: res.StatusCode, body: string(body)}
 }
 
+// read fetches one of the daemon's own pages as the browser showing the status
+// surface does, through the real guard and the real mux.
+func (d *daemon) read(path string) response {
+	d.t.Helper()
+	req, err := http.NewRequestWithContext(d.t.Context(), http.MethodGet, d.web.URL+path, nil)
+	if err != nil {
+		d.t.Fatalf("build read: %v", err)
+	}
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	res, err := d.web.Client().Do(req)
+	if err != nil {
+		d.t.Fatalf("read %s: %v", path, err)
+	}
+	defer res.Body.Close()
+	body, err := io.ReadAll(res.Body)
+	if err != nil {
+		d.t.Fatalf("read %s body: %v", path, err)
+	}
+	return response{status: res.StatusCode, body: string(body)}
+}
+
 func tool(name string) *mcp.Tool {
 	return &mcp.Tool{
 		Name:        name,
@@ -330,6 +351,28 @@ func TestAFirstAuthorizationBringsTheBackendUp(t *testing.T) {
 	}
 	if rec.ClientID == "" || rec.AccessToken == "" || rec.RefreshToken == "" || rec.Expiry.IsZero() {
 		t.Errorf("stored record is incomplete: %+v", redact(rec))
+	}
+}
+
+func TestTheStatusSurfaceCarriesTheTokenExpiryAndNoToken(t *testing.T) {
+	// The status-ui requirement names token expiry among the fields the surface lists,
+	// and it is the only part of the record that may leave the store.
+	d := newDaemon(t, tool("search"))
+	d.authorize(nil)
+	rec := d.stored()
+	expiry := rec.Expiry.Format(time.RFC3339)
+
+	for _, path := range []string{"/api/status", "/"} {
+		res := d.read(path)
+		if res.status != http.StatusOK {
+			t.Fatalf("GET %s = %d (%s), want %d", path, res.status, res.body, http.StatusOK)
+		}
+		if !strings.Contains(res.body, expiry) {
+			t.Errorf("GET %s does not carry the token expiry %s: %s", path, expiry, res.body)
+		}
+		if strings.Contains(res.body, rec.AccessToken) || strings.Contains(res.body, rec.RefreshToken) {
+			t.Errorf("GET %s carries token material", path)
+		}
 	}
 }
 
