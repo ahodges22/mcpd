@@ -252,3 +252,69 @@
 - [ ] 14.4 Restart the daemon and confirm the token is reused with no re-authorization
 - [ ] 14.5 Force access-token expiry and confirm a refresh rather than a return to needs-auth
 - [ ] 14.6 Append the outcome to `PHASE0.md` and commit
+
+## 15. Backend management from the status surface
+
+Depends on Task 11, because there is nothing to add a backend to until the daemon runs, and
+on 11.4, because an added or removed backend must reach connected pass-through clients
+through the catalog's post-commit hook.
+
+- [ ] 15.1 Add one shared backend-name validator and apply it on both paths. The name
+      becomes a URL path segment, the `oauth-<name>.json` file name under the state
+      directory, and the prefix of every `mcp__<server>__<tool>` id, so it has three
+      injection surfaces and until now was trusted because only a hand-edited file could
+      supply it. Use `^[a-z0-9][a-z0-9_-]{0,63}$`, call it from `config.Load` as well as the
+      add route, and confirm all 13 currently declared names still load
+- [ ] 15.2 Write the failing tests for the write path, in `internal/config`: a field the
+      daemon's types do not model survives an add; the replaced content is readable from the
+      backup; a file changed on disk since load refuses the write and leaves the file byte
+      identical; a mode of 0644 becomes 0600 after a write
+- [ ] 15.3 Implement the write path. Read-modify-write over a preserving representation:
+      decode the document and its `backends` object as `map[string]json.RawMessage` and
+      re-encode only the entry that changed, so no unmodelled field is dropped. Record the
+      bytes read at load, re-read and compare immediately before writing, and return a
+      distinct sentinel error on mismatch so the route can answer 409. Copy the replaced
+      content to `config.json.bak` in the same directory, then temp-file-plus-rename as
+      `Overrides.save` already does. Stat the existing file and tighten the mode when it is
+      readable beyond its owner, never loosen it. Marshalling a Go map sorts its keys, so the
+      first write reformats the file into sorted order; that is accepted, and it is the reason
+      the backup exists
+- [ ] 15.4 Write the failing tests for runtime registration: an added backend serves a tool
+      with no restart; a removed backend's session closes, its stdio child exits and its
+      tools leave the catalog; a reload adopts a hand-added declaration and tears down a
+      hand-removed one; a reload that changes one backend leaves every other backend's
+      session, child and authorization intact
+- [ ] 15.5 Implement `Registry.Add` and `Registry.Remove`. `backends` and `names` are
+      currently immutable after `NewRegistry` and are read with no lock on the dispatch hot
+      path, so add an RWMutex and take it for reading in `Get`, `Names` and `Health`. It sits
+      **above** the existing four-level order (transition, gate, life, mu). Never hold it
+      across a teardown: `Remove` takes it, deletes the entry, releases it, and only then
+      tears the backend down, because teardown blocks on in-flight work. Tear down with the
+      terminal `forShutdown` latch, so nothing can respawn a child for a backend that is no
+      longer declared. `NewRegistry` must retain the `Hooks` value it was given, because
+      `Add` needs it to build the new backend
+- [ ] 15.6 Implement reload. Diff the freshly loaded declarations against the registered set:
+      unchanged backends are not touched at all, new ones go through `Add`, absent ones
+      through `Remove`, and a changed declaration is a `Remove` followed by an `Add`. A
+      reload-driven replace MUST NOT delete the backend's override or its stored OAuth
+      record, because the user changed a declaration rather than removing a backend; only an
+      explicit removal in 15.7 deletes runtime state
+- [ ] 15.7 Implement removal cleanup: delete the removed backend's override entry and its
+      stored OAuth record. State left under a name that is no longer declared would silently
+      apply to a later backend that reused the name
+- [ ] 15.8 Add the three routes to `routes()`, which is the sole registration path:
+      `POST /api/backends`, `POST /api/backends/{name}/remove`, and `POST /api/reload`. All
+      three are `mutates: true` and none is nonce-guarded, so they inherit the origin, method
+      and loopback-host guards. Reject a duplicate name with 409, an invalid declaration with
+      400, and a stale file with 409 carrying text the page can show
+- [ ] 15.9 Extend the page and the assets: an add form covering both transports, and a remove
+      action requiring a second confirming action through the existing `data-confirm`
+      mechanism. Insert every value with `textContent`. The add form MUST NOT prefill or
+      display any existing `env` or `headers` value, and the status snapshot must continue to
+      omit both, because a declaration can carry an inline credential
+- [ ] 15.10 Mutation-verify at minimum: drop the staleness comparison and the refusal test
+      must fail; drop the raw-message preservation and the unmodelled-field test must fail;
+      loosen the name validator and the traversal test must fail; make reload rebuild every
+      backend and the unchanged-backend test must fail; skip the `forShutdown` latch on remove
+      and the child-exits test must fail
+- [ ] 15.11 Tests green under `-race`, then commit

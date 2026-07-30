@@ -34,6 +34,10 @@ repo) addresses only the first, and its own README names the other two as known 
   mode 0600, so Notion works through the proxy for the first time.
 - A loopback web UI: per-backend status, enable/disable, reconnect, re-index,
   authenticate, and a tool inspector.
+- Adding and removing a backend from that UI, for both transports, so the fourth pain
+  above no longer needs a text editor. This makes the declaration file daemon-writable,
+  which reverses an earlier decision in this change and is why `backend-management`
+  carries requirements for protecting a concurrent hand edit.
 - `mcpd install` to rewire all four clients from one place, with a surgical `--revert`
   that removes only mcpd-owned entries.
 - **BREAKING for the existing setup:** the `mcp-tool-search` prototype is superseded.
@@ -58,6 +62,8 @@ repo) addresses only the first, and its own README names the other two as known 
 - `status-ui`: the status page, the tool inspector, and their guardrails.
 - `client-wiring`: rewiring the four clients, migrating approval blocks, and reverting
   without destroying unrelated user edits.
+- `backend-management`: declaring and removing a backend at run time, the daemon's write
+  path into the declaration file, reload, and name validation.
 
 ### Modified Capabilities
 
@@ -73,8 +79,12 @@ None. This is the first change in this repo; `openspec/specs/` is empty.
   surface in the change, because a bug there damages live configuration rather than the
   proxy.
 - **New system units:** `~/.config/systemd/user/mcpd.service`.
-- **New state:** `~/.config/mcpd/config.json` (user-owned) and `~/.local/state/mcpd/`
-  (daemon-owned, including OAuth tokens at 0600).
+- **New state:** `~/.config/mcpd/config.json` (hand-edited, and written by the daemon when
+  a backend is added or removed) and `~/.local/state/mcpd/` (daemon-owned, including OAuth
+  tokens at 0600).
+- **Second writer on a hand-authored file:** the user and the daemon both write
+  `config.json`, with no lock between them. Mitigated by refusing a write when the file
+  changed on disk, and by keeping the replaced content beside it.
 - **External dependency:** the LiteLLM gateway for embeddings at catalog-refresh time.
   Verified reachable, 1536 dimensions. Off-VPN with a warm cache stays fully
   functional.
@@ -82,5 +92,6 @@ None. This is the first change in this repo; `openspec/specs/` is empty.
   total one. If the daemon is down, every client loses every backend. Accepted
   deliberately, mitigated with `Restart=always`.
 - **Out of scope:** OS-level sandboxing of stdio backends, per-tool enable/disable,
-  backend CRUD in the UI, user authentication on the daemon, forwarding
-  sampling/elicitation/roots, and `metabase`.
+  editing an existing backend declaration from the UI (remove and re-add instead, so no
+  stored credential is ever sent to the browser), user authentication on the daemon,
+  forwarding sampling/elicitation/roots, and `metabase`.

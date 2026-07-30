@@ -21,29 +21,32 @@ over ACP have no MCP status surface of their own.
 ### Requirement: Per-backend actions
 
 The status surface SHALL offer, per backend, authenticate for OAuth backends, enable and
-disable, and reconnect. It SHALL offer reconnect-all and re-index-catalog globally.
+disable, reconnect, and remove. It SHALL offer reconnect-all, re-index-catalog, add-backend,
+and reload-declarations globally.
 
 #### Scenario: Re-index is available without a restart
 
 - **WHEN** the user triggers a catalog re-index
 - **THEN** every enabled backend is re-listed and the catalog is updated
 
-### Requirement: Backends are declared in a file the daemon never writes
+### Requirement: Backends are declared in one file, editable two ways
 
-Backend declarations SHALL live in a user-owned configuration file that the daemon only
-reads. Runtime state, including enable/disable overrides, SHALL be stored separately, so
-the daemon never has a write path into a file the user hand-edits.
+Backend declarations SHALL live in a single configuration file, editable by hand or from the
+status surface. Runtime state, including enable and disable overrides, SHALL be stored
+separately, so a runtime toggle never rewrites a declaration.
 
-#### Scenario: Toggling a backend does not rewrite the user's config
+The `backend-management` capability governs the daemon's write path into that file,
+including how a concurrent hand edit is protected.
+
+#### Scenario: Toggling a backend does not rewrite the declaration file
 
 - **WHEN** a backend is disabled from the status surface
-- **THEN** the override is recorded in daemon state and the user's configuration file is
-  unchanged
+- **THEN** the override is recorded in daemon state and the configuration file is unchanged
 
-#### Scenario: Adding a backend is a single-file edit
+#### Scenario: Adding a backend touches no per-client configuration
 
-- **WHEN** the user wants to add a backend
-- **THEN** they edit one configuration file, and no per-client configuration is touched
+- **WHEN** the user adds a backend, by editing the file or from the status surface
+- **THEN** one configuration file changes, and no per-client configuration is touched
 
 ### Requirement: Tool inspector
 

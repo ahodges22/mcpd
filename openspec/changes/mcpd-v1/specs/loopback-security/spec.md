@@ -99,8 +99,23 @@ A hostile stdio backend SHALL NOT be described as contained. It runs as the same
 can read the token store and every other credential file, so the least-privilege child
 environment addresses accidental grants and auditability, not containment.
 
+Declaring a stdio backend starts a process, so the add-backend route is the
+highest-privilege operation on the surface and SHALL be documented as such. It does not
+widen the boundary, because a local process could already write the declaration file and
+wait for a restart, but it removes the wait. The origin, method and loopback-host guards are
+what keep a browser page from reaching it. They do not constrain another local process, and
+nothing here does.
+
 #### Scenario: The documented threat model matches the implementation
 
 - **WHEN** the security posture is described in project documentation
 - **THEN** it states that local processes are trusted, that a hostile stdio backend is not
-  contained, and which specific mitigations apply to browser-originated requests
+  contained, that the add-backend route can start a process, and which specific mitigations
+  apply to browser-originated requests
+
+#### Scenario: The process-spawning route is subject to every guard
+
+- **WHEN** the add-backend route is reached with a cross-site origin, with GET, or with a
+  non-loopback host header
+- **THEN** it is rejected, because a route that starts a process is the last one that may
+  be reachable from a browser page
