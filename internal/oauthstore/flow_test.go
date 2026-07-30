@@ -746,6 +746,29 @@ func TestARefusalTheClassifierDoesNotRecogniseStillRecoversInOneClick(t *testing
 	}
 }
 
+func TestEachAuthorizationAttemptGetsItsOwnWaitBudget(t *testing.T) {
+	// Lowered rather than staged in real time: the shipped 30s value is what the daemon
+	// runs with, and this test's subject is how the budget is shared, not its size.
+	restore := web.AuthorizeWaitTimeout
+	web.AuthorizeWaitTimeout = 2 * time.Second
+	t.Cleanup(func() { web.AuthorizeWaitTimeout = restore })
+
+	d := newDaemon(t, tool("search"))
+	d.authorize(nil)
+	d.expireAccessToken()
+	// A refusal that surfaces after one attempt's budget: under a shared deadline the
+	// first attempt spends all of it and the second has none left to discover a URL in.
+	d.prov.refuseRefresh("unauthorized_client")
+	d.prov.delayNextRefresh(web.AuthorizeWaitTimeout + 500*time.Millisecond)
+	next := d.restart()
+
+	status, payload := next.postAuthenticate()
+	if status != http.StatusOK || payload["authorize_url"] == "" {
+		t.Fatalf("one click after a refusal slower than one attempt's budget = %d %v with health %+v, want %d with a URL",
+			status, payload, next.health(), http.StatusOK)
+	}
+}
+
 func TestASecondAuthorizationReusesTheRegisteredClient(t *testing.T) {
 	d := newDaemon(t, tool("search"))
 	d.authorize(nil)
@@ -839,6 +862,53 @@ func TestTheAuthenticateActionStartsAnAuthorizationTheUserCanFinish(t *testing.T
 	}
 	if got := d.health().State; got != backend.StateUp {
 		t.Errorf("state = %q, want %q", got, backend.StateUp)
+	}
+
+	// A click during a handshake must wait for its own reconnect, not mistake the
+	// interrupted handshake for a failed attempt and discard a working grant.
+	next := d.restart()
+	started := next.prov.blockNextMCPRequest()
+	read := make(chan error, 1)
+	go func() {
+		_, err := next.list()
+		read <- err
+	}()
+	<-started
+	before = next.prov.counts()
+	status, payload = next.postAuthenticate()
+	if status != http.StatusOK || payload["status"] != "authorized" {
+		t.Errorf("authenticate during a handshake = %d %v, want %d and status authorized", status, payload, http.StatusOK)
+	}
+	if got := next.prov.counts(); got.authorizations != before.authorizations {
+		t.Errorf("authorizations = %d, want %d: the click discarded a working grant", got.authorizations, before.authorizations)
+	}
+	if err := <-read; err == nil {
+		t.Error("the reconnect did not interrupt the in-flight read")
+	}
+	if got := next.health().State; got != backend.StateUp {
+		t.Errorf("state after the reconnect = %q, want %q", got, backend.StateUp)
+	}
+
+	// A later lifecycle transition supersedes this click instead of rejecting its grant.
+	superseded := next.restart()
+	started = superseded.prov.blockNextMCPRequest()
+	clicked := make(chan int, 1)
+	go func() {
+		status, _ := superseded.postAuthenticate()
+		clicked <- status
+	}()
+	<-started
+	if err := superseded.reg.Disable(server); err != nil {
+		t.Fatalf("disable during authenticate: %v", err)
+	}
+	if got := <-clicked; got != http.StatusConflict {
+		t.Errorf("authenticate superseded by a disable = %d, want %d", got, http.StatusConflict)
+	}
+	if err := superseded.reg.Enable(server); err != nil {
+		t.Fatalf("enable after authenticate: %v", err)
+	}
+	if _, err := superseded.list(); err != nil {
+		t.Errorf("list after the superseding lifecycle transition: %v", err)
 	}
 }
 

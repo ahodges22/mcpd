@@ -13,6 +13,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -27,6 +28,9 @@ import (
 type provider struct {
 	ts  *httptest.Server
 	mcp http.Handler
+	// blockMCP, when set, holds the next MCP request open until its context is
+	// cancelled, which is what stages a handshake that is still in flight.
+	blockMCP atomic.Pointer[chan struct{}]
 
 	// forbid answers the MCP endpoint 403 rather than 401, so the ruling that a 403
 	// never authorizes is testable.
@@ -34,7 +38,8 @@ type provider struct {
 	// refusal, when set, is the OAuth error code the refresh grant answers with, so
 	// both classes of permanent refusal are testable: the SDK aborts a request on most
 	// of them, but swallows invalid_grant and sends the request unauthenticated.
-	refusal atomic.Pointer[string]
+	refusal      atomic.Pointer[string]
+	refreshDelay atomic.Int64
 
 	registrations  atomic.Int64
 	authorizations atomic.Int64
@@ -140,8 +145,20 @@ func (p *provider) serveMCP(w http.ResponseWriter, r *http.Request) {
 		p.challenge(w, http.StatusUnauthorized)
 		return
 	}
+	if blocked := p.blockMCP.Swap(nil); blocked != nil {
+		close(*blocked)
+		<-r.Context().Done()
+		return
+	}
 	p.bearerServed.Add(1)
 	p.mcp.ServeHTTP(w, r)
+}
+
+// blockNextMCPRequest returns a channel closed once that request has arrived.
+func (p *provider) blockNextMCPRequest() <-chan struct{} {
+	started := make(chan struct{})
+	p.blockMCP.Store(&started)
+	return started
 }
 
 // challenge answers the way Notion did: the metadata pointer is in the challenge,
@@ -297,6 +314,9 @@ func (p *provider) exchangeCode(w http.ResponseWriter, r *http.Request) {
 
 func (p *provider) refreshToken(w http.ResponseWriter, r *http.Request) {
 	p.refreshes.Add(1)
+	if !waitFor(r, time.Duration(p.refreshDelay.Swap(0))) {
+		return
+	}
 	if code := p.refusal.Load(); code != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": *code, "error_description": "this grant is no longer usable"})
 		return
@@ -333,6 +353,12 @@ func (p *provider) refuseRefresh(code string) { p.refusal.Store(&code) }
 // allowRefresh ends a refusal, which is what a provider recovering from a transient
 // fault looks like.
 func (p *provider) allowRefresh() { p.refusal.Store(nil) }
+
+// delayNextRefresh holds the next refresh open, which is a token endpoint slower than
+// the caller's budget rather than one that refuses.
+func (p *provider) delayNextRefresh(delay time.Duration) {
+	p.refreshDelay.Store(int64(delay))
+}
 
 // revokeAccessTokens invalidates every access token issued so far, which is what a
 // consent withdrawn at the provider looks like to a client still holding one: the
@@ -385,6 +411,20 @@ func bearer(r *http.Request) string {
 		return ""
 	}
 	return after
+}
+
+func waitFor(r *http.Request, delay time.Duration) bool {
+	if delay <= 0 {
+		return true
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return true
+	case <-r.Context().Done():
+		return false
+	}
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

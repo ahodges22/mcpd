@@ -148,22 +148,29 @@ func (r *Registry) Disable(name string) error {
 // resurrecting a child the kill switch killed. The state check is inside the
 // transition lock, so it cannot straddle a concurrent Disable.
 func (r *Registry) Reconnect(name string) error {
+	_, err := r.ReconnectGeneration(name)
+	return err
+}
+
+// ReconnectGeneration identifies the lifecycle whose refresh this reconnect starts.
+func (r *Registry) ReconnectGeneration(name string) (uint64, error) {
 	b, ok := r.Get(name)
 	if !ok {
-		return fmt.Errorf("unknown backend %q", name)
+		return 0, fmt.Errorf("unknown backend %q", name)
 	}
 	b.transition.Lock()
 	defer b.transition.Unlock()
 	if b.Health().State == StateDisabled {
-		return fmt.Errorf("reconnect %s: %w", name, ErrDisabled)
+		return 0, fmt.Errorf("reconnect %s: %w", name, ErrDisabled)
 	}
 	b.teardown(forReconnect)
+	generation := b.Generation()
 	// A refresh rather than an eviction: the tools stay in the catalog, and this is
 	// what re-dials instead of waiting for the next client request.
 	if b.refresh != nil {
 		b.refresh(name)
 	}
-	return nil
+	return generation, nil
 }
 
 // Enable clears the override and lets the backend connect again on its next use.

@@ -253,13 +253,7 @@ func TestDisableInterruptsAHandshakeADispatchIsWaitingOn(t *testing.T) {
 }
 
 func TestATeardownFlagsItselfBeforeCancellingAHandshake(t *testing.T) {
-	// The order of those two steps is load bearing, not merely their position before the
-	// gate: a handshake cancelled while the flag is still clear can be replaced by a
-	// fresh one from a dispatch already in its prologue, which then parks with nothing
-	// left to interrupt it. Unwidened the gap is a single mutex acquisition, so no timing
-	// can catch the ordering. It is staged instead by standing in for the handshake's own
-	// cancel function, which is exactly what teardown calls, and reading the flag from
-	// inside it.
+	// Observe stopping from the first cancellation, before teardown's state write.
 	r := NewRegistry(stdioConfig("alpha"), overridesAt(t, filepath.Join(t.TempDir(), "overrides.json")), Hooks{})
 	b, _ := r.Get("alpha")
 	var cancels int
@@ -268,8 +262,6 @@ func TestATeardownFlagsItselfBeforeCancellingAHandshake(t *testing.T) {
 	b.connectCancel = func() {
 		b.mu.Lock()
 		defer b.mu.Unlock()
-		// Only the first call is the question: teardown cancels again after writing the
-		// state, by which point the flag is set either way.
 		if cancels == 0 {
 			flaggedFirst = b.stopping
 		}
@@ -277,8 +269,15 @@ func TestATeardownFlagsItselfBeforeCancellingAHandshake(t *testing.T) {
 	}
 	b.mu.Unlock()
 
-	if err := r.Reconnect("alpha"); err != nil {
-		t.Fatalf("reconnect: %v", err)
+	done := make(chan error, 1)
+	go func() { done <- r.Reconnect("alpha") }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("reconnect: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("reconnect hung while cancelling the in-flight handshake")
 	}
 	if cancels == 0 {
 		t.Fatal("teardown cancelled no handshake, so this proves nothing")

@@ -29,14 +29,17 @@ const (
 	// own handshake budget rather than replacing it, exactly as the catalog's read
 	// deadline is, so a cold start the configuration permits is never truncated.
 	invokeCallBudget = 60 * time.Second
-	// authorizeWaitTimeout bounds the wait for an authorization URL to appear. The
-	// URL exists only once the backend's 401 has been discovered, which is up to
-	// four round trips to the provider including a client registration.
-	authorizeWaitTimeout = 30 * time.Second
 	// authorizePollInterval is how often that wait rechecks. A browser is waiting on
 	// it, so it is short enough to be imperceptible and each check is two map reads.
 	authorizePollInterval = 50 * time.Millisecond
 )
+
+// AuthorizeWaitTimeout bounds one authorization attempt's wait for an authorization URL
+// to appear. The URL exists only once the backend's 401 has been discovered, which is up
+// to four round trips to the provider including a client registration. It is a variable
+// so a test can stage a refusal slower than the budget without spending the budget in
+// real time.
+var AuthorizeWaitTimeout = 30 * time.Second
 
 //go:embed assets
 var assetFS embed.FS
@@ -231,19 +234,17 @@ func (s *Server) authorize(w http.ResponseWriter, r *http.Request) {
 	// The user asking is what lifts the refusal an unusable grant leaves behind.
 	s.oauth.AllowAuthorization(name)
 
-	ctx, cancel := context.WithTimeout(r.Context(), authorizeWaitTimeout)
-	defer cancel()
-	// Two attempts, under one deadline. The first keeps the stored grant, because a
-	// backend that is merely down needs a reconnect rather than a consent screen. If
-	// that produces neither a URL nor a working backend then the grant itself is what
-	// is wrong, whatever the provider called it, so the second discards it and tries
-	// again. Deciding that from this reconnect's own outcome rather than from an error
-	// code is what keeps recovery to one click for every kind of refusal.
+	// Only a failed attempt from this reconnect's generation permits discarding the grant.
 	for attempt := range 2 {
 		if attempt > 0 {
 			s.oauth.DiscardStoredGrant(name)
 		}
-		finished, err := awaitTransition(transitionTimeout, func() error { return s.reg.Reconnect(name) })
+		var generation uint64
+		finished, err := awaitTransition(transitionTimeout, func() error {
+			var err error
+			generation, err = s.reg.ReconnectGeneration(name)
+			return err
+		})
 		if !finished {
 			writeJSON(w, http.StatusServiceUnavailable, map[string]string{
 				"status": "in-progress",
@@ -256,12 +257,20 @@ func (s *Server) authorize(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		switch authURL, outcome := s.awaitAuthorization(ctx, b, name); outcome {
+		ctx, cancel := context.WithTimeout(r.Context(), AuthorizeWaitTimeout)
+		authURL, outcome := s.awaitAuthorization(ctx, b, name, generation)
+		cancel()
+		switch outcome {
 		case authorizePending:
 			writeJSON(w, http.StatusOK, map[string]string{"status": "pending", "authorize_url": authURL})
 			return
 		case authorizeServing:
 			writeJSON(w, http.StatusOK, map[string]string{"status": "authorized"})
+			return
+		case authorizeSuperseded:
+			writeJSON(w, http.StatusConflict, map[string]string{
+				"error": "another lifecycle transition superseded this authorization attempt",
+			})
 			return
 		}
 	}
@@ -278,24 +287,26 @@ const (
 	authorizeUnusable authorizeOutcome = iota
 	authorizePending
 	authorizeServing
+	authorizeSuperseded
 )
 
-// awaitAuthorization waits for one of the three outcomes of a reconnect. The first two
-// are polled because only one of them could be subscribed to, and waiting on that one
-// alone would leave the user watching the whole window to be told nothing was needed.
-// The third is what makes a second attempt worth making, and it is read from the
-// backend's own error, which a reconnect clears and a failed dial sets.
-func (s *Server) awaitAuthorization(ctx context.Context, b *backend.Backend, name string) (string, authorizeOutcome) {
+// awaitAuthorization waits for one of the four outcomes of a reconnect, counting a
+// failed handshake as evidence against the stored grant only when that handshake began
+// in the generation this reconnect produced.
+func (s *Server) awaitAuthorization(ctx context.Context, b *backend.Backend, name string, generation uint64) (string, authorizeOutcome) {
 	tick := time.NewTicker(authorizePollInterval)
 	defer tick.Stop()
 	for {
 		if authURL, pending := s.oauth.Pending(name); pending {
 			return authURL, authorizePending
 		}
+		attempt, currentGeneration := b.ConnectAttempt()
 		switch h := b.Health(); {
 		case h.State == backend.StateUp:
 			return "", authorizeServing
-		case h.LastErr != "":
+		case currentGeneration != generation:
+			return "", authorizeSuperseded
+		case attempt.Generation == generation && attempt.Failed:
 			return "", authorizeUnusable
 		}
 		select {

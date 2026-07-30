@@ -50,6 +50,14 @@ type Health struct {
 	AuthNote    string    `json:"auth_note,omitempty"`
 }
 
+// ConnectAttempt is how the latest handshake ended, tagged with the generation it
+// began in. The tag is what lets a waiter tell its own attempt's outcome from an
+// earlier attempt's, including one its own teardown cancelled.
+type ConnectAttempt struct {
+	Generation uint64
+	Failed     bool
+}
+
 // environ is a package var so tests can inject a parent environment.
 var environ = os.Environ
 
@@ -91,17 +99,15 @@ type Backend struct {
 	// transition and posting a tool count over a backend that stopped serving them.
 	gen atomic.Uint64
 
-	mu            sync.Mutex
-	session       *mcp.ClientSession
-	health        Health
-	failures      int
-	retryAt       time.Time
-	connectCancel context.CancelFunc
-	connected     bool // a session has existed, so the next connect is a reconnect
-	// stopping is set while a teardown is running. connect consults it in the same
-	// critical section that publishes connectCancel, which is what makes the pair
-	// airtight: a handshake starting between the teardown's cancellation and its state
-	// write would otherwise park with nothing left to interrupt it.
+	mu             sync.Mutex
+	session        *mcp.ClientSession
+	health         Health
+	failures       int
+	retryAt        time.Time
+	connectCancel  context.CancelFunc
+	connectAttempt ConnectAttempt
+	connected      bool // a session has existed, so the next connect is a reconnect
+	// stopping and connectCancel share one critical section so teardown cannot miss a new handshake.
 	stopping bool
 }
 
@@ -113,6 +119,15 @@ func (b *Backend) Health() Health {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.health
+}
+
+// ConnectAttempt reports the latest handshake's outcome and the current generation from
+// one critical section, so a caller cannot pair an attempt with a generation it never
+// ran in. gen advances only under mu, which is what makes that possible.
+func (b *Backend) ConnectAttempt() (ConnectAttempt, uint64) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.connectAttempt, b.gen.Load()
 }
 
 // UsesOAuth reports whether this backend authorizes with OAuth, which is what
@@ -243,10 +258,6 @@ func (b *Backend) connect(ctx context.Context) (*mcp.ClientSession, error) {
 		return sess, nil
 	}
 	if b.stopping {
-		// A teardown is running and has already cancelled whatever handshake existed.
-		// Starting one now would park behind a gate.Lock that is waiting for this very
-		// dispatch's lease, with nothing left to interrupt it. Nothing was sent, so a
-		// dispatch reports this as not attempted and may retry.
 		b.mu.Unlock()
 		return nil, fmt.Errorf("backend %s: a lifecycle transition is in progress", b.name)
 	}
@@ -256,6 +267,7 @@ func (b *Backend) connect(ctx context.Context) (*mcp.ClientSession, error) {
 		return nil, fmt.Errorf("backing off %s after: %s", wait.Round(time.Millisecond), last)
 	}
 	ctx, cancel := context.WithTimeout(ctx, b.connectTimeout())
+	b.connectAttempt = ConnectAttempt{Generation: b.gen.Load()}
 	b.connectCancel = cancel
 	b.mu.Unlock()
 	defer func() {
@@ -343,37 +355,9 @@ const (
 	forReconnect
 )
 
-// teardown ends the shared session, and for forDisable is the kill switch. Every
-// step's position is load bearing:
-//
-//   - stopping is set, and only then is an in-flight handshake cancelled, both before
-//     the gate is taken. The cancellation is before the gate because a dispatch waiting
-//     on that handshake holds a dispatch lease and gate.Lock would otherwise wait for
-//     the very handshake this cancellation ends, which for a handshake that blocks for a
-//     human, as an OAuth code fetch does, is the normal case rather than a worst case.
-//     The flag is what covers a dispatch that took its lease before all this began and
-//     reaches connect after the cancellation: connect checks it in the same critical
-//     section that publishes connectCancel, so neither can overtake the other. The flag
-//     goes first because cancelling with it still clear leaves exactly the gap it exists
-//     to close. Both cost an in-flight handshake its completion, and a reconnect does
-//     this as well as a disable: nothing was sent, so the dispatch reports
-//     ErrNotAttempted and may retry;
-//   - the gate closes and drains first, so a dispatch that already holds a lease
-//     completes and no later one can write;
-//   - the state is set before anything is awaited, so no further handshake starts;
-//   - the in-flight handshake is cancelled again before life is taken, because connect
-//     holds life for its whole duration and taking life without cancelling waits the
-//     handshake out instead of interrupting it. With the flag in place nothing can begin
-//     between the two, so this repeat can only find what the first found; it stays as the
-//     step that does not depend on the flag being right;
-//   - the refresh loop is cancelled and awaited before life is taken, because a
-//     read blocked in connect's life.Lock would never exit and awaiting it under
-//     life is a deadlock; awaiting it before the session closes also keeps our own
-//     teardown from being recorded as a backend failure;
-//   - the tools are evicted last, once nothing is left that could commit them.
+// teardown follows transition, gate, life, mu, taking mu before the gate but never across
+// it; stopping precedes cancellation, refresh stops before life, and tools drop last.
 func (b *Backend) teardown(mode teardownMode) {
-	// mu is taken and released before the gate, never held across it, so the documented
-	// gate-then-life-then-mu order is unchanged.
 	b.mu.Lock()
 	b.stopping = true
 	b.mu.Unlock()
@@ -402,13 +386,9 @@ func (b *Backend) teardown(mode teardownMode) {
 	b.closeSession()
 	b.mu.Lock()
 	if mode == forReconnect {
-		// The backoff is cleared here, not above: the cancelled handshake has finished
-		// by the time life is held, and failConnect would otherwise re-arm the very
-		// window an explicit reconnect exists to clear.
+		// The cancelled handshake may have re-armed backoff after teardown cleared it.
 		b.failures, b.retryAt = 0, time.Time{}
 	}
-	// Cleared under life as well as mu, so the next handshake can only start once the
-	// session this teardown closed is gone.
 	b.stopping = false
 	b.mu.Unlock()
 	b.life.Unlock()
@@ -479,6 +459,9 @@ func (b *Backend) dropSession(sess *mcp.ClientSession, cause error) {
 func (b *Backend) failConnect(stage string, cause error) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	// Only connect writes this record, and it holds life throughout, so this can only
+	// be marking its own attempt.
+	b.connectAttempt.Failed = true
 	if b.health.State == StateDisabled {
 		return ErrDisabled
 	}
