@@ -517,6 +517,65 @@ func TestAFailedRefreshReturnsTheBackendToNeedsAuth(t *testing.T) {
 	}
 }
 
+func TestTheAuthenticateActionStartsAnAuthorizationTheUserCanFinish(t *testing.T) {
+	d := newDaemon(t, tool("search"))
+
+	// The action answers only once there is somewhere to send the user, which is what
+	// makes it usable from the status page: it reconnects, so a backend sitting in its
+	// failure backoff still reaches the 401, and then waits out discovery.
+	status, payload := d.postAuthenticate()
+	if status != http.StatusOK {
+		t.Fatalf("authenticate action = %d %v, want %d", status, payload, http.StatusOK)
+	}
+	authURL := payload["authorize_url"]
+	if authURL == "" {
+		t.Fatalf("the authenticate action returned no authorization URL: %v", payload)
+	}
+	if h := d.health(); h.State != backend.StateNeedsAuth {
+		t.Errorf("state while pending = %q, want %q", h.State, backend.StateNeedsAuth)
+	}
+
+	if res := d.consentInBrowser(authURL); res.status != http.StatusOK {
+		t.Fatalf("callback = %d %q, want %d", res.status, res.body, http.StatusOK)
+	}
+	// The read parked in the code fetcher belongs to the refresh this action
+	// triggered, so waiting for that loop to finish is what waiting for the flow is.
+	d.cat.WaitIdle()
+
+	if got := d.health().State; got != backend.StateUp {
+		t.Errorf("state after the callback = %q, want %q", got, backend.StateUp)
+	}
+	if n := len(d.cat.Entries()); n != 1 {
+		t.Errorf("catalog entries = %d, want 1: the authorized backend served no tools", n)
+	}
+	if n := d.prov.registrations.Load(); n != 1 {
+		t.Errorf("dynamic client registrations = %d, want 1", n)
+	}
+}
+
+// postAuthenticate drives the status page's authenticate action the way its button
+// does: a JSON POST, whose body the page discards when it reloads but a command
+// line caller reads.
+func (d *daemon) postAuthenticate() (int, map[string]string) {
+	d.t.Helper()
+	req, err := http.NewRequestWithContext(d.t.Context(), http.MethodPost,
+		d.web.URL+"/api/backends/"+server+"/authorize", strings.NewReader(`{}`))
+	if err != nil {
+		d.t.Fatalf("build the authenticate request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	res, err := d.web.Client().Do(req)
+	if err != nil {
+		d.t.Fatalf("authenticate: %v", err)
+	}
+	defer res.Body.Close()
+	var payload map[string]string
+	if err := json.NewDecoder(res.Body).Decode(&payload); err != nil {
+		d.t.Fatalf("decode the authenticate response: %v", err)
+	}
+	return res.StatusCode, payload
+}
+
 // redact keeps a failure message from carrying credentials into a test log.
 func redact(rec stored) stored {
 	if rec.AccessToken != "" {
