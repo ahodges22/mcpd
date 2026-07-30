@@ -98,6 +98,11 @@ type Backend struct {
 	retryAt       time.Time
 	connectCancel context.CancelFunc
 	connected     bool // a session has existed, so the next connect is a reconnect
+	// stopping is set while a teardown is running. connect consults it in the same
+	// critical section that publishes connectCancel, which is what makes the pair
+	// airtight: a handshake starting between the teardown's cancellation and its state
+	// write would otherwise park with nothing left to interrupt it.
+	stopping bool
 }
 
 // Generation changes on every lifecycle transition, so an operation that
@@ -237,6 +242,14 @@ func (b *Backend) connect(ctx context.Context) (*mcp.ClientSession, error) {
 		b.mu.Unlock()
 		return sess, nil
 	}
+	if b.stopping {
+		// A teardown is running and has already cancelled whatever handshake existed.
+		// Starting one now would park behind a gate.Lock that is waiting for this very
+		// dispatch's lease, with nothing left to interrupt it. Nothing was sent, so a
+		// dispatch reports this as not attempted and may retry.
+		b.mu.Unlock()
+		return nil, fmt.Errorf("backend %s: a lifecycle transition is in progress", b.name)
+	}
 	if wait := time.Until(b.retryAt); wait > 0 {
 		last := b.health.LastErr
 		b.mu.Unlock()
@@ -333,13 +346,16 @@ const (
 // teardown ends the shared session, and for forDisable is the kill switch. Every
 // step's position is load bearing:
 //
-//   - an in-flight handshake is cancelled before the gate is taken, because a
-//     dispatch waiting on that handshake holds a dispatch lease, and gate.Lock would
-//     then wait for the very handshake this cancellation ends. A handshake that
-//     blocks for a human, which an OAuth code fetch does, makes that the normal case
-//     rather than a worst case. It costs an in-flight handshake its completion, which
-//     is what a kill switch is for: nothing was sent, so its dispatch reports
-//     ErrNotAttempted;
+//   - stopping is set, and an in-flight handshake cancelled, before the gate is taken,
+//     because a dispatch waiting on that handshake holds a dispatch lease and
+//     gate.Lock would then wait for the very handshake this cancellation ends. A
+//     handshake that blocks for a human, which an OAuth code fetch does, makes that
+//     the normal case rather than a worst case. The flag is what covers a dispatch
+//     that took its lease before all this began and reaches connect after the
+//     cancellation: connect checks it in the same critical section that publishes
+//     connectCancel, so neither can overtake the other. Both cost an in-flight
+//     handshake its completion, and a reconnect does this as well as a disable:
+//     nothing was sent, so the dispatch reports ErrNotAttempted and may retry;
 //   - the gate closes and drains first, so a dispatch that already holds a lease
 //     completes and no later one can write;
 //   - the state is set before anything is awaited, so no further handshake starts;
@@ -353,6 +369,11 @@ const (
 //     teardown from being recorded as a backend failure;
 //   - the tools are evicted last, once nothing is left that could commit them.
 func (b *Backend) teardown(mode teardownMode) {
+	// mu is taken and released before the gate, never held across it, so the documented
+	// gate-then-life-then-mu order is unchanged.
+	b.mu.Lock()
+	b.stopping = true
+	b.mu.Unlock()
 	b.cancelConnect()
 
 	b.gate.Lock()
@@ -376,14 +397,17 @@ func (b *Backend) teardown(mode teardownMode) {
 
 	b.life.Lock()
 	b.closeSession()
+	b.mu.Lock()
 	if mode == forReconnect {
 		// The backoff is cleared here, not above: the cancelled handshake has finished
 		// by the time life is held, and failConnect would otherwise re-arm the very
 		// window an explicit reconnect exists to clear.
-		b.mu.Lock()
 		b.failures, b.retryAt = 0, time.Time{}
-		b.mu.Unlock()
 	}
+	// Cleared under life as well as mu, so the next handshake can only start once the
+	// session this teardown closed is gone.
+	b.stopping = false
+	b.mu.Unlock()
 	b.life.Unlock()
 
 	if mode == forDisable && b.dropTools != nil {

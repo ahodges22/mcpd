@@ -62,7 +62,7 @@ type grant struct {
 }
 
 type counts struct {
-	registrations, authorizations, exchanges, refreshes, challenges int64
+	registrations, authorizations, exchanges, refreshes, challenges, resourceMeta int64
 }
 
 func newProvider(t *testing.T, fake *testfake.Fake) *provider {
@@ -102,6 +102,7 @@ func (p *provider) counts() counts {
 		exchanges:      p.exchanges.Load(),
 		refreshes:      p.refreshes.Load(),
 		challenges:     p.challenges.Load(),
+		resourceMeta:   p.resourceMeta.Load(),
 	}
 }
 
@@ -328,6 +329,10 @@ func (p *provider) issue() map[string]any {
 
 // refuseRefresh makes the refresh grant answer with code from now on.
 func (p *provider) refuseRefresh(code string) { p.refusal.Store(&code) }
+
+// allowRefresh ends a refusal, which is what a provider recovering from a transient
+// fault looks like.
+func (p *provider) allowRefresh() { p.refusal.Store(nil) }
 
 // revokeAccessTokens invalidates every access token issued so far, which is what a
 // consent withdrawn at the provider looks like to a client still holding one: the

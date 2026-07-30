@@ -252,6 +252,43 @@ func TestDisableInterruptsAHandshakeADispatchIsWaitingOn(t *testing.T) {
 	}
 }
 
+func TestNoHandshakeStartsInsideATeardown(t *testing.T) {
+	// The window the stopping flag closes: a dispatch that took its lease before the
+	// teardown began can reach connect after the teardown's cancellation, and would then
+	// park a fresh handshake behind a gate.Lock that is waiting for that dispatch's own
+	// lease, with nothing left to interrupt it. A reconnect leaves the state at down, so
+	// the flag is the only thing that can refuse that handshake, which is what makes this
+	// probe sound. It runs from inside stopRefresh, where the gate is held and the
+	// lifecycle mutex is free.
+	// No warm-up call: with a session still open, connect hands that session back before
+	// it reaches the flag, and the case that matters is the one with a handshake to start.
+	fake := testfake.New("alpha", tool("kubectl_logs"))
+	r := wire(t, Hooks{}, fake)
+	b, _ := r.Get("alpha")
+	inner := b.dial
+	var dials atomic.Int64
+	b.dial = func(ctx context.Context) (mcp.Transport, error) {
+		dials.Add(1)
+		return inner(ctx)
+	}
+	var reentered error
+	b.stopRefresh = func(string) { _, reentered = b.connect(context.Background()) }
+
+	if err := r.Reconnect("alpha"); err != nil {
+		t.Fatalf("reconnect: %v", err)
+	}
+	if reentered == nil {
+		t.Error("a handshake started inside a teardown, so it can park behind the gate that teardown is waiting for")
+	}
+	if n := dials.Load(); n != 0 {
+		t.Errorf("dials = %d, want 0: a handshake started inside a teardown", n)
+	}
+	// And the flag is lifted afterwards, or the backend could never connect again.
+	if _, err := b.ListTools(t.Context()); err != nil {
+		t.Errorf("list after the teardown: %v", err)
+	}
+}
+
 func TestTheRefreshLoopIsStoppedWithTheGateClosedAndTheLifecycleMutexFree(t *testing.T) {
 	// Stopping the refresh loop awaits it, and a read inside that loop can be
 	// blocked in connect waiting for the lifecycle mutex. Awaiting the loop while

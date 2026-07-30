@@ -1,7 +1,6 @@
 package oauthstore_test
 
 import (
-	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -168,16 +167,19 @@ func (d *daemon) noTokenFile() bool {
 	return os.IsNotExist(err)
 }
 
-// awaitPending returns the authorization URL the daemon published for the user.
+// awaitPending returns the authorization URL the daemon published for the user,
+// polling as the authenticate action does.
 func (d *daemon) awaitPending() string {
 	d.t.Helper()
-	ctx, cancel := context.WithTimeout(d.t.Context(), 15*time.Second)
-	defer cancel()
-	u, err := d.store.Await(ctx, server)
-	if err != nil {
-		d.t.Fatalf("no authorization was published for %s: %v", server, err)
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		if u, pending := d.store.Pending(server); pending {
+			return u
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
-	return u
+	d.t.Fatalf("no authorization was published for %s", server)
+	return ""
 }
 
 // authorize runs a first-time authorization to completion the way the user does:
@@ -535,6 +537,10 @@ func TestAFailedRefreshStopsRatherThanLooping(t *testing.T) {
 
 			// Twice, with the failure backoff cleared in between, because one read cannot
 			// show a loop and an explicit reconnect must not stand in for the user asking.
+			// The witness is the provider's metadata endpoint: an authorization attempt
+			// begins with discovery, and a refused one does not reach it. Asserting on the
+			// pending registry instead would prove nothing, because a synchronous read has
+			// already withdrawn its own pending by the time it returns.
 			for attempt := range 2 {
 				if attempt > 0 {
 					if err := next.reg.Reconnect(server); err != nil {
@@ -544,13 +550,10 @@ func TestAFailedRefreshStopsRatherThanLooping(t *testing.T) {
 				if _, err := next.list(); err == nil {
 					t.Fatalf("read %d: a backend whose refresh failed listed tools", attempt)
 				}
-				if authURL, pending := next.store.Pending(server); pending {
-					t.Fatalf("read %d published an authorization nobody asked for: %s", attempt, authURL)
+				if n := next.prov.resourceMeta.Load(); n != before.resourceMeta {
+					t.Fatalf("read %d started an authorization nobody asked for: metadata fetches = %d, want %d",
+						attempt, n, before.resourceMeta)
 				}
-			}
-			if n := next.prov.authorizations.Load(); n != before.authorizations {
-				t.Errorf("authorization requests = %d, want %d: a failed refresh reached the browser on its own",
-					n, before.authorizations)
 			}
 
 			h := next.health()
@@ -578,7 +581,106 @@ func TestAFailedRefreshStopsRatherThanLooping(t *testing.T) {
 			if n := next.prov.registrations.Load(); n != before.registrations {
 				t.Errorf("client registrations = %d, want %d: re-authorizing registered another client", n, before.registrations)
 			}
+
+			// The refusal must not outlive the grant it was about. With a new grant in
+			// place, a later revocation gets an automatic authorization again rather than a
+			// permanent demand for another click.
+			next.prov.revokeAccessTokens()
+			done := make(chan error, 1)
+			go func() {
+				_, err := next.list()
+				done <- err
+			}()
+			if res := next.consentInBrowser(next.awaitPending()); res.status != http.StatusOK {
+				t.Fatalf("callback for the automatic re-authorization = %d %q, want %d", res.status, res.body, http.StatusOK)
+			}
+			if err := <-done; err != nil {
+				t.Fatalf("the read that should have re-authorized on its own failed: %v", err)
+			}
 		})
+	}
+}
+
+func TestTheAuthenticateActionKeepsAStoredGrantThatStillWorks(t *testing.T) {
+	// A restarted backend is down until its first connect, so a user who presses
+	// Authenticate out of habit must not be given a consent screen for a grant that was
+	// never refused. Discarding it would also leave the handler presenting nothing, so
+	// every later read would publish a fresh authorization: the loop that test 10 exists
+	// to prevent, reached through the recovery door.
+	d := newDaemon(t, tool("search"))
+	d.authorize(nil)
+	before := d.prov.counts()
+	next := d.restart()
+	if got := next.health().State; got == backend.StateUp {
+		t.Fatalf("state after restart = %q, want a backend that has not connected yet", got)
+	}
+
+	status, payload := next.postAuthenticate()
+	if status != http.StatusOK || payload["status"] != "authorized" {
+		t.Errorf("authenticate on a restarted backend = %d %v, want %d and status authorized",
+			status, payload, http.StatusOK)
+	}
+	if got := next.prov.counts(); got != before {
+		t.Errorf("provider counts = %+v, want %+v: the stored grant was discarded and a new one demanded", got, before)
+	}
+	if got := next.health().State; got != backend.StateUp {
+		t.Errorf("state = %q, want %q: the stored grant no longer works", got, backend.StateUp)
+	}
+
+	// And nothing was left in a state where the daemon authorizes on its own.
+	if _, err := next.list(); err != nil {
+		t.Fatalf("list after the action: %v", err)
+	}
+	if got := next.prov.counts(); got.resourceMeta != before.resourceMeta {
+		t.Errorf("metadata fetches = %d, want %d: a later read started an authorization",
+			got.resourceMeta, before.resourceMeta)
+	}
+}
+
+func TestATransientRefreshFailureDoesNotLatch(t *testing.T) {
+	// A blip is not a dead grant. Latching on one would demand a click that the user
+	// cannot usefully make, and would then refuse the automatic re-authorization that a
+	// genuine 401 is supposed to get.
+	d := newDaemon(t, tool("search"))
+	d.authorize(nil)
+	d.expireAccessToken()
+	d.prov.refuseRefresh("temporarily_unavailable")
+	next := d.restart()
+
+	if _, err := next.list(); err == nil {
+		t.Fatal("a backend whose refresh failed listed tools")
+	}
+	if got := next.health().State; got != backend.StateDown {
+		t.Errorf("state after a transient refusal = %q, want %q: a blip is not a rejected grant", got, backend.StateDown)
+	}
+
+	next.prov.allowRefresh()
+	if err := next.reg.Reconnect(server); err != nil {
+		t.Fatalf("reconnect: %v", err)
+	}
+	if _, err := next.list(); err != nil {
+		t.Fatalf("list after the provider recovered: %v", err)
+	}
+	if got := next.health().State; got != backend.StateUp {
+		t.Fatalf("state after the provider recovered = %q, want %q", got, backend.StateUp)
+	}
+
+	// The recovered grant must not still be blocked: a genuine 401 has to be able to
+	// authorize automatically, which is the whole of test 13's scenario.
+	next.prov.revokeAccessTokens()
+	done := make(chan error, 1)
+	go func() {
+		_, err := next.list()
+		done <- err
+	}()
+	if res := next.consentInBrowser(next.awaitPending()); res.status != http.StatusOK {
+		t.Fatalf("callback = %d %q, want %d", res.status, res.body, http.StatusOK)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("the read that triggered re-authorization failed: %v", err)
+	}
+	if got := next.health().State; got != backend.StateUp {
+		t.Errorf("state after re-authorizing = %q, want %q", got, backend.StateUp)
 	}
 }
 

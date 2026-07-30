@@ -66,9 +66,6 @@ type Store struct {
 	// grants records what is known against a backend's stored grant, which is what
 	// decides whether a 401 may start a browser authorization by itself.
 	grants map[string]grantState
-	// added is closed and replaced whenever a pending authorization is published,
-	// so Await can block for one without polling.
-	added chan struct{}
 }
 
 // New returns a store persisting under dir and bridging the authorization flow
@@ -83,46 +80,57 @@ func New(dir, redirectURL string, hooks Hooks) *Store {
 		handlers:    make(map[string]auth.OAuthHandler),
 		pending:     make(map[string]*pending),
 		grants:      make(map[string]grantState),
-		added:       make(chan struct{}),
 	}
 }
 
-// grantState is what the store knows against a backend's stored grant.
-type grantState int
-
-const (
-	// grantRejected: the provider refused the stored grant, so no authorization may
-	// start until the user asks for one.
-	grantRejected grantState = iota + 1
-	// grantRequested: the user asked, so the next authorization may proceed even
-	// though the stored grant is dead.
-	grantRequested
-)
+// grantState is what the store knows about a backend's stored grant. The two facts
+// are independent: whether the provider has refused the grant decides whether it is
+// still worth presenting, and whether the user has asked decides whether an
+// authorization may start.
+type grantState struct {
+	rejected  bool
+	requested bool
+}
 
 // AllowAuthorization records that the user has asked server to be authorized, which
-// is the only thing that lifts a refusal left by a rejected grant. A dead grant must
-// wait for a person: re-entering the browser flow on the daemon's own refresh cadence
-// publishes an authorization nobody asked for and parks a connect on every attempt.
+// is the only thing that lets an authorization start once the provider has refused
+// the stored grant. A refused grant must wait for a person: re-entering the browser
+// flow on the daemon's own refresh cadence publishes an authorization nobody asked
+// for and parks a connect on every attempt.
 func (s *Store) AllowAuthorization(server string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.grants[server] = grantRequested
-	// The cached handler holds the rejected grant's token source, and a request that
-	// cannot obtain a token is never sent, so it never reaches the 401 an
-	// authorization starts from. Dropped here so the next dial builds a handler that
-	// presents nothing and authorizes instead.
-	delete(s.handlers, server)
+	g := s.grants[server]
+	g.requested = true
+	s.grants[server] = g
+	if g.rejected {
+		// Only a grant the provider has actually refused is withdrawn from the next
+		// dial: a request that cannot obtain a token is never sent, so it never reaches
+		// the 401 an authorization starts from. A grant that may still work is left in
+		// place, because forcing a consent screen on a backend that is merely down
+		// discards a working authorization.
+		delete(s.handlers, server)
+	}
 }
 
-// rejectGrant records that the provider refused this backend's grant. A request the
-// user has already made outranks it, so the refresh failure that the user's own
-// reconnect provokes cannot cancel the authorization they asked for.
+// rejectGrant records that the provider refused this backend's grant. It leaves a
+// request the user has already made intact, so a refresh failure on the session being
+// torn down cannot cancel the authorization they asked for.
 func (s *Store) rejectGrant(server string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.grants[server] != grantRequested {
-		s.grants[server] = grantRejected
-	}
+	g := s.grants[server]
+	g.rejected = true
+	s.grants[server] = g
+}
+
+// grantWorks records that the provider has honoured the grant, which is what keeps a
+// transient refusal from outliving itself. Without it one network blip would block
+// automatic re-authorization for the life of the process.
+func (s *Store) grantWorks(server string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.grants, server)
 }
 
 // permitAuthorization reports whether a browser authorization may start now,
@@ -130,11 +138,13 @@ func (s *Store) rejectGrant(server string) {
 func (s *Store) permitAuthorization(server string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.grants[server] == grantRequested {
-		delete(s.grants, server)
+	g := s.grants[server]
+	if g.requested {
+		g.requested = false
+		s.grants[server] = g
 		return true
 	}
-	return s.grants[server] != grantRejected
+	return !g.rejected
 }
 
 // publicClient refuses to send a client-secret Basic header, which is what keeps an
@@ -192,7 +202,10 @@ func (s *Store) Handler(server string) (auth.OAuthHandler, error) {
 	}
 	// A grant the user has just asked to replace is not presented: doing so is what
 	// keeps a dead token source from failing every request before one can 401.
-	inner, err := s.newAuthorizer(h, rec, s.grants[server] != grantRequested)
+	// A grant the provider has refused is not presented: a token source that cannot
+	// produce a token fails every request before one can 401, and the 401 is what an
+	// authorization starts from.
+	inner, err := s.newAuthorizer(h, rec, !s.grants[server].rejected)
 	if err != nil {
 		return nil, err
 	}
@@ -306,14 +319,20 @@ type persistingSource struct {
 func (p *persistingSource) Token() (*oauth2.Token, error) {
 	tok, err := p.src.Token()
 	if err != nil {
-		// Blocked before the note is set: the SDK swallows an invalid_grant refusal and
-		// sends the request unauthenticated, so the 401 that follows would otherwise
-		// start a browser authorization the user never asked for. The token itself is
-		// never in the note: it is rendered on the status page.
-		p.store.rejectGrant(p.server)
-		p.store.needsAuth(p.server, needsUserNote)
+		// Only a refusal the grant cannot recover from. The SDK swallows an invalid_grant
+		// and sends the request unauthenticated, so the 401 that follows would otherwise
+		// start a browser authorization the user never asked for; a transient fault must
+		// not do that and must not ask the user to act. The token itself is never in the
+		// note: it is rendered on the status page.
+		if p.permanent(err) {
+			p.store.rejectGrant(p.server)
+			p.store.needsAuth(p.server, needsUserNote)
+		}
 		return nil, err
 	}
+	// The provider honoured the grant, so nothing stands against it any more.
+	p.store.grantWorks(p.server)
+
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if tok.AccessToken == p.lastAccess && tok.RefreshToken == p.lastRefresh {
@@ -325,6 +344,23 @@ func (p *persistingSource) Token() (*oauth2.Token, error) {
 		slog.Error("persist oauth token", "backend", p.server, "error", err)
 	}
 	return tok, nil
+}
+
+// permanent reports whether err means the stored grant can never work again, which is
+// the only case where the user has to act. A network fault, a provider 5xx or a
+// temporarily_unavailable is a blip: latching on one would turn it into a permanent
+// demand for a click.
+func (p *persistingSource) permanent(err error) bool {
+	var refused *oauth2.RetrieveError
+	if errors.As(err, &refused) {
+		// RFC 6749 section 5.2: these two mean the grant or the client is gone.
+		return refused.ErrorCode == "invalid_grant" || refused.ErrorCode == "invalid_client"
+	}
+	// No refresh token was ever held, so oauth2 refused before any request: the access
+	// token has expired and only a new authorization can replace it.
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.lastRefresh == ""
 }
 
 func (p *persistingSource) persist(tok *oauth2.Token) error {

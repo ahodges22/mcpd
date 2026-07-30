@@ -83,36 +83,15 @@ func (s *Store) Deliver(state, code, iss string) error {
 	return nil
 }
 
-// Pending reports the URL an outstanding authorization for server is waiting on,
-// without waiting for one to appear. The authenticate action checks it first, so
+// Pending reports the URL an outstanding authorization for server is waiting on. The
+// authenticate action polls it, because it has to wait for either this or the backend
+// coming up and only one of those two can be subscribed to. Polling also means
 // pressing the button twice hands back the same URL rather than cancelling the
 // authorization the user is part way through.
 func (s *Store) Pending(server string) (string, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.pendingLocked(server)
-}
-
-// Await reports the URL a pending authorization for server is waiting on,
-// blocking until one is published or ctx is done. The authorize action uses it to
-// answer with somewhere to send the user, which only exists once the backend's
-// 401 has been discovered.
-func (s *Store) Await(ctx context.Context, server string) (string, error) {
-	for {
-		s.mu.Lock()
-		u, ok := s.pendingLocked(server)
-		added := s.added
-		s.mu.Unlock()
-		if ok {
-			return u, nil
-		}
-
-		select {
-		case <-added:
-		case <-ctx.Done():
-			return "", ctx.Err()
-		}
-	}
 }
 
 func (s *Store) pendingLocked(server string) (string, bool) {
@@ -128,8 +107,6 @@ func (s *Store) publish(state string, p *pending) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.pending[state] = p
-	close(s.added)
-	s.added = make(chan struct{})
 }
 
 func (s *Store) withdraw(state string) {
