@@ -101,17 +101,17 @@
 
 ## 10. Downstream OAuth
 
-- [ ] 10.1 Confirm the authorization-handler config field names with `go doc`
-- [ ] 10.2 Write the failing tests: the full flow against a fake provider through
+- [x] 10.1 Confirm the authorization-handler config field names with `go doc`
+- [x] 10.2 Write the failing tests: the full flow against a fake provider through
       registration, exchange, 0600 persistence, authenticated reconnect, restart reuse, and
       refresh; a mismatched or replayed state is rejected with no token written, driven as a
       browser-shaped GET through the real guard
-- [ ] 10.3 Implement the store: pending-authorization registry, code fetcher, atomic
+- [x] 10.3 Implement the store: pending-authorization registry, code fetcher, atomic
       persistence at 0600 inside a 0700 directory, and write-back on refresh
-- [ ] 10.4 Wire the handler into the backend HTTP client using dynamic client registration,
+- [x] 10.4 Wire the handler into the backend HTTP client using dynamic client registration,
       per the Phase 0 finding, and return a backend to needs-auth on refresh failure
-- [ ] 10.5 Add the authorize and callback routes
-- [ ] 10.6 Tests green under `-race`, then commit
+- [x] 10.5 Add the authorize and callback routes
+- [x] 10.6 Tests green under `-race`, then commit
 
 ## 11. Daemon entrypoint and first real run
 
