@@ -122,9 +122,14 @@
       connecting, graceful shutdown draining and terminating children. Shutdown is
       `backend.Registry.Shutdown()`, which drains the dispatch gate, stops each refresh,
       closes each session and terminates each child, writes no override and evicts no
-      tools. Cancel the context given to `catalog.Start` before calling it: a refresh that
-      outlives the shutdown records the backend as excluded and evicts the very tools the
-      next start was going to serve. Must call `catalog.Load()` at startup (it is what
+      tools, and after which every transition and every dial refuses with
+      `backend.ErrShutdown`, so a detached `reconnect-all` cannot respawn a child. Cancel the
+      context given to `catalog.Start` before calling it anyway, so no loop keeps running
+      against a registry that refuses it. `Shutdown` takes no context and can take none:
+      draining the dispatch gate has no cancellable variant, so one `tools/call` on a backend
+      with no configured `timeout` blocks process exit until the client gives up. That is the
+      known unbounded-call limitation surfacing in a new place; decide deliberately whether
+      to bound the shutdown from outside and exit regardless. Must call `catalog.Load()` at startup (it is what
       backs the spec's persistence requirement) and one startup `catalog.RefreshAll()`,
       because `catalog.Start` deliberately performs no immediate refresh to avoid doubling
       every cold start's reads
@@ -152,7 +157,9 @@
       warm cache works offline has no data path: `Load` at startup, `Save` after each
       `Vectorize`. `Vectorize` belongs at catalog-refresh time, and the natural place is
       11.4's post-commit hook, which fires from each refresh goroutine, so several
-      `Vectorize` calls can run at once. `Cache` is safe for that;
+      `Vectorize` calls can run at once. `Cache` is safe for that. Note the hook also fires
+      from `Drop` inside a lifecycle teardown, with that backend's dispatch gate held closed
+      (see 11.4), so a gateway call wired to it delays every disable by its own timeout;
       (e) the tool-search spec's "the status surface reports how many tools are
       unvectorized" has no field anywhere. `Vectorize` returns the count, but neither
       `backend.Health` nor `web.statusView` can carry it, so one of them gains a field and
@@ -167,7 +174,12 @@
       so would sync against stale entries, and `Sync` holds its own lock across
       `cat.Entries()`. Without this, nothing calls `Sync` and the pass-through tool set never
       changes after startup. Register it before the first refresh starts: the field is not
-      guarded, because it is written once at construction. Construct the pass-through after
+      guarded, because it is written once at construction. **One of the three paths is not a
+      refresh:** `Drop` is called from inside `Backend.teardown`, which holds that backend's
+      dispatch gate closed until it returns, so the hook can run inside a lifecycle
+      transition. `Sync` is safe there (it takes only its own lock, and reaches the catalog
+      solely through `Entries`), but anything else wired to the hook must neither dispatch a
+      tool call nor block, or a disable waits on it. Construct the pass-through after
       `catalog.Load()`, because `NewPassthrough` syncs in its constructor and would otherwise
       serve an empty tool set until the first refresh commits
 - [ ] 11.5 Wire all four catalog refresh triggers: `catalog.Start(ctx)` covers TTL expiry, and

@@ -128,12 +128,11 @@ func newBackend(name string, spec config.Backend, hooks Hooks) *Backend {
 // that begins, so a crash mid-teardown leaves the backend disabled rather than
 // silently re-enabled.
 func (r *Registry) Disable(name string) error {
-	b, ok := r.Get(name)
-	if !ok {
-		return fmt.Errorf("unknown backend %q", name)
+	b, done, err := r.beginTransition(name)
+	if err != nil {
+		return err
 	}
-	b.transition.Lock()
-	defer b.transition.Unlock()
+	defer done()
 	if err := r.overrides.set(name, true); err != nil {
 		return fmt.Errorf("disable %s: %w", name, err)
 	}
@@ -145,8 +144,17 @@ func (r *Registry) Disable(name string) error {
 // gate, stops each refresh, closes each session and terminates each stdio child.
 // It writes no override, because a restart must not find every backend disabled,
 // and it evicts no tools, because the persisted catalog is what answers a search
-// before the next start has re-listed anything. Each backend is left latched
-// against dialling again, so nothing that outlives this call respawns a child.
+// before the next start has re-listed anything.
+//
+// It is terminal: the latch it leaves is never cleared, a backend already disabled
+// stays disabled, every later transition refuses, and a dial refuses even if one is
+// somehow reached. That matters because the web surface deliberately leaves a
+// transition running after its response has timed out, so a reconnect-all can still
+// be in flight with nothing left to join it, and a respawned child would outlive the
+// daemon.
+//
+// It takes no context and cannot: draining the gate has no cancellable variant, so a
+// tools/call with no configured timeout blocks exit until the client gives up.
 func (r *Registry) Shutdown() {
 	for _, name := range r.names {
 		b := r.backends[name]
@@ -154,6 +162,23 @@ func (r *Registry) Shutdown() {
 		b.teardown(forShutdown)
 		b.transition.Unlock()
 	}
+}
+
+// beginTransition takes name's transition lock, and refuses once a shutdown has
+// latched the backend. Every user-initiated transition starts here, so none of them
+// can undo a shutdown: an enable or a reconnect triggers a refresh, and a refresh
+// after a shutdown both re-dials and evicts the tools the shutdown kept.
+func (r *Registry) beginTransition(name string) (*Backend, func(), error) {
+	b, ok := r.Get(name)
+	if !ok {
+		return nil, nil, fmt.Errorf("unknown backend %q", name)
+	}
+	b.transition.Lock()
+	if b.shuttingDown() {
+		b.transition.Unlock()
+		return nil, nil, fmt.Errorf("%s: %w", name, ErrShutdown)
+	}
+	return b, b.transition.Unlock, nil
 }
 
 // Reconnect ends the shared session so the next dispatch or list re-dials, and
@@ -169,12 +194,11 @@ func (r *Registry) Reconnect(name string) error {
 
 // ReconnectGeneration identifies the lifecycle whose refresh this reconnect starts.
 func (r *Registry) ReconnectGeneration(name string) (uint64, error) {
-	b, ok := r.Get(name)
-	if !ok {
-		return 0, fmt.Errorf("unknown backend %q", name)
+	b, done, err := r.beginTransition(name)
+	if err != nil {
+		return 0, err
 	}
-	b.transition.Lock()
-	defer b.transition.Unlock()
+	defer done()
 	if b.Health().State == StateDisabled {
 		return 0, fmt.Errorf("reconnect %s: %w", name, ErrDisabled)
 	}
@@ -191,12 +215,11 @@ func (r *Registry) ReconnectGeneration(name string) (uint64, error) {
 // Enable clears the override and lets the backend connect again on its next use.
 // It runs under the same locks as Disable, so a re-enable cannot race a teardown.
 func (r *Registry) Enable(name string) error {
-	b, ok := r.Get(name)
-	if !ok {
-		return fmt.Errorf("unknown backend %q", name)
+	b, done, err := r.beginTransition(name)
+	if err != nil {
+		return err
 	}
-	b.transition.Lock()
-	defer b.transition.Unlock()
+	defer done()
 	if err := r.overrides.set(name, false); err != nil {
 		return fmt.Errorf("enable %s: %w", name, err)
 	}

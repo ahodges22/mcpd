@@ -73,6 +73,10 @@ func (s *Server) snapshot() statusView {
 // token about to lapse from one the daemon has stopped refreshing. Only the expiry
 // is read: the token itself never reaches a response or a page.
 func (s *Server) tokenExpiry(name string) string {
+	// A wiring mistake must not panic the one route every page load goes through.
+	if s.oauth == nil {
+		return ""
+	}
 	exp, ok := s.oauth.TokenExpiry(name)
 	if !ok {
 		return ""

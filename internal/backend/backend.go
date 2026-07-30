@@ -32,6 +32,11 @@ var ErrStaleGeneration = errors.New("superseded by a lifecycle transition")
 // backend failure: nothing was attempted and nothing is wrong upstream.
 var ErrDisabled = errors.New("backend disabled")
 
+// ErrShutdown reports that the daemon has shut this backend down. Like ErrDisabled
+// it is not a backend failure, and unlike it there is no way back: the state is
+// terminal for the life of the process.
+var ErrShutdown = errors.New("backend shut down")
+
 type State string
 
 const (
@@ -109,6 +114,10 @@ type Backend struct {
 	connected      bool // a session has existed, so the next connect is a reconnect
 	// stopping and connectCancel share one critical section so teardown cannot miss a new handshake.
 	stopping bool
+	// shutdown latches for the life of the process: the daemon is exiting, so nothing
+	// may dial again however it asks. stopping cannot serve, being cleared by the very
+	// transitions this has to survive.
+	shutdown bool
 }
 
 // Generation changes on every lifecycle transition, so an operation that
@@ -133,6 +142,12 @@ func (b *Backend) ConnectAttempt() (ConnectAttempt, uint64) {
 // UsesOAuth reports whether this backend authorizes with OAuth, which is what
 // makes the authenticate action meaningful for it.
 func (b *Backend) UsesOAuth() bool { return b.spec.Auth == "oauth" }
+
+func (b *Backend) shuttingDown() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.shutdown
+}
 
 // NoteNeedsAuth records that this backend cannot serve until the user authorizes
 // it, with note rendered verbatim as its auth note. A disabled backend is left
@@ -252,6 +267,12 @@ func (b *Backend) connect(ctx context.Context) (*mcp.ClientSession, error) {
 	if b.health.State == StateDisabled {
 		b.mu.Unlock()
 		return nil, ErrDisabled
+	}
+	// The one place a child is ever spawned, so refusing here is what makes the
+	// shutdown latch a barrier rather than a hint.
+	if b.shutdown {
+		b.mu.Unlock()
+		return nil, ErrShutdown
 	}
 	if sess := b.session; sess != nil {
 		b.mu.Unlock()
@@ -375,9 +396,14 @@ func (b *Backend) teardown(mode teardownMode) {
 	if mode == forDisable {
 		b.health.State = StateDisabled
 		b.health.ToolCount = 0
-	} else {
+	} else if b.health.State != StateDisabled {
+		// Only a shutdown reaches here with the kill switch latched, since a reconnect
+		// refuses a disabled backend, and a shutdown must not lift it.
 		b.health.State = StateDown
 	}
+	// Never cleared: the latch is what makes a shutdown terminal, so no later
+	// transition of any mode can dial a child this process would not own.
+	b.shutdown = b.shutdown || mode == forShutdown
 	b.health.LastErr = ""
 	b.gen.Add(1)
 	b.mu.Unlock()
@@ -394,7 +420,7 @@ func (b *Backend) teardown(mode teardownMode) {
 		// The cancelled handshake may have re-armed backoff after teardown cleared it.
 		b.failures, b.retryAt = 0, time.Time{}
 	}
-	b.stopping = mode == forShutdown
+	b.stopping = false
 	b.mu.Unlock()
 	b.life.Unlock()
 

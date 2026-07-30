@@ -2,7 +2,9 @@ package catalog
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -107,55 +109,107 @@ func TestDisableRemovesToolsAndTerminatesTheChild(t *testing.T) {
 	}
 }
 
-func TestShutdownTerminatesTheChildWithoutDisablingOrForgettingIt(t *testing.T) {
+func TestShutdownIsTerminalForEveryChild(t *testing.T) {
+	// Two backends, because the two halves differ: one the user turned off first, which
+	// must still read as disabled afterwards, and one that was serving. Nothing after
+	// the shutdown may respawn either, and the web surface deliberately leaves a
+	// transition running past its own response, so "afterwards" is reachable.
 	dir := t.TempDir()
-	pidFile := filepath.Join(dir, "pids")
+	pidFiles := map[string]string{"live": filepath.Join(dir, "live"), "killed": filepath.Join(dir, "killed")}
 	self, err := os.Executable()
 	if err != nil {
 		t.Fatalf("locate the test binary: %v", err)
 	}
-	reg, c := lifecycle(t, dir, fastTuning, config.Backend{
-		Name:       "child",
-		Command:    self,
-		Args:       []string{childMarker},
-		Env:        map[string]string{childPIDFile: pidFile},
-		TimeoutSec: 30,
-	})
+	specs := make([]config.Backend, 0, len(pidFiles))
+	for _, name := range slices.Sorted(maps.Keys(pidFiles)) {
+		specs = append(specs, config.Backend{
+			Name:       name,
+			Command:    self,
+			Args:       []string{childMarker},
+			Env:        map[string]string{childPIDFile: pidFiles[name]},
+			TimeoutSec: 30,
+		})
+	}
+	reg, c := lifecycle(t, dir, fastTuning, specs...)
 
 	c.RefreshAll(t.Context())
-	if _, ok := c.Lookup("mcp__child__kubectl_logs"); !ok {
-		t.Fatalf("the child's tools were never catalogued: %v", c.Errors())
+	pids := make(map[string]int, len(pidFiles))
+	for name, path := range pidFiles {
+		if _, ok := c.Lookup(catalog(name)); !ok {
+			t.Fatalf("%s's tools were never catalogued: %v", name, c.Errors())
+		}
+		got := childPIDs(t, path)
+		if len(got) != 1 {
+			t.Fatalf("%s pids = %v, want exactly one child", name, got)
+		}
+		pids[name] = got[0]
 	}
-	pids := childPIDs(t, pidFile)
-	if len(pids) != 1 {
-		t.Fatalf("pids = %v, want exactly one child", pids)
+	if err := reg.Disable("killed"); err != nil {
+		t.Fatalf("disable: %v", err)
 	}
+	overrides := readFile(t, filepath.Join(dir, "overrides.json"))
 
 	reg.Shutdown()
 
-	if alive(pids[0]) {
-		t.Errorf("child %d is still running after a shutdown", pids[0])
+	for name, pid := range pids {
+		if alive(pid) {
+			t.Errorf("%s's child %d is still running after a shutdown", name, pid)
+		}
 	}
-	if _, err := os.Stat(filepath.Join(dir, "overrides.json")); !os.IsNotExist(err) {
-		t.Errorf("a shutdown wrote an override (stat err = %v): every backend would come back disabled", err)
+	// The kill switch outlives the shutdown, in memory as well as on disk: downgrading
+	// it to down is what would let a reconnect resurrect a backend the user turned off.
+	if got := reg.Health()["killed"].State; got != backend.StateDisabled {
+		t.Errorf("killed state = %q, want %q: the shutdown lifted the kill switch", got, backend.StateDisabled)
 	}
-	if got := reg.Health()["child"].State; got == backend.StateDisabled {
-		t.Errorf("state = %q: a shutdown is not the kill switch", got)
+	if got := reg.Health()["live"].State; got == backend.StateDisabled {
+		t.Errorf("live state = %q: a shutdown is not the kill switch", got)
 	}
-	// The tools stay: the persisted catalog is what answers a search before the next
-	// start has re-listed anything.
-	if _, ok := c.Lookup("mcp__child__kubectl_logs"); !ok {
-		t.Error("a shutdown evicted the child's tools, so the next start serves an empty catalog")
+	if got := readFile(t, filepath.Join(dir, "overrides.json")); got != overrides {
+		t.Errorf("overrides = %s, want %s unchanged: the shutdown wrote one", got, overrides)
 	}
-	// And nothing may dial again: a dispatch arriving during shutdown would otherwise
-	// spawn a child that outlives the daemon.
-	b, _ := reg.Get("child")
-	if _, err := b.ListTools(t.Context()); err == nil {
-		t.Error("a read after the shutdown succeeded, so it re-dialled the backend")
+	// live's tools stay: the persisted catalog is what answers a search before the next
+	// start has re-listed anything. killed's went with its disable.
+	if _, ok := c.Lookup(catalog("live")); !ok {
+		t.Error("a shutdown evicted the tools, so the next start serves an empty catalog")
 	}
-	if got := childPIDs(t, pidFile); len(got) != 1 {
-		t.Errorf("pids = %v: a shutdown backend was respawned", got)
+
+	// Nothing may dial again, by any route: not a dispatch, and not one of the three
+	// transitions, each of which either re-dials itself or triggers a refresh that does.
+	for name := range pids {
+		b, _ := reg.Get(name)
+		if _, err := b.ListTools(t.Context()); err == nil {
+			t.Errorf("%s: a read after the shutdown succeeded, so it re-dialled", name)
+		}
+		if err := reg.Reconnect(name); !errors.Is(err, backend.ErrShutdown) {
+			t.Errorf("%s: reconnect after the shutdown = %v, want ErrShutdown", name, err)
+		}
+		if err := reg.Enable(name); !errors.Is(err, backend.ErrShutdown) {
+			t.Errorf("%s: enable after the shutdown = %v, want ErrShutdown", name, err)
+		}
+		if err := reg.Disable(name); !errors.Is(err, backend.ErrShutdown) {
+			t.Errorf("%s: disable after the shutdown = %v, want ErrShutdown", name, err)
+		}
 	}
+	c.WaitIdle()
+	for name, path := range pidFiles {
+		if got := childPIDs(t, path); len(got) != 1 {
+			t.Errorf("%s pids = %v: a shut-down backend was respawned", name, got)
+		}
+	}
+	if got := readFile(t, filepath.Join(dir, "overrides.json")); got != overrides {
+		t.Errorf("overrides = %s, want %s unchanged: a refused transition still wrote one", got, overrides)
+	}
+}
+
+func catalog(server string) string { return CanonicalID(server, "kubectl_logs") }
+
+func readFile(t *testing.T, path string) string {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return string(raw)
 }
 
 func TestALateRefreshCannotResurrectADisabledBackend(t *testing.T) {
