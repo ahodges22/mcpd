@@ -348,11 +348,16 @@ func (b *Backend) connectTimeout() time.Duration {
 // switch latches StateDisabled and evicts the tools: a reconnect leaves the
 // entries in place, because a down backend deliberately keeps them and a
 // vanish-and-reappear would churn every connected pass-through client.
+//
+// forShutdown is a reconnect's teardown that nothing follows: the tools stay in
+// the persisted catalog for the next start to serve, no override is written, and
+// stopping stays latched so nothing re-dials the child that was just terminated.
 type teardownMode int
 
 const (
 	forDisable teardownMode = iota
 	forReconnect
+	forShutdown
 )
 
 // teardown follows transition, gate, life, mu, taking mu before the gate but never across
@@ -389,7 +394,7 @@ func (b *Backend) teardown(mode teardownMode) {
 		// The cancelled handshake may have re-armed backoff after teardown cleared it.
 		b.failures, b.retryAt = 0, time.Time{}
 	}
-	b.stopping = false
+	b.stopping = mode == forShutdown
 	b.mu.Unlock()
 	b.life.Unlock()
 

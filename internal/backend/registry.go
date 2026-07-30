@@ -141,6 +141,21 @@ func (r *Registry) Disable(name string) error {
 	return nil
 }
 
+// Shutdown tears every backend down for process exit: it drains the dispatch
+// gate, stops each refresh, closes each session and terminates each stdio child.
+// It writes no override, because a restart must not find every backend disabled,
+// and it evicts no tools, because the persisted catalog is what answers a search
+// before the next start has re-listed anything. Each backend is left latched
+// against dialling again, so nothing that outlives this call respawns a child.
+func (r *Registry) Shutdown() {
+	for _, name := range r.names {
+		b := r.backends[name]
+		b.transition.Lock()
+		b.teardown(forShutdown)
+		b.transition.Unlock()
+	}
+}
+
 // Reconnect ends the shared session so the next dispatch or list re-dials, and
 // clears the backoff window, without which a backend inside it would ignore the
 // user's explicit request. It writes no override, because the user's enable and

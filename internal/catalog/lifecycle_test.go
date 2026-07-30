@@ -107,6 +107,57 @@ func TestDisableRemovesToolsAndTerminatesTheChild(t *testing.T) {
 	}
 }
 
+func TestShutdownTerminatesTheChildWithoutDisablingOrForgettingIt(t *testing.T) {
+	dir := t.TempDir()
+	pidFile := filepath.Join(dir, "pids")
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatalf("locate the test binary: %v", err)
+	}
+	reg, c := lifecycle(t, dir, fastTuning, config.Backend{
+		Name:       "child",
+		Command:    self,
+		Args:       []string{childMarker},
+		Env:        map[string]string{childPIDFile: pidFile},
+		TimeoutSec: 30,
+	})
+
+	c.RefreshAll(t.Context())
+	if _, ok := c.Lookup("mcp__child__kubectl_logs"); !ok {
+		t.Fatalf("the child's tools were never catalogued: %v", c.Errors())
+	}
+	pids := childPIDs(t, pidFile)
+	if len(pids) != 1 {
+		t.Fatalf("pids = %v, want exactly one child", pids)
+	}
+
+	reg.Shutdown()
+
+	if alive(pids[0]) {
+		t.Errorf("child %d is still running after a shutdown", pids[0])
+	}
+	if _, err := os.Stat(filepath.Join(dir, "overrides.json")); !os.IsNotExist(err) {
+		t.Errorf("a shutdown wrote an override (stat err = %v): every backend would come back disabled", err)
+	}
+	if got := reg.Health()["child"].State; got == backend.StateDisabled {
+		t.Errorf("state = %q: a shutdown is not the kill switch", got)
+	}
+	// The tools stay: the persisted catalog is what answers a search before the next
+	// start has re-listed anything.
+	if _, ok := c.Lookup("mcp__child__kubectl_logs"); !ok {
+		t.Error("a shutdown evicted the child's tools, so the next start serves an empty catalog")
+	}
+	// And nothing may dial again: a dispatch arriving during shutdown would otherwise
+	// spawn a child that outlives the daemon.
+	b, _ := reg.Get("child")
+	if _, err := b.ListTools(t.Context()); err == nil {
+		t.Error("a read after the shutdown succeeded, so it re-dialled the backend")
+	}
+	if got := childPIDs(t, pidFile); len(got) != 1 {
+		t.Errorf("pids = %v: a shutdown backend was respawned", got)
+	}
+}
+
 func TestALateRefreshCannotResurrectADisabledBackend(t *testing.T) {
 	fake := testfake.New("alpha", tool("kubectl_logs"))
 	gate := holdLists(t, fake, 2)
