@@ -31,10 +31,10 @@ type provider struct {
 	// forbid answers the MCP endpoint 403 rather than 401, so the ruling that a 403
 	// never authorizes is testable.
 	forbid atomic.Bool
-	// rejectRefresh fails the refresh grant, so a permanently failed refresh is
-	// testable. The error is not invalid_grant, which the SDK treats as a reason to
-	// run the browser flow again.
-	rejectRefresh atomic.Bool
+	// refusal, when set, is the OAuth error code the refresh grant answers with, so
+	// both classes of permanent refusal are testable: the SDK aborts a request on most
+	// of them, but swallows invalid_grant and sends the request unauthenticated.
+	refusal atomic.Pointer[string]
 
 	registrations  atomic.Int64
 	authorizations atomic.Int64
@@ -103,6 +103,14 @@ func (p *provider) counts() counts {
 		refreshes:      p.refreshes.Load(),
 		challenges:     p.challenges.Load(),
 	}
+}
+
+// requests reports how many JSON-RPC requests the MCP endpoint has served, which is
+// how a session torn down and re-established shows up.
+func (p *provider) requests() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return len(p.methods)
 }
 
 // repeated reports any JSON-RPC method the MCP endpoint received more than once,
@@ -288,8 +296,8 @@ func (p *provider) exchangeCode(w http.ResponseWriter, r *http.Request) {
 
 func (p *provider) refreshToken(w http.ResponseWriter, r *http.Request) {
 	p.refreshes.Add(1)
-	if p.rejectRefresh.Load() {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid_client", "error_description": "this client no longer exists"})
+	if code := p.refusal.Load(); code != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": *code, "error_description": "this grant is no longer usable"})
 		return
 	}
 	p.mu.Lock()
@@ -316,6 +324,18 @@ func (p *provider) issue() map[string]any {
 		"expires_in":    3600,
 		"refresh_token": refresh,
 	}
+}
+
+// refuseRefresh makes the refresh grant answer with code from now on.
+func (p *provider) refuseRefresh(code string) { p.refusal.Store(&code) }
+
+// revokeAccessTokens invalidates every access token issued so far, which is what a
+// consent withdrawn at the provider looks like to a client still holding one: the
+// token is unexpired, so nothing refreshes, and the next request simply 401s.
+func (p *provider) revokeAccessTokens() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.access = make(map[string]bool)
 }
 
 func (p *provider) validAccess(token string) bool {

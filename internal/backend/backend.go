@@ -127,6 +127,25 @@ func (b *Backend) NoteNeedsAuth(note string) {
 	b.health.AuthNote = note
 }
 
+// NoteAuthorized clears a needs-auth marking once an authorization has succeeded.
+// An authorization can complete on a session that never went down, and then no
+// handshake runs to record that the backend is serving again.
+func (b *Backend) NoteAuthorized() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.health.State != StateNeedsAuth {
+		return
+	}
+	b.health.AuthNote = b.authNote
+	if b.session != nil {
+		b.health.State = StateUp
+		return
+	}
+	// No session yet: the handshake this authorization unblocked is the thing that
+	// will say up, and down is what the backend is until it does.
+	b.health.State = StateDown
+}
+
 // Call dispatches a tool call at most once. It returns an error wrapping
 // ErrNotAttempted only when no send began; any other error means the upstream
 // may have received and acted on the request.
@@ -314,18 +333,28 @@ const (
 // teardown ends the shared session, and for forDisable is the kill switch. Every
 // step's position is load bearing:
 //
+//   - an in-flight handshake is cancelled before the gate is taken, because a
+//     dispatch waiting on that handshake holds a dispatch lease, and gate.Lock would
+//     then wait for the very handshake this cancellation ends. A handshake that
+//     blocks for a human, which an OAuth code fetch does, makes that the normal case
+//     rather than a worst case. It costs an in-flight handshake its completion, which
+//     is what a kill switch is for: nothing was sent, so its dispatch reports
+//     ErrNotAttempted;
 //   - the gate closes and drains first, so a dispatch that already holds a lease
 //     completes and no later one can write;
 //   - the state is set before anything is awaited, so no further handshake starts;
-//   - the in-flight handshake is cancelled before life is taken, because connect
-//     holds life for its whole duration and taking life without cancelling waits
-//     the handshake out instead of interrupting it;
+//   - the in-flight handshake is cancelled again before life is taken, because
+//     connect holds life for its whole duration and taking life without cancelling
+//     waits the handshake out instead of interrupting it; repeating it also covers a
+//     handshake that began after the cancellation above;
 //   - the refresh loop is cancelled and awaited before life is taken, because a
 //     read blocked in connect's life.Lock would never exit and awaiting it under
 //     life is a deadlock; awaiting it before the session closes also keeps our own
 //     teardown from being recorded as a backend failure;
 //   - the tools are evicted last, once nothing is left that could commit them.
 func (b *Backend) teardown(mode teardownMode) {
+	b.cancelConnect()
+
 	b.gate.Lock()
 	defer b.gate.Unlock()
 

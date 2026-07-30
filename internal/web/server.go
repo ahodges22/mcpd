@@ -198,10 +198,14 @@ func (s *Server) oauthCallback(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("Authorization received. You can close this tab and return to the mcpd status page.\n"))
 }
 
-// authorize starts an authorization the user can complete. It reconnects first,
-// because a backend inside its failure backoff would otherwise ignore the request
-// and never reach the 401 the authorization URL is discovered from, then waits for
-// that URL so the answer can say where to send the user.
+// authorize starts an authorization the user can complete and answers with the URL
+// to send them to.
+//
+// Nothing is torn down before it is established that an authorization is needed: a
+// backend that is up is answered from its health record, and one already waiting on
+// the browser is answered with the URL it is waiting on. Only then does it
+// reconnect, which is what lets a backend sitting in its failure backoff reach the
+// 401 an authorization URL is discovered from.
 func (s *Server) authorize(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	b, ok := s.reg.Get(name)
@@ -210,11 +214,20 @@ func (s *Server) authorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !b.UsesOAuth() {
-		// Refused rather than attempted: the reconnect below would drop a live session
-		// to look for an authorization this backend will never need.
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "this backend does not authorize with oauth"})
 		return
 	}
+	if authURL, pending := s.oauth.Pending(name); pending {
+		writeJSON(w, http.StatusOK, map[string]string{"status": "pending", "authorize_url": authURL})
+		return
+	}
+	if b.Health().State == backend.StateUp {
+		writeJSON(w, http.StatusOK, map[string]string{"status": "authorized"})
+		return
+	}
+	// The user asking is what lifts the block a rejected grant leaves behind.
+	s.oauth.AllowAuthorization(name)
+
 	finished, err := awaitTransition(transitionTimeout, func() error { return s.reg.Reconnect(name) })
 	if !finished {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{

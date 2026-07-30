@@ -33,6 +33,10 @@ const (
 	providerTimeout = 30 * time.Second
 	// clientName is what the provider shows on the consent screen.
 	clientName = "mcpd"
+	// needsUserNote is the auth note for a grant the provider rejected. The
+	// provider's own reason reaches the status page as the backend's last error; this
+	// is the part the user can act on.
+	needsUserNote = "the stored authorization was rejected, use the authenticate action"
 )
 
 // Hooks are the backend transitions the store drives.
@@ -41,6 +45,10 @@ type Hooks struct {
 	// It is called while an authorization waits on the user, and when a token
 	// refresh has failed so the user must authorize again.
 	NeedsAuth func(server, note string)
+	// Authorized clears that marking once an authorization has succeeded. It matters
+	// because an authorization can complete on a session that never went down, and
+	// then no handshake runs to record that the backend is serving again.
+	Authorized func(server string)
 }
 
 // Store keeps one token file per backend under a directory the daemon owns. The
@@ -55,6 +63,9 @@ type Store struct {
 	mu       sync.Mutex
 	handlers map[string]auth.OAuthHandler
 	pending  map[string]*pending
+	// grants records what is known against a backend's stored grant, which is what
+	// decides whether a 401 may start a browser authorization by itself.
+	grants map[string]grantState
 	// added is closed and replaced whenever a pending authorization is published,
 	// so Await can block for one without polling.
 	added chan struct{}
@@ -68,11 +79,83 @@ func New(dir, redirectURL string, hooks Hooks) *Store {
 		dir:         dir,
 		redirectURL: redirectURL,
 		hooks:       hooks,
-		client:      &http.Client{Timeout: providerTimeout},
+		client:      &http.Client{Timeout: providerTimeout, Transport: publicClient{http.DefaultTransport}},
 		handlers:    make(map[string]auth.OAuthHandler),
 		pending:     make(map[string]*pending),
+		grants:      make(map[string]grantState),
 		added:       make(chan struct{}),
 	}
+}
+
+// grantState is what the store knows against a backend's stored grant.
+type grantState int
+
+const (
+	// grantRejected: the provider refused the stored grant, so no authorization may
+	// start until the user asks for one.
+	grantRejected grantState = iota + 1
+	// grantRequested: the user asked, so the next authorization may proceed even
+	// though the stored grant is dead.
+	grantRequested
+)
+
+// AllowAuthorization records that the user has asked server to be authorized, which
+// is the only thing that lifts a refusal left by a rejected grant. A dead grant must
+// wait for a person: re-entering the browser flow on the daemon's own refresh cadence
+// publishes an authorization nobody asked for and parks a connect on every attempt.
+func (s *Store) AllowAuthorization(server string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.grants[server] = grantRequested
+	// The cached handler holds the rejected grant's token source, and a request that
+	// cannot obtain a token is never sent, so it never reaches the 401 an
+	// authorization starts from. Dropped here so the next dial builds a handler that
+	// presents nothing and authorizes instead.
+	delete(s.handlers, server)
+}
+
+// rejectGrant records that the provider refused this backend's grant. A request the
+// user has already made outranks it, so the refresh failure that the user's own
+// reconnect provokes cannot cancel the authorization they asked for.
+func (s *Store) rejectGrant(server string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.grants[server] != grantRequested {
+		s.grants[server] = grantRejected
+	}
+}
+
+// permitAuthorization reports whether a browser authorization may start now,
+// consuming the user's request if there is one.
+func (s *Store) permitAuthorization(server string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.grants[server] == grantRequested {
+		delete(s.grants, server)
+		return true
+	}
+	return s.grants[server] != grantRejected
+}
+
+// publicClient refuses to send a client-secret Basic header, which is what keeps an
+// authorization code from being presented to the provider twice.
+//
+// mcpd registers with token_endpoint_auth_method "none" and holds no secret, so such
+// a header can only come from oauth2's auth-style probe. That probe is reached
+// whenever a client_id is preregistered and the authorization server advertises
+// neither client_secret_post nor client_secret_basic, which is the normal case for a
+// public client, and it sends the token request twice: Basic header first, form
+// parameters second. Letting the first attempt reach the provider presents the code
+// twice, and a provider that invalidates a code on first presentation then refuses
+// the attempt that would have worked. Failing it here costs nothing and makes oauth2
+// fall through to the form-parameter style by itself.
+type publicClient struct{ base http.RoundTripper }
+
+func (t publicClient) RoundTrip(req *http.Request) (*http.Response, error) {
+	if _, _, ok := req.BasicAuth(); ok {
+		return nil, errors.New("mcpd is a public oauth client and sends no client secret")
+	}
+	return t.base.RoundTrip(req)
 }
 
 // record is one backend's persisted OAuth state. The client_id is kept because
@@ -90,8 +173,9 @@ type record struct {
 }
 
 // Handler returns the authorization handler for server, built on first use from
-// whatever has been persisted. The same handler is returned every time: it owns
-// the live token source, so a reconnect must not construct one and re-authorize.
+// whatever has been persisted. The same wrapper is returned every time, so the
+// transport of a reconnected session keeps a stable reference; the SDK handler
+// inside it is rebuilt when a newly registered client_id has to be picked up.
 func (s *Store) Handler(server string) (auth.OAuthHandler, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -103,6 +187,26 @@ func (s *Store) Handler(server string) (auth.OAuthHandler, error) {
 		return nil, err
 	}
 	h := &handler{store: s, server: server}
+	if rec != nil {
+		h.registeredAs = rec.ClientID
+	}
+	// A grant the user has just asked to replace is not presented: doing so is what
+	// keeps a dead token source from failing every request before one can 401.
+	inner, err := s.newAuthorizer(h, rec, s.grants[server] != grantRequested)
+	if err != nil {
+		return nil, err
+	}
+	h.inner = inner
+	s.handlers[server] = h
+	return h, nil
+}
+
+// newAuthorizer builds one SDK authorization handler over rec, which may be nil on
+// a first run. It is the only construction site, so the first-run path and the
+// rebuild that picks up a registration cannot drift apart. restoreToken decides
+// whether the persisted token is offered as the initial token source, which is what
+// makes a restart reuse it.
+func (s *Store) newAuthorizer(h *handler, rec *record, restoreToken bool) (*auth.AuthorizationCodeHandler, error) {
 	cfg := &auth.AuthorizationCodeHandlerConfig{
 		// Both registration methods are configured. The SDK prefers preregistration,
 		// so a persisted client_id is reused and dynamic registration happens only on
@@ -119,11 +223,11 @@ func (s *Store) Handler(server string) (auth.OAuthHandler, error) {
 			},
 		},
 		RedirectURL:              s.redirectURL,
-		AuthorizationCodeFetcher: s.fetchCode(server),
+		AuthorizationCodeFetcher: s.fetchCode(h.server),
 		RequestRefreshToken:      true,
 		Client:                   s.client,
 		NewTokenSource: func(ctx context.Context, oc *oauth2.Config, tok *oauth2.Token) (oauth2.TokenSource, error) {
-			src := s.persisting(server, record{
+			src := s.persisting(h.server, record{
 				ClientID: oc.ClientID,
 				Issuer:   h.issuerSeen(),
 				TokenURL: oc.Endpoint.TokenURL,
@@ -138,17 +242,20 @@ func (s *Store) Handler(server string) (auth.OAuthHandler, error) {
 	}
 	if rec != nil {
 		if rec.ClientID != "" {
+			// Configured alongside dynamic registration, which the SDK only falls back to
+			// when this is absent, so a persisted client_id is reused rather than a second
+			// client being registered at the provider.
 			cfg.PreregisteredClient = &oauthex.ClientCredentials{ClientID: rec.ClientID, Issuer: rec.Issuer}
 		}
-		cfg.InitialTokenSource = s.restore(server, *rec)
+		if restoreToken {
+			cfg.InitialTokenSource = s.restore(h.server, *rec)
+		}
 	}
 	inner, err := auth.NewAuthorizationCodeHandler(cfg)
 	if err != nil {
-		return nil, fmt.Errorf("oauth handler for %s: %w", server, err)
+		return nil, fmt.Errorf("oauth handler for %s: %w", h.server, err)
 	}
-	h.inner = inner
-	s.handlers[server] = h
-	return h, nil
+	return inner, nil
 }
 
 // restore builds the token source a restart authorizes with. Without it the first
@@ -199,8 +306,12 @@ type persistingSource struct {
 func (p *persistingSource) Token() (*oauth2.Token, error) {
 	tok, err := p.src.Token()
 	if err != nil {
-		// The token itself is never in this note: it is rendered on the status page.
-		p.store.needsAuth(p.server, "token refresh failed, authorize again")
+		// Blocked before the note is set: the SDK swallows an invalid_grant refusal and
+		// sends the request unauthenticated, so the 401 that follows would otherwise
+		// start a browser authorization the user never asked for. The token itself is
+		// never in the note: it is rendered on the status page.
+		p.store.rejectGrant(p.server)
+		p.store.needsAuth(p.server, needsUserNote)
 		return nil, err
 	}
 	p.mu.Lock()
@@ -238,6 +349,12 @@ func (p *persistingSource) persistLocked(tok *oauth2.Token) error {
 func (s *Store) needsAuth(server, note string) {
 	if s.hooks.NeedsAuth != nil {
 		s.hooks.NeedsAuth(server, note)
+	}
+}
+
+func (s *Store) authorized(server string) {
+	if s.hooks.Authorized != nil {
+		s.hooks.Authorized(server)
 	}
 }
 
@@ -298,36 +415,91 @@ func (s *Store) save(server string, rec record) error {
 	return nil
 }
 
-// handler wraps the SDK's authorization-code handler with mcpd's one deviation
-// from it: a 403 never starts an authorization flow.
+// handler wraps the SDK's authorization-code handler with mcpd's two deviations
+// from it: a 403 never starts an authorization flow, and neither does a grant the
+// provider has already rejected.
 type handler struct {
-	inner  *auth.AuthorizationCodeHandler
 	store  *Store
 	server string
 
-	mu     sync.Mutex
-	issuer string
+	mu sync.Mutex
+	// inner is rebuilt when registeredAs falls behind the persisted client_id.
+	inner        *auth.AuthorizationCodeHandler
+	registeredAs string
+	issuer       string
 }
 
 func (h *handler) TokenSource(ctx context.Context) (oauth2.TokenSource, error) {
-	return h.inner.TokenSource(ctx)
+	h.mu.Lock()
+	inner := h.inner
+	h.mu.Unlock()
+	return inner.TokenSource(ctx)
 }
 
-// Authorize runs the flow for a 401 and refuses to run it for a 403. The SDK
-// retries the identical request after a successful Authorize, and mcpd's
-// at-most-once tool dispatch is enforced above the transport, so that retry is
-// outside its boundary: a 401 is refused before the resource server acts on the
-// request, but a 403 can follow partial processing, where a replay would repeat a
-// side effect. Returning an error is what suppresses the retry; the cost is
-// step-up authorization for an insufficient_scope 403.
+// Authorize runs the flow for a 401, and refuses to run it for a 403 or for a
+// grant the provider has already rejected.
+//
+// The 403 refusal is because the SDK retries the identical request after a
+// successful Authorize, and mcpd's at-most-once tool dispatch is enforced above the
+// transport, so that retry is outside its boundary: a 401 is refused before the
+// resource server acts on the request, but a 403 can follow partial processing,
+// where a replay would repeat a side effect. Returning an error is what suppresses
+// the retry; the cost is step-up authorization for an insufficient_scope 403.
+//
+// The rejected-grant refusal is what keeps a dead refresh token from starting a
+// fresh browser authorization on every refresh attempt, each parking a connect for
+// its whole timeout. Only the user's authenticate action lifts it.
 func (h *handler) Authorize(ctx context.Context, req *http.Request, resp *http.Response) error {
 	if resp.StatusCode == http.StatusForbidden {
 		// The interface makes the callee responsible for the body.
 		resp.Body.Close()
 		return fmt.Errorf("backend %s answered 403: mcpd does not authorize on a 403, because the transport would then replay the request", h.server)
 	}
+	if !h.store.permitAuthorization(h.server) {
+		resp.Body.Close()
+		h.store.needsAuth(h.server, needsUserNote)
+		return fmt.Errorf("backend %s needs authorizing again: its stored grant was rejected, so use the authenticate action", h.server)
+	}
 	h.noteIssuer(ctx, req, resp)
-	return h.inner.Authorize(ctx, req, resp)
+
+	inner, err := h.authorizer()
+	if err != nil {
+		resp.Body.Close()
+		return err
+	}
+	if err := inner.Authorize(ctx, req, resp); err != nil {
+		return err
+	}
+	// An authorization can succeed on a session that never went down, and then no
+	// handshake runs to clear the needs-auth this flow published.
+	h.store.authorized(h.server)
+	return nil
+}
+
+// authorizer returns the SDK handler to authorize with, rebuilding it when a
+// client_id has been persisted that the current one was not built with. The SDK
+// consumes its configuration at construction and documents that it must not be
+// modified afterwards, so reusing a newly registered client_id means building a new
+// handler. Without this, a second authorization in one daemon run registers a second
+// client at the provider and orphans the first.
+func (h *handler) authorizer() (*auth.AuthorizationCodeHandler, error) {
+	rec, err := h.store.load(h.server)
+	if err != nil {
+		return nil, err
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if rec == nil || rec.ClientID == "" || rec.ClientID == h.registeredAs {
+		return h.inner, nil
+	}
+	// The token is restored here whatever the grant state: this rebuild happens inside
+	// an authorization that is about to install a fresh source anyway.
+	inner, err := h.store.newAuthorizer(h, rec, true)
+	if err != nil {
+		return nil, err
+	}
+	h.inner, h.registeredAs = inner, rec.ClientID
+	return inner, nil
 }
 
 // noteIssuer learns the authorization server's identity from the same challenge

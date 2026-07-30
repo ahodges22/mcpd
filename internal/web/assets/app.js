@@ -27,6 +27,31 @@ function pretty(res) {
   return res.body ? JSON.stringify(res.body, null, 2) : res.text;
 }
 
+// isLoopback keeps the check below usable against a test provider on 127.0.0.1,
+// which is the only case where a plain-HTTP authorization endpoint is legitimate.
+function isLoopback(host) {
+  const name = host.replace(/^\[/, "").replace(/\]$/, "");
+  return name === "localhost" || name === "::1" || /^127\.\d+\.\d+\.\d+$/.test(name);
+}
+
+// safeAuthorizeURL returns raw only if navigating to it is safe. The authorization
+// URL is provider-derived data entering a navigation context, which is the one place
+// textContent does not protect: a javascript: URL from a hostile or compromised
+// authorization server would run as same-origin script and could drive the very
+// mutation routes the guard exists to protect.
+function safeAuthorizeURL(raw) {
+  let target;
+  try {
+    target = new URL(raw);
+  } catch (err) {
+    return null;
+  }
+  if (target.protocol === "https:" || (target.protocol === "http:" && isLoopback(target.hostname))) {
+    return target.href;
+  }
+  return null;
+}
+
 for (const btn of document.querySelectorAll("button.act")) {
   btn.addEventListener("click", async () => {
     const note = document.getElementById("note");
@@ -36,6 +61,20 @@ for (const btn of document.querySelectorAll("button.act")) {
     }
     const res = await post(btn.dataset.post);
     btn.disabled = false;
+    const offered = res.ok && res.body ? res.body.authorize_url : null;
+    if (offered) {
+      // Navigating this tab rather than opening one: window.open after an await can be
+      // suppressed as a popup, and a rejected URL must be reported rather than dropped.
+      const target = safeAuthorizeURL(offered);
+      if (target === null) {
+        if (note) {
+          setText(note, "refusing to open the authorization URL: it is neither https nor loopback http");
+        }
+        return;
+      }
+      location.assign(target);
+      return;
+    }
     if (res.ok) {
       location.reload();
       return;

@@ -44,10 +44,11 @@ func (s *Store) fetchCode(server string) auth.AuthorizationCodeFetcher {
 			return nil, fmt.Errorf("authorization URL for %s carries no state", server)
 		}
 		p := &pending{server: server, url: args.URL, result: make(chan *auth.AuthorizationResult, 1)}
-		s.publish(state, p)
-		// Published before blocking, so the status page can send the user to the URL
-		// this call is waiting on.
+		// Recorded before the authorization is published, not after: publishing is what
+		// releases anyone waiting for the URL, so a health record written afterwards can
+		// be read stale by the very page the URL was published for.
 		s.needsAuth(server, "authorize at "+args.URL)
+		s.publish(state, p)
 
 		timer := time.NewTimer(pendingWindow)
 		defer timer.Stop()
@@ -82,6 +83,16 @@ func (s *Store) Deliver(state, code, iss string) error {
 	return nil
 }
 
+// Pending reports the URL an outstanding authorization for server is waiting on,
+// without waiting for one to appear. The authenticate action checks it first, so
+// pressing the button twice hands back the same URL rather than cancelling the
+// authorization the user is part way through.
+func (s *Store) Pending(server string) (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.pendingLocked(server)
+}
+
 // Await reports the URL a pending authorization for server is waiting on,
 // blocking until one is published or ctx is done. The authorize action uses it to
 // answer with somewhere to send the user, which only exists once the backend's
@@ -89,15 +100,12 @@ func (s *Store) Deliver(state, code, iss string) error {
 func (s *Store) Await(ctx context.Context, server string) (string, error) {
 	for {
 		s.mu.Lock()
-		for _, p := range s.pending {
-			if p.server == server {
-				u := p.url
-				s.mu.Unlock()
-				return u, nil
-			}
-		}
+		u, ok := s.pendingLocked(server)
 		added := s.added
 		s.mu.Unlock()
+		if ok {
+			return u, nil
+		}
 
 		select {
 		case <-added:
@@ -105,6 +113,15 @@ func (s *Store) Await(ctx context.Context, server string) (string, error) {
 			return "", ctx.Err()
 		}
 	}
+}
+
+func (s *Store) pendingLocked(server string) (string, bool) {
+	for _, p := range s.pending {
+		if p.server == server {
+			return p.url, true
+		}
+	}
+	return "", false
 }
 
 func (s *Store) publish(state string, p *pending) {

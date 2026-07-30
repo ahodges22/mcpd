@@ -216,6 +216,42 @@ func TestDisableInterruptsAHandshakeItCannotDrain(t *testing.T) {
 	}
 }
 
+func TestDisableInterruptsAHandshakeADispatchIsWaitingOn(t *testing.T) {
+	// A tools/call holds its dispatch lease for the whole handshake it triggers, so
+	// draining the gate means waiting for that handshake. Cancelling it only once the
+	// gate is held would therefore wait for the very handshake the cancellation ends.
+	// An OAuth code fetch blocks for a human inside that handshake, which is what turns
+	// this from a worst case into the normal case for an unauthorized backend.
+	r := NewRegistry(stdioConfig("alpha"), overridesAt(t, filepath.Join(t.TempDir(), "overrides.json")), Hooks{})
+	b, _ := r.Get("alpha")
+	dialing := make(chan struct{})
+	b.dial = func(ctx context.Context) (mcp.Transport, error) {
+		close(dialing)
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	call := make(chan error, 1)
+	go func() {
+		_, err := b.Call(context.Background(), "open_pull_request", nil)
+		call <- err
+	}()
+	<-dialing
+
+	done := make(chan error, 1)
+	go func() { done <- r.Disable("alpha") }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("disable: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Disable did not return within 5s while a dispatch awaited a handshake, whose budget is %s", b.ConnectTimeout())
+	}
+	if err := <-call; !errors.Is(err, ErrNotAttempted) {
+		t.Errorf("the interrupted dispatch err = %v, want it to wrap ErrNotAttempted: nothing was sent, so the caller may retry", err)
+	}
+}
+
 func TestTheRefreshLoopIsStoppedWithTheGateClosedAndTheLifecycleMutexFree(t *testing.T) {
 	// Stopping the refresh loop awaits it, and a read inside that loop can be
 	// blocked in connect waiting for the lifecycle mutex. Awaiting the loop while

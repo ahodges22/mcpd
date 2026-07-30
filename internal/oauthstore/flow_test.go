@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -37,11 +38,22 @@ type daemon struct {
 	reg   *backend.Registry
 	cat   *catalog.Catalog
 	web   *httptest.Server
+	swap  *swapHandler
 
 	lastCallback string
 }
 
-func start(t *testing.T, dir string, p *provider) *daemon {
+// swapHandler serves whichever web surface is current, so a restart can replace the
+// daemon without moving the address its redirect URI is registered with. A real
+// daemon keeps that address by binding a fixed port, and the provider refuses a
+// redirect URI that does not match the registration.
+type swapHandler struct{ current atomic.Pointer[http.Handler] }
+
+func (s *swapHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	(*s.current.Load()).ServeHTTP(w, r)
+}
+
+func start(t *testing.T, dir string, p *provider, ts *httptest.Server, swap *swapHandler) *daemon {
 	t.Helper()
 	cfg := &config.Config{Backends: map[string]config.Backend{
 		server: {Name: server, HTTPURL: p.mcpURL(), Auth: "oauth", TimeoutSec: 10},
@@ -50,16 +62,22 @@ func start(t *testing.T, dir string, p *provider) *daemon {
 	if err != nil {
 		t.Fatalf("load overrides: %v", err)
 	}
-	d := &daemon{t: t, dir: dir, prov: p}
-	// Unstarted, so the redirect URI is the address this very server answers on
-	// rather than a port a test assumed.
-	d.web = httptest.NewUnstartedServer(nil)
-	d.store = oauthstore.New(dir, "http://"+d.web.Listener.Addr().String()+"/oauth/callback",
-		oauthstore.Hooks{NeedsAuth: func(name, note string) {
-			if b, ok := d.reg.Get(name); ok {
-				b.NoteNeedsAuth(note)
-			}
-		}})
+	d := &daemon{t: t, dir: dir, prov: p, web: ts, swap: swap}
+	// The redirect URI is the address this server already answers on, rather than a
+	// port a test assumed.
+	d.store = oauthstore.New(dir, "http://"+ts.Listener.Addr().String()+"/oauth/callback",
+		oauthstore.Hooks{
+			NeedsAuth: func(name, note string) {
+				if b, ok := d.reg.Get(name); ok {
+					b.NoteNeedsAuth(note)
+				}
+			},
+			Authorized: func(name string) {
+				if b, ok := d.reg.Get(name); ok {
+					b.NoteAuthorized()
+				}
+			},
+		})
 	d.reg = backend.NewRegistry(cfg, ov, backend.Hooks{
 		Reconnected: func(s string) { d.cat.Trigger(s) },
 		StopRefresh: func(s string) { d.cat.StopRefresh(s) },
@@ -68,21 +86,27 @@ func start(t *testing.T, dir string, p *provider) *daemon {
 		AuthHandler: d.store.Handler,
 	})
 	d.cat = catalog.New(d.reg, filepath.Join(dir, "catalog.json"))
-	d.web.Config.Handler = web.New(d.reg, d.cat, web.NewGuard(), d.store).Handler()
-	d.web.Start()
-	t.Cleanup(d.web.Close)
+	surface := web.New(d.reg, d.cat, web.NewGuard(), d.store).Handler()
+	swap.current.Store(&surface)
 	return d
 }
 
 func newDaemon(t *testing.T, tools ...*mcp.Tool) *daemon {
 	t.Helper()
-	return start(t, t.TempDir(), newProvider(t, testfake.New(server, tools...)))
+	swap := &swapHandler{}
+	// Unstarted first, so the store can be given the address this server will answer
+	// on before anything is served through it.
+	ts := httptest.NewUnstartedServer(swap)
+	t.Cleanup(ts.Close)
+	d := start(t, t.TempDir(), newProvider(t, testfake.New(server, tools...)), ts, swap)
+	ts.Start()
+	return d
 }
 
 // restart builds a fresh store, registry and web surface over the same state
-// directory and the same provider, which is what a daemon restart looks like from
-// the provider's side.
-func (d *daemon) restart() *daemon { return start(d.t, d.dir, d.prov) }
+// directory, the same provider and the same address, which is what a daemon restart
+// looks like from the provider's side: the redirect URI it registered has not moved.
+func (d *daemon) restart() *daemon { return start(d.t, d.dir, d.prov, d.web, d.swap) }
 
 func (d *daemon) list() ([]*mcp.Tool, error) {
 	d.t.Helper()
@@ -494,26 +518,103 @@ func TestADisableWhileAuthorizationIsPendingReturnsPromptly(t *testing.T) {
 	}
 }
 
-func TestAFailedRefreshReturnsTheBackendToNeedsAuth(t *testing.T) {
+func TestAFailedRefreshStopsRatherThanLooping(t *testing.T) {
+	// Both classes of refusal are driven. invalid_grant is the RFC code for a revoked
+	// or expired grant and so the realistic one, and it is the dangerous one: the SDK
+	// swallows it and sends the request unauthenticated, so the 401 that comes back
+	// would re-enter the browser flow on every refresh attempt, parking a connect each
+	// time. invalid_client stands for the class the SDK aborts the request on instead.
+	for _, code := range []string{"invalid_grant", "invalid_client"} {
+		t.Run(code, func(t *testing.T) {
+			d := newDaemon(t, tool("search"))
+			d.authorize(nil)
+			d.expireAccessToken()
+			d.prov.refuseRefresh(code)
+			before := d.prov.counts()
+			next := d.restart()
+
+			// Twice, with the failure backoff cleared in between, because one read cannot
+			// show a loop and an explicit reconnect must not stand in for the user asking.
+			for attempt := range 2 {
+				if attempt > 0 {
+					if err := next.reg.Reconnect(server); err != nil {
+						t.Fatalf("reconnect: %v", err)
+					}
+				}
+				if _, err := next.list(); err == nil {
+					t.Fatalf("read %d: a backend whose refresh failed listed tools", attempt)
+				}
+				if authURL, pending := next.store.Pending(server); pending {
+					t.Fatalf("read %d published an authorization nobody asked for: %s", attempt, authURL)
+				}
+			}
+			if n := next.prov.authorizations.Load(); n != before.authorizations {
+				t.Errorf("authorization requests = %d, want %d: a failed refresh reached the browser on its own",
+					n, before.authorizations)
+			}
+
+			h := next.health()
+			if h.State != backend.StateNeedsAuth {
+				t.Errorf("state after a failed refresh = %q, want %q", h.State, backend.StateNeedsAuth)
+			}
+			if !strings.Contains(h.AuthNote, "authenticate action") {
+				t.Errorf("auth note = %q, want it to point the user at the authenticate action", h.AuthNote)
+			}
+
+			// The block is on the daemon acting by itself, not on the user: asking must
+			// still work, or a dead grant would be unrecoverable without an edit or a restart.
+			status, payload := next.postAuthenticate()
+			if status != http.StatusOK || payload["authorize_url"] == "" {
+				t.Fatalf("authenticate action after a failed refresh = %d %v, want %d with a URL",
+					status, payload, http.StatusOK)
+			}
+			if res := next.consentInBrowser(payload["authorize_url"]); res.status != http.StatusOK {
+				t.Fatalf("callback = %d %q, want %d", res.status, res.body, http.StatusOK)
+			}
+			next.cat.WaitIdle()
+			if got := next.health().State; got != backend.StateUp {
+				t.Errorf("state after re-authorizing = %q, want %q", got, backend.StateUp)
+			}
+			if n := next.prov.registrations.Load(); n != before.registrations {
+				t.Errorf("client registrations = %d, want %d: re-authorizing registered another client", n, before.registrations)
+			}
+		})
+	}
+}
+
+func TestASecondAuthorizationReusesTheRegisteredClient(t *testing.T) {
 	d := newDaemon(t, tool("search"))
 	d.authorize(nil)
-	d.expireAccessToken()
-	d.prov.rejectRefresh.Store(true)
-	before := d.prov.counts()
+	first := d.stored()
 
-	next := d.restart()
-	if _, err := next.list(); err == nil {
-		t.Fatal("a backend whose refresh failed listed tools")
+	// The provider forgets the access token it issued, which is a consent withdrawn
+	// there. The token is unexpired, so nothing refreshes and nothing is blocked: the
+	// next request on the live session simply 401s, and the authorization that follows
+	// runs on the handler the first one built rather than on a fresh process.
+	d.prov.revokeAccessTokens()
+	done := make(chan error, 1)
+	go func() {
+		_, err := d.list()
+		done <- err
+	}()
+	if res := d.consentInBrowser(d.awaitPending()); res.status != http.StatusOK {
+		t.Fatalf("callback = %d %q, want %d", res.status, res.body, http.StatusOK)
 	}
-	h := next.health()
-	if h.State != backend.StateNeedsAuth {
-		t.Errorf("state after a failed refresh = %q, want %q", h.State, backend.StateNeedsAuth)
+	if err := <-done; err != nil {
+		t.Fatalf("the read that triggered the second authorization failed: %v", err)
 	}
-	if !strings.Contains(h.AuthNote, "refresh failed") {
-		t.Errorf("auth note = %q, want it to say the refresh failed", h.AuthNote)
+
+	if n := d.prov.registrations.Load(); n != 1 {
+		t.Errorf("client registrations = %d, want 1: the persisted client_id was not reused, so a client is orphaned at the provider", n)
 	}
-	if n := next.prov.authorizations.Load(); n != before.authorizations {
-		t.Errorf("authorization requests = %d, want %d: the failed refresh looped into a new flow", n, before.authorizations)
+	if got := d.stored(); got.ClientID != first.ClientID {
+		t.Errorf("client_id = %q, want the persisted %q", got.ClientID, first.ClientID)
+	}
+	if n := d.prov.exchanges.Load(); n != 2 {
+		t.Errorf("code exchanges = %d, want 2: the second authorization did not complete", n)
+	}
+	if got := d.health().State; got != backend.StateUp {
+		t.Errorf("state after re-authorizing = %q, want %q", got, backend.StateUp)
 	}
 }
 
@@ -550,6 +651,30 @@ func TestTheAuthenticateActionStartsAnAuthorizationTheUserCanFinish(t *testing.T
 	}
 	if n := d.prov.registrations.Load(); n != 1 {
 		t.Errorf("dynamic client registrations = %d, want 1", n)
+	}
+
+	// Pressing it again on a backend that is up must answer from the health record.
+	// The button is rendered for every OAuth backend whatever its state, so this is a
+	// routine click: it must not drop a working session to discover that nothing was
+	// needed, nor wait out the window an authorization would have appeared in.
+	before, requests := d.prov.counts(), d.prov.requests()
+	start := time.Now()
+	status, payload = d.postAuthenticate()
+	if took := time.Since(start); took > 5*time.Second {
+		t.Errorf("authenticate on an authorized backend took %s, want an immediate answer", took)
+	}
+	if status != http.StatusOK || payload["status"] != "authorized" {
+		t.Errorf("authenticate on an authorized backend = %d %v, want %d and status authorized",
+			status, payload, http.StatusOK)
+	}
+	if got := d.prov.counts(); got != before {
+		t.Errorf("provider counts = %+v, want %+v: it re-authorized a backend that was up", got, before)
+	}
+	if n := d.prov.requests(); n != requests {
+		t.Errorf("MCP requests = %d, want %d: the live session was torn down and re-established", n, requests)
+	}
+	if got := d.health().State; got != backend.StateUp {
+		t.Errorf("state = %q, want %q", got, backend.StateUp)
 	}
 }
 

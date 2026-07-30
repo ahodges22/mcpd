@@ -85,11 +85,18 @@ func newHarness(t *testing.T, fakes ...*testfake.Fake) *harness {
 	// will answer on rather than a guessed port.
 	h.web = httptest.NewUnstartedServer(nil)
 	h.oauth = oauthstore.New(statDir, "http://"+h.web.Listener.Addr().String()+"/oauth/callback",
-		oauthstore.Hooks{NeedsAuth: func(server, note string) {
-			if b, ok := h.reg.Get(server); ok {
-				b.NoteNeedsAuth(note)
-			}
-		}})
+		oauthstore.Hooks{
+			NeedsAuth: func(server, note string) {
+				if b, ok := h.reg.Get(server); ok {
+					b.NoteNeedsAuth(note)
+				}
+			},
+			Authorized: func(server string) {
+				if b, ok := h.reg.Get(server); ok {
+					b.NoteAuthorized()
+				}
+			},
+		})
 	h.server = New(h.reg, h.cat, h.guard, h.oauth)
 	h.web.Config.Handler = h.server.Handler()
 	h.web.Start()
