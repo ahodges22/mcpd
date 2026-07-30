@@ -28,9 +28,6 @@ func TestACrossSiteOriginIsRejectedOnAnMCPEndpoint(t *testing.T) {
 }
 
 func TestAForeignOriginIsRejectedOnTheStatusAPI(t *testing.T) {
-	// The web routes are exercised with POST, not GET: GET, HEAD and OPTIONS are safe
-	// methods to CrossOriginProtection and are always allowed, so a GET would pass
-	// whether the guard were wrapped around the mux or not and would prove nothing.
 	fake := testfake.New("alpha", tool("kubectl_logs"))
 	h := newHarness(t, fake)
 
@@ -41,6 +38,31 @@ func TestAForeignOriginIsRejectedOnTheStatusAPI(t *testing.T) {
 	}
 	if n := fake.ListCalls.Load(); n != 0 {
 		t.Errorf("the rejected re-index still re-listed the backend %d times", n)
+	}
+
+	// The reads too, which the guard's own value would allow: GET, HEAD and OPTIONS
+	// are safe methods to CrossOriginProtection. /api/status answers with the pending
+	// authorization URL, its one-time nonce included, so a read is not exempt from the
+	// scenario just because a browser's own policy would keep the body unreadable.
+	for _, path := range []string{"/", "/api/status", "/inspect/alpha"} {
+		if res := h.get(t, path, origin("https://evil.example")); !res.denied() {
+			t.Errorf("a cross-origin GET %s got %d, want %d", path, res.status, http.StatusForbidden)
+		}
+		if res := h.get(t, path, crossSite()); !res.denied() {
+			t.Errorf("a Sec-Fetch-Site: cross-site GET %s got %d, want %d", path, res.status, http.StatusForbidden)
+		}
+		// And a request with no origin is still accepted, which is the scenario that
+		// exists because rejecting one would break every native client.
+		if res := h.get(t, path); res.status != http.StatusOK {
+			t.Errorf("GET %s with no origin got %d (%s), want %d", path, res.status, res.body, http.StatusOK)
+		}
+	}
+	// The OAuth callback stays reachable: a provider's redirect is necessarily a
+	// cross-site top-level navigation, and the nonce is what stands behind it. 400 is
+	// this callback matching no outstanding authorization, which is the nonce refusing.
+	if res := h.get(t, "/oauth/callback", crossSite()); res.status != http.StatusBadRequest {
+		t.Errorf("a cross-site OAuth callback got %d (%s), want %d: the provider's redirect cannot complete",
+			res.status, res.body, http.StatusBadRequest)
 	}
 }
 

@@ -80,7 +80,7 @@ func New(reg *backend.Registry, cat *catalog.Catalog, g *Guard, oauth *oauthstor
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	for _, rt := range s.routes() {
-		mux.Handle(rt.path, guardMethod(rt, rt.handler))
+		mux.Handle(rt.path, guardMethod(s.guard, rt, rt.handler))
 	}
 	return s.guard.RequireLoopbackHost(s.guard.Protect(mux))
 }

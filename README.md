@@ -78,17 +78,24 @@ State it plainly, because the mitigations only make sense against it.
 - **Browser-originated requests are the part that is actually mitigated.** The
   listener binds loopback only. One `http.CrossOriginProtection` is shared by the MCP
   endpoints and the web routes, so a page in an open tab on another origin is rejected
-  on both. That check reads only `Sec-Fetch-Site` and `Origin`, and neither survives
-  DNS rebinding: once the attacker's name resolves to 127.0.0.1 the browser believes
-  it is same-origin. Rebinding is stopped by a separate `Host` header check instead,
-  which must name a loopback address. The MCP endpoints get theirs from the SDK's own
-  handler, which is why `DisableLocalhostProtection` is left alone; the web routes get
-  theirs from the guard. Every state change requires a POST with a JSON content type,
-  which a cross-origin form submission cannot produce, so no state change is reachable
-  by navigation or an image load. The OAuth callback is the single exemption, being
-  necessarily a top-level GET, and is protected by its one-time `state` nonce instead.
-  Pages carry `Content-Security-Policy: default-src 'self'; frame-ancestors 'none'`, so
-  the one-click actions cannot be clickjacked from a frame. All backend-derived text is
+  on both. That value allows GET, HEAD and OPTIONS unconditionally, because they are
+  safe methods to it, so the web routes have it judge a read by presenting the read to
+  it as an unsafe method: a cross-site read of the status surface is rejected too,
+  which matters because that surface carries a pending authorization URL, its one-time
+  `state` included. An MCP endpoint answers a GET only as an established session's
+  event stream, keyed by a session id a cross-site page cannot obtain without the POST
+  that same value rejects. That check reads only `Sec-Fetch-Site` and `Origin`, and
+  neither survives DNS rebinding: once the attacker's name resolves to 127.0.0.1 the
+  browser believes it is same-origin. Rebinding is stopped by a separate `Host` header
+  check instead, which must name a loopback address. The MCP endpoints get theirs from
+  the SDK's own handler, which is why `DisableLocalhostProtection` is left alone; the
+  web routes get theirs from the guard. Every state change requires a POST with a JSON
+  content type, which a cross-origin form submission cannot produce, so no state change
+  is reachable by navigation or an image load. The OAuth callback is the single
+  exemption from both rules, being necessarily a cross-site top-level GET, and is
+  protected by its one-time `state` nonce instead. Pages carry
+  `Content-Security-Policy: default-src 'self'; frame-ancestors 'none'`, so the
+  one-click actions cannot be clickjacked from a frame. All backend-derived text is
   escaped by `html/template` or inserted with `textContent`, and a test walks the
   embedded assets to keep it that way.
 

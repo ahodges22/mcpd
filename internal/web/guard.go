@@ -40,6 +40,17 @@ func NewGuard() *Guard {
 // is deprecated, applies nothing when nil, and ignores the deny handler.
 func (g *Guard) Protect(h http.Handler) http.Handler { return g.protection.Handler(h) }
 
+// crossSiteRead reports whether the shared policy would refuse this request were
+// its method not a safe one. CrossOriginProtection always allows GET, HEAD and
+// OPTIONS, so a read is judged by presenting it to the same value as an unsafe
+// method rather than by a second policy this daemon reasons out for itself: the
+// status surface answers with the pending authorization URL, nonce included.
+func (g *Guard) crossSiteRead(r *http.Request) bool {
+	probe := r.Clone(r.Context())
+	probe.Method = http.MethodPost
+	return g.protection.Check(probe) != nil
+}
+
 // RequireLoopbackHost is the DNS-rebinding check, and it is not redundant with the
 // cross-origin policy: CrossOriginProtection reads only Sec-Fetch-Site and Origin,
 // and a browser on a rebound name believes it is same-origin, so it sends
@@ -78,18 +89,25 @@ func deny(w http.ResponseWriter, reason string) {
 	http.Error(w, reason, http.StatusForbidden)
 }
 
-// guardMethod is the POST-plus-JSON rule. Cross-origin protection cannot do this
-// job: GET, HEAD and OPTIONS are safe methods to it and are always allowed, so
-// only this keeps a state change out of reach of navigation, an image load, or a
-// cross-origin form submission, which cannot set a JSON content type.
+// guardMethod is the POST-plus-JSON rule, and the cross-site check on the reads
+// that rule leaves uncovered. Cross-origin protection cannot do the first job:
+// GET, HEAD and OPTIONS are safe methods to it and are always allowed, so only
+// this keeps a state change out of reach of navigation, an image load, or a
+// cross-origin form submission, which cannot set a JSON content type. That same
+// exemption is why a read is checked here too.
 //
-// The OAuth callback is the single documented exemption: it is necessarily a
-// top-level browser GET, and its one-time state nonce protects it instead.
-func guardMethod(rt route, next http.Handler) http.Handler {
+// The OAuth callback is the single documented exemption from both: it is
+// necessarily a cross-site top-level browser GET, and its one-time state nonce
+// protects it instead.
+func guardMethod(g *Guard, rt route, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != rt.method {
 			w.Header().Set("Allow", rt.method)
 			http.Error(w, "method not allowed: "+rt.path+" accepts "+rt.method, http.StatusMethodNotAllowed)
+			return
+		}
+		if !rt.nonceGuarded && g.crossSiteRead(r) {
+			deny(w, denyReason)
 			return
 		}
 		if rt.mutates && !rt.nonceGuarded && !isJSON(r.Header.Get("Content-Type")) {
