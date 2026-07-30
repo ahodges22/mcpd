@@ -151,8 +151,21 @@ func (d *daemon) stored() stored {
 // leaves behind: a dead access token and a live refresh token.
 func (d *daemon) expireAccessToken() {
 	d.t.Helper()
+	d.rewriteRecord(func(rec *stored) { rec.Expiry = time.Now().Add(-time.Hour) })
+}
+
+// moveTokenEndpoint points the persisted token endpoint at a path the provider does not
+// serve, which is what a provider moving its endpoint looks like to a restart. The
+// refresh then fails with no OAuth error code at all.
+func (d *daemon) moveTokenEndpoint() {
+	d.t.Helper()
+	d.rewriteRecord(func(rec *stored) { rec.TokenURL = d.prov.ts.URL + "/moved/token" })
+}
+
+func (d *daemon) rewriteRecord(mutate func(*stored)) {
+	d.t.Helper()
 	rec := d.stored()
-	rec.Expiry = time.Now().Add(-time.Hour)
+	mutate(&rec)
 	raw, err := json.Marshal(rec)
 	if err != nil {
 		d.t.Fatalf("marshal token file: %v", err)
@@ -681,6 +694,55 @@ func TestATransientRefreshFailureDoesNotLatch(t *testing.T) {
 	}
 	if got := next.health().State; got != backend.StateUp {
 		t.Errorf("state after re-authorizing = %q, want %q", got, backend.StateUp)
+	}
+}
+
+func TestARefusalTheClassifierDoesNotRecogniseStillRecoversInOneClick(t *testing.T) {
+	// Only invalid_grant and invalid_client are treated as permanent, because that
+	// judgement decides whether a dial may authorize by itself. Recovery must not
+	// inherit it: any refusal at all has to be recoverable from the button, in one
+	// click, without the user first being made to wait out the window.
+	for _, staging := range []string{"an unrecognised refusal code", "a moved token endpoint"} {
+		t.Run(staging, func(t *testing.T) {
+			d := newDaemon(t, tool("search"))
+			d.authorize(nil)
+			d.expireAccessToken()
+			if staging == "a moved token endpoint" {
+				d.moveTokenEndpoint()
+			} else {
+				d.prov.refuseRefresh("unauthorized_client")
+			}
+			before := d.prov.counts()
+			next := d.restart()
+
+			if _, err := next.list(); err == nil {
+				t.Fatal("a backend whose stored grant is unusable listed tools")
+			}
+			// Deliberately not needs-auth: the refusal is not one that can reach a 401, so
+			// the automatic paths are left alone and nothing latches.
+			if got := next.health().State; got != backend.StateDown {
+				t.Errorf("state = %q, want %q", got, backend.StateDown)
+			}
+
+			start := time.Now()
+			status, payload := next.postAuthenticate()
+			if status != http.StatusOK || payload["authorize_url"] == "" {
+				t.Fatalf("one click = %d %v, want %d with a URL", status, payload, http.StatusOK)
+			}
+			if took := time.Since(start); took > 10*time.Second {
+				t.Errorf("the click took %s, want it to answer as soon as the reconnect has failed", took)
+			}
+			if res := next.consentInBrowser(payload["authorize_url"]); res.status != http.StatusOK {
+				t.Fatalf("callback = %d %q, want %d", res.status, res.body, http.StatusOK)
+			}
+			next.cat.WaitIdle()
+			if got := next.health().State; got != backend.StateUp {
+				t.Errorf("state after re-authorizing = %q, want %q", got, backend.StateUp)
+			}
+			if n := next.prov.registrations.Load(); n != before.registrations {
+				t.Errorf("client registrations = %d, want %d: recovery registered another client", n, before.registrations)
+			}
+		})
 	}
 }
 

@@ -83,50 +83,73 @@ func New(dir, redirectURL string, hooks Hooks) *Store {
 	}
 }
 
-// grantState is what the store knows about a backend's stored grant. The two facts
-// are independent: whether the provider has refused the grant decides whether it is
-// still worth presenting, and whether the user has asked decides whether an
-// authorization may start.
+// grantState is what the store knows about a backend's stored grant, and the two
+// fields answer two different questions: unusable decides whether an automatic dial
+// may present the grant or authorize without it, and requested decides whether the
+// user has bought an authorization the automatic answer would have refused.
 type grantState struct {
-	rejected  bool
+	unusable  bool
 	requested bool
 }
 
 // AllowAuthorization records that the user has asked server to be authorized, which
-// is the only thing that lets an authorization start once the provider has refused
-// the stored grant. A refused grant must wait for a person: re-entering the browser
-// flow on the daemon's own refresh cadence publishes an authorization nobody asked
-// for and parks a connect on every attempt.
+// is what lets an authorization start once the stored grant is known to be unusable.
+// Without a request, that grant waits for a person: re-entering the browser flow on
+// the daemon's own refresh cadence publishes an authorization nobody asked for and
+// parks a connect on every attempt.
 func (s *Store) AllowAuthorization(server string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	g := s.grants[server]
 	g.requested = true
 	s.grants[server] = g
-	if g.rejected {
-		// Only a grant the provider has actually refused is withdrawn from the next
-		// dial: a request that cannot obtain a token is never sent, so it never reaches
-		// the 401 an authorization starts from. A grant that may still work is left in
-		// place, because forcing a consent screen on a backend that is merely down
-		// discards a working authorization.
-		delete(s.handlers, server)
+	if g.unusable {
+		s.forgetLocked(server)
 	}
 }
 
-// rejectGrant records that the provider refused this backend's grant. It leaves a
-// request the user has already made intact, so a refresh failure on the session being
-// torn down cannot cancel the authorization they asked for.
+// DiscardStoredGrant records that the stored grant does not work, on the evidence of a
+// reconnect the user asked for that produced neither a token nor an authorization. It
+// discards the grant from use, never from disk: a completed authorization overwrites
+// the file and nothing else removes it.
+//
+// This is the explicit half of the same question rejectGrant answers automatically,
+// and it deliberately asks nothing about why the provider refused. The classifier
+// behind rejectGrant exists to decide whether a dial may authorize by itself, which is
+// a judgement about one error code; recovery must not inherit that judgement, or a
+// refusal the classifier does not recognise could never be recovered from at all.
+func (s *Store) DiscardStoredGrant(server string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	g := s.grants[server]
+	g.unusable = true
+	s.grants[server] = g
+	s.forgetLocked(server)
+}
+
+// rejectGrant records that the provider refused this backend's grant in a way it
+// cannot recover from. It leaves a request the user has already made intact, so a
+// refresh failure on the session being torn down cannot cancel the authorization they
+// asked for.
 func (s *Store) rejectGrant(server string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	g := s.grants[server]
-	g.rejected = true
+	g.unusable = true
 	s.grants[server] = g
 }
 
+// forgetLocked drops the cached handler so the next dial builds one from the current
+// state. It is what stops an unusable grant being presented: a request that cannot
+// obtain a token is never sent, so it never reaches the 401 an authorization starts
+// from.
+func (s *Store) forgetLocked(server string) {
+	delete(s.handlers, server)
+}
+
 // grantWorks records that the provider has honoured the grant, which is what keeps a
-// transient refusal from outliving itself. Without it one network blip would block
-// automatic re-authorization for the life of the process.
+// refusal from outliving the grant it was about. Without it one network blip would
+// block automatic re-authorization for the life of the process.
 func (s *Store) grantWorks(server string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -144,7 +167,7 @@ func (s *Store) permitAuthorization(server string) bool {
 		s.grants[server] = g
 		return true
 	}
-	return !g.rejected
+	return !g.unusable
 }
 
 // publicClient refuses to send a client-secret Basic header, which is what keeps an
@@ -202,10 +225,10 @@ func (s *Store) Handler(server string) (auth.OAuthHandler, error) {
 	}
 	// A grant the user has just asked to replace is not presented: doing so is what
 	// keeps a dead token source from failing every request before one can 401.
-	// A grant the provider has refused is not presented: a token source that cannot
-	// produce a token fails every request before one can 401, and the 401 is what an
-	// authorization starts from.
-	inner, err := s.newAuthorizer(h, rec, !s.grants[server].rejected)
+	// An unusable grant is not presented: a token source that cannot produce a token
+	// fails every request before one can 401, and the 401 is what an authorization
+	// starts from.
+	inner, err := s.newAuthorizer(h, rec, !s.grants[server].unusable)
 	if err != nil {
 		return nil, err
 	}

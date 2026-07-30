@@ -252,6 +252,42 @@ func TestDisableInterruptsAHandshakeADispatchIsWaitingOn(t *testing.T) {
 	}
 }
 
+func TestATeardownFlagsItselfBeforeCancellingAHandshake(t *testing.T) {
+	// The order of those two steps is load bearing, not merely their position before the
+	// gate: a handshake cancelled while the flag is still clear can be replaced by a
+	// fresh one from a dispatch already in its prologue, which then parks with nothing
+	// left to interrupt it. Unwidened the gap is a single mutex acquisition, so no timing
+	// can catch the ordering. It is staged instead by standing in for the handshake's own
+	// cancel function, which is exactly what teardown calls, and reading the flag from
+	// inside it.
+	r := NewRegistry(stdioConfig("alpha"), overridesAt(t, filepath.Join(t.TempDir(), "overrides.json")), Hooks{})
+	b, _ := r.Get("alpha")
+	var cancels int
+	var flaggedFirst bool
+	b.mu.Lock()
+	b.connectCancel = func() {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		// Only the first call is the question: teardown cancels again after writing the
+		// state, by which point the flag is set either way.
+		if cancels == 0 {
+			flaggedFirst = b.stopping
+		}
+		cancels++
+	}
+	b.mu.Unlock()
+
+	if err := r.Reconnect("alpha"); err != nil {
+		t.Fatalf("reconnect: %v", err)
+	}
+	if cancels == 0 {
+		t.Fatal("teardown cancelled no handshake, so this proves nothing")
+	}
+	if !flaggedFirst {
+		t.Error("teardown cancelled the in-flight handshake before flagging itself, so a dispatch in its prologue can start a fresh one")
+	}
+}
+
 func TestNoHandshakeStartsInsideATeardown(t *testing.T) {
 	// The window the stopping flag closes: a dispatch that took its lease before the
 	// teardown began can reach connect after the teardown's cancellation, and would then

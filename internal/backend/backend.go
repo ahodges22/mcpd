@@ -346,23 +346,26 @@ const (
 // teardown ends the shared session, and for forDisable is the kill switch. Every
 // step's position is load bearing:
 //
-//   - stopping is set, and an in-flight handshake cancelled, before the gate is taken,
-//     because a dispatch waiting on that handshake holds a dispatch lease and
-//     gate.Lock would then wait for the very handshake this cancellation ends. A
-//     handshake that blocks for a human, which an OAuth code fetch does, makes that
-//     the normal case rather than a worst case. The flag is what covers a dispatch
-//     that took its lease before all this began and reaches connect after the
-//     cancellation: connect checks it in the same critical section that publishes
-//     connectCancel, so neither can overtake the other. Both cost an in-flight
-//     handshake its completion, and a reconnect does this as well as a disable:
-//     nothing was sent, so the dispatch reports ErrNotAttempted and may retry;
+//   - stopping is set, and only then is an in-flight handshake cancelled, both before
+//     the gate is taken. The cancellation is before the gate because a dispatch waiting
+//     on that handshake holds a dispatch lease and gate.Lock would otherwise wait for
+//     the very handshake this cancellation ends, which for a handshake that blocks for a
+//     human, as an OAuth code fetch does, is the normal case rather than a worst case.
+//     The flag is what covers a dispatch that took its lease before all this began and
+//     reaches connect after the cancellation: connect checks it in the same critical
+//     section that publishes connectCancel, so neither can overtake the other. The flag
+//     goes first because cancelling with it still clear leaves exactly the gap it exists
+//     to close. Both cost an in-flight handshake its completion, and a reconnect does
+//     this as well as a disable: nothing was sent, so the dispatch reports
+//     ErrNotAttempted and may retry;
 //   - the gate closes and drains first, so a dispatch that already holds a lease
 //     completes and no later one can write;
 //   - the state is set before anything is awaited, so no further handshake starts;
-//   - the in-flight handshake is cancelled again before life is taken, because
-//     connect holds life for its whole duration and taking life without cancelling
-//     waits the handshake out instead of interrupting it; repeating it also covers a
-//     handshake that began after the cancellation above;
+//   - the in-flight handshake is cancelled again before life is taken, because connect
+//     holds life for its whole duration and taking life without cancelling waits the
+//     handshake out instead of interrupting it. With the flag in place nothing can begin
+//     between the two, so this repeat can only find what the first found; it stays as the
+//     step that does not depend on the flag being right;
 //   - the refresh loop is cancelled and awaited before life is taken, because a
 //     read blocked in connect's life.Lock would never exit and awaiting it under
 //     life is a deadlock; awaiting it before the session closes also keeps our own

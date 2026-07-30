@@ -228,56 +228,80 @@ func (s *Server) authorize(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "authorized"})
 		return
 	}
-	// The user asking is what lifts the block a rejected grant leaves behind.
+	// The user asking is what lifts the refusal an unusable grant leaves behind.
 	s.oauth.AllowAuthorization(name)
-
-	finished, err := awaitTransition(transitionTimeout, func() error { return s.reg.Reconnect(name) })
-	if !finished {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
-			"status": "in-progress",
-			"error":  "the reconnect cannot be cancelled and is still running; it will finish in the background",
-		})
-		return
-	}
-	if err != nil {
-		writeJSON(w, transitionStatus(err), map[string]string{"error": err.Error()})
-		return
-	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), authorizeWaitTimeout)
 	defer cancel()
-	if authURL, pending := s.awaitAuthorization(ctx, b, name); pending {
-		writeJSON(w, http.StatusOK, map[string]string{"status": "pending", "authorize_url": authURL})
-		return
-	}
-	if b.Health().State == backend.StateUp {
-		writeJSON(w, http.StatusOK, map[string]string{"status": "authorized"})
-		return
+	// Two attempts, under one deadline. The first keeps the stored grant, because a
+	// backend that is merely down needs a reconnect rather than a consent screen. If
+	// that produces neither a URL nor a working backend then the grant itself is what
+	// is wrong, whatever the provider called it, so the second discards it and tries
+	// again. Deciding that from this reconnect's own outcome rather than from an error
+	// code is what keeps recovery to one click for every kind of refusal.
+	for attempt := range 2 {
+		if attempt > 0 {
+			s.oauth.DiscardStoredGrant(name)
+		}
+		finished, err := awaitTransition(transitionTimeout, func() error { return s.reg.Reconnect(name) })
+		if !finished {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+				"status": "in-progress",
+				"error":  "the reconnect cannot be cancelled and is still running; it will finish in the background",
+			})
+			return
+		}
+		if err != nil {
+			writeJSON(w, transitionStatus(err), map[string]string{"error": err.Error()})
+			return
+		}
+
+		switch authURL, outcome := s.awaitAuthorization(ctx, b, name); outcome {
+		case authorizePending:
+			writeJSON(w, http.StatusOK, map[string]string{"status": "pending", "authorize_url": authURL})
+			return
+		case authorizeServing:
+			writeJSON(w, http.StatusOK, map[string]string{"status": "authorized"})
+			return
+		}
 	}
 	writeJSON(w, http.StatusGatewayTimeout, map[string]string{
 		"error": "no authorization was started; the backend's own error is on the status page",
 	})
 }
 
-// awaitAuthorization waits for either outcome of the reconnect: an authorization URL
-// to send the user to, or the backend simply coming up, which is what happens when a
-// stored grant still worked. Both are polled, because the second is a health record
-// with nothing to subscribe to, and waiting only for the first would leave the user
-// watching the whole window to be told that nothing was needed.
-func (s *Server) awaitAuthorization(ctx context.Context, b *backend.Backend, name string) (string, bool) {
+// authorizeOutcome is what one reconnect produced.
+type authorizeOutcome int
+
+const (
+	// authorizeUnusable: neither of the other two, so the stored grant is not working.
+	authorizeUnusable authorizeOutcome = iota
+	authorizePending
+	authorizeServing
+)
+
+// awaitAuthorization waits for one of the three outcomes of a reconnect. The first two
+// are polled because only one of them could be subscribed to, and waiting on that one
+// alone would leave the user watching the whole window to be told nothing was needed.
+// The third is what makes a second attempt worth making, and it is read from the
+// backend's own error, which a reconnect clears and a failed dial sets.
+func (s *Server) awaitAuthorization(ctx context.Context, b *backend.Backend, name string) (string, authorizeOutcome) {
 	tick := time.NewTicker(authorizePollInterval)
 	defer tick.Stop()
 	for {
 		if authURL, pending := s.oauth.Pending(name); pending {
-			return authURL, true
+			return authURL, authorizePending
 		}
-		if b.Health().State == backend.StateUp {
-			return "", false
+		switch h := b.Health(); {
+		case h.State == backend.StateUp:
+			return "", authorizeServing
+		case h.LastErr != "":
+			return "", authorizeUnusable
 		}
 		select {
 		case <-tick.C:
 		case <-ctx.Done():
-			return "", false
+			return "", authorizeUnusable
 		}
 	}
 }
