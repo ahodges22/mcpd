@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"slices"
 
+	"github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/ahodges/mcpd/internal/config"
@@ -34,6 +35,11 @@ type Hooks struct {
 	// Refresh must re-read a backend's tools. An enable calls it so a re-enabled
 	// backend's tools reappear without waiting for the TTL tick.
 	Refresh func(server string)
+	// AuthHandler supplies the handler an HTTP backend declaring auth "oauth"
+	// authorizes with. It is called on every dial and must return the same handler
+	// for a given backend, because that handler owns the live token source and a
+	// reconnect must not re-authorize.
+	AuthHandler func(server string) (auth.OAuthHandler, error)
 }
 
 // Registry owns one Backend per configured backend and routes calls by name.
@@ -86,6 +92,7 @@ func newBackend(name string, spec config.Backend, hooks Hooks) *Backend {
 		stopRefresh: hooks.StopRefresh,
 		dropTools:   hooks.DropTools,
 		refresh:     hooks.Refresh,
+		authHandler: hooks.AuthHandler,
 		health: Health{
 			State:     StateDown,
 			Transport: "http",
@@ -98,7 +105,8 @@ func newBackend(name string, spec config.Backend, hooks Hooks) *Backend {
 		b.dial = b.httpTransport
 	}
 	if spec.Auth == "oauth" {
-		b.health.AuthNote = "oauth"
+		b.authNote = "oauth"
+		b.health.AuthNote = b.authNote
 	}
 
 	// Advertising no sampling, elicitation or roots capability is what keeps

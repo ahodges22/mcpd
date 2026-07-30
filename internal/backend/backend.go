@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/ahodges/mcpd/internal/config"
@@ -75,6 +76,10 @@ type Backend struct {
 	stopRefresh func(server string)
 	dropTools   func(server string)
 	refresh     func(server string)
+	authHandler func(server string) (auth.OAuthHandler, error)
+	// authNote is what the auth column says when nothing is pending, so a note left
+	// by an authorization does not outlive it.
+	authNote string
 
 	// transition serializes a whole user-initiated enable or disable, including
 	// the override write, which happens before the gate closes.
@@ -103,6 +108,23 @@ func (b *Backend) Health() Health {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.health
+}
+
+// UsesOAuth reports whether this backend authorizes with OAuth, which is what
+// makes the authenticate action meaningful for it.
+func (b *Backend) UsesOAuth() bool { return b.spec.Auth == "oauth" }
+
+// NoteNeedsAuth records that this backend cannot serve until the user authorizes
+// it, with note rendered verbatim as its auth note. A disabled backend is left
+// alone: the kill switch outranks every other state.
+func (b *Backend) NoteNeedsAuth(note string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.health.State == StateDisabled {
+		return
+	}
+	b.health.State = StateNeedsAuth
+	b.health.AuthNote = note
 }
 
 // Call dispatches a tool call at most once. It returns an error wrapping
@@ -233,6 +255,7 @@ func (b *Backend) connect(ctx context.Context) (*mcp.ClientSession, error) {
 	b.retryAt = time.Time{}
 	b.health.State = StateUp
 	b.health.LastErr = ""
+	b.health.AuthNote = b.authNote
 	reconnected := b.connected
 	b.connected = true
 	b.gen.Add(1)
@@ -404,7 +427,11 @@ func (b *Backend) failConnect(stage string, cause error) error {
 		return ErrDisabled
 	}
 	b.failures++
-	b.health.State = StateDown
+	// A handshake that stopped for want of an authorization is not a backend
+	// failure: needs-auth is what tells the user to act, and StateDown would bury it.
+	if b.health.State != StateNeedsAuth {
+		b.health.State = StateDown
+	}
 	b.health.LastErr = cause.Error()
 	b.retryAt = time.Now().Add(min(backoffBase<<min(b.failures-1, 8), backoffMax))
 	return fmt.Errorf("%s: %w", stage, cause)
@@ -440,7 +467,7 @@ func (b *Backend) stdioTransport(context.Context) (mcp.Transport, error) {
 }
 
 func (b *Backend) httpTransport(context.Context) (mcp.Transport, error) {
-	return &mcp.StreamableClientTransport{
+	t := &mcp.StreamableClientTransport{
 		Endpoint: b.spec.HTTPURL,
 		// No http.Client.Timeout: it would also cap the long-lived standalone SSE
 		// stream. Per-call deadlines come from withTimeout instead.
@@ -448,7 +475,18 @@ func (b *Backend) httpTransport(context.Context) (mcp.Transport, error) {
 			base:    http.DefaultTransport,
 			headers: b.spec.ExpandHeaders(environ()),
 		}},
-	}, nil
+	}
+	if b.spec.Auth == "oauth" {
+		if b.authHandler == nil {
+			return nil, fmt.Errorf("backend %s declares oauth but no authorization handler is configured", b.name)
+		}
+		h, err := b.authHandler(b.name)
+		if err != nil {
+			return nil, err
+		}
+		t.OAuthHandler = h
+	}
+	return t, nil
 }
 
 type headerTransport struct {

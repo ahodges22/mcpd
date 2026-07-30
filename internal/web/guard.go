@@ -83,7 +83,7 @@ func deny(w http.ResponseWriter, reason string) {
 // only this keeps a state change out of reach of navigation, an image load, or a
 // cross-origin form submission, which cannot set a JSON content type.
 //
-// Task 10's OAuth callback is the single documented exemption: it is necessarily a
+// The OAuth callback is the single documented exemption: it is necessarily a
 // top-level browser GET, and its one-time state nonce protects it instead.
 func guardMethod(rt route, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -92,7 +92,7 @@ func guardMethod(rt route, next http.Handler) http.Handler {
 			http.Error(w, "method not allowed: "+rt.path+" accepts "+rt.method, http.StatusMethodNotAllowed)
 			return
 		}
-		if rt.mutates && !isJSON(r.Header.Get("Content-Type")) {
+		if rt.mutates && !rt.nonceGuarded && !isJSON(r.Header.Get("Content-Type")) {
 			http.Error(w, "a state change requires a JSON content type", http.StatusUnsupportedMediaType)
 			return
 		}

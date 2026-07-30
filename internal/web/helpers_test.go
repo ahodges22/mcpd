@@ -16,6 +16,7 @@ import (
 	"github.com/ahodges/mcpd/internal/catalog"
 	"github.com/ahodges/mcpd/internal/config"
 	"github.com/ahodges/mcpd/internal/mcpsrv"
+	"github.com/ahodges/mcpd/internal/oauthstore"
 	"github.com/ahodges/mcpd/internal/rank"
 	"github.com/ahodges/mcpd/internal/testfake"
 )
@@ -28,6 +29,7 @@ type harness struct {
 	reg     *backend.Registry
 	cat     *catalog.Catalog
 	guard   *Guard
+	oauth   *oauthstore.Store
 	server  *Server
 	web     *httptest.Server
 	cfgPath string
@@ -79,8 +81,18 @@ func newHarness(t *testing.T, fakes ...*testfake.Fake) *harness {
 	})
 	h.cat = catalog.New(h.reg, filepath.Join(statDir, "catalog.json"))
 	h.guard = NewGuard()
-	h.server = New(h.reg, h.cat, h.guard)
-	h.web = httptest.NewServer(h.server.Handler())
+	// Unstarted, so the OAuth store can be given the callback URL this very server
+	// will answer on rather than a guessed port.
+	h.web = httptest.NewUnstartedServer(nil)
+	h.oauth = oauthstore.New(statDir, "http://"+h.web.Listener.Addr().String()+"/oauth/callback",
+		oauthstore.Hooks{NeedsAuth: func(server, note string) {
+			if b, ok := h.reg.Get(server); ok {
+				b.NoteNeedsAuth(note)
+			}
+		}})
+	h.server = New(h.reg, h.cat, h.guard, h.oauth)
+	h.web.Config.Handler = h.server.Handler()
+	h.web.Start()
 	t.Cleanup(h.web.Close)
 	return h
 }

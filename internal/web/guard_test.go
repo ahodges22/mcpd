@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -147,7 +148,9 @@ func TestAReboundHostIsRejectedOnTheWebRoutes(t *testing.T) {
 func TestEveryMutationRouteIsRejectedOnGET(t *testing.T) {
 	h := newHarness(t, testfake.New("alpha", tool("kubectl_logs")))
 	for _, rt := range h.server.routes() {
-		if !rt.mutates {
+		if !rt.mutates || rt.nonceGuarded {
+			// The callback is exempt from both halves of the rule by construction, and
+			// TestNoRouteChangesStateOnGET is what holds it to being the only one.
 			continue
 		}
 		path := concretePath(rt.path, "alpha")
@@ -191,8 +194,14 @@ func TestNoRouteChangesStateOnGET(t *testing.T) {
 			reachable = append(reachable, rt.path)
 		}
 	}
-	if len(reachable) != 0 {
-		t.Errorf("routes that change state on GET = %v, want none", reachable)
+	// The OAuth callback is the one member the spec permits, and it is only exempt
+	// because the state nonce replaces the method rule: a GET carrying no nonce must
+	// still be refused.
+	if want := []string{"/oauth/callback"}; !slices.Equal(reachable, want) {
+		t.Errorf("routes that change state on GET = %v, want exactly %v", reachable, want)
+	}
+	if res := h.get(t, "/oauth/callback"); res.status != http.StatusBadRequest {
+		t.Errorf("GET /oauth/callback with no state = %d, want %d", res.status, http.StatusBadRequest)
 	}
 
 	// A path outside the table must reach no handler at all, which a catch-all root

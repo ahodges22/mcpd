@@ -12,6 +12,7 @@ import (
 
 	"github.com/ahodges/mcpd/internal/backend"
 	"github.com/ahodges/mcpd/internal/catalog"
+	"github.com/ahodges/mcpd/internal/oauthstore"
 )
 
 const (
@@ -28,6 +29,10 @@ const (
 	// own handshake budget rather than replacing it, exactly as the catalog's read
 	// deadline is, so a cold start the configuration permits is never truncated.
 	invokeCallBudget = 60 * time.Second
+	// authorizeWaitTimeout bounds the wait for an authorization URL to appear. The
+	// URL exists only once the backend's 401 has been discovered, which is up to
+	// four round trips to the provider including a client registration.
+	authorizeWaitTimeout = 30 * time.Second
 )
 
 //go:embed assets
@@ -39,6 +44,7 @@ type Server struct {
 	reg   *backend.Registry
 	cat   *catalog.Catalog
 	guard *Guard
+	oauth *oauthstore.Store
 }
 
 // route is one registered path. Patterns carry no method, because the method check
@@ -47,11 +53,15 @@ type route struct {
 	method  string
 	path    string
 	mutates bool // changes daemon or backend state, so it is POST plus JSON only
-	handler http.HandlerFunc
+	// nonceGuarded marks the single documented exemption from that rule: the OAuth
+	// callback is necessarily a top-level browser GET, so a one-time state nonce
+	// authorizes it instead of the method.
+	nonceGuarded bool
+	handler      http.HandlerFunc
 }
 
-func New(reg *backend.Registry, cat *catalog.Catalog, g *Guard) *Server {
-	return &Server{reg: reg, cat: cat, guard: g}
+func New(reg *backend.Registry, cat *catalog.Catalog, g *Guard, oauth *oauthstore.Store) *Server {
+	return &Server{reg: reg, cat: cat, guard: g, oauth: oauth}
 }
 
 // Handler is the web surface behind the shared cross-origin guard and the
@@ -77,6 +87,10 @@ func (s *Server) routes() []route {
 		{method: http.MethodGet, path: "/api/status", handler: s.statusAPI},
 		{method: http.MethodGet, path: "/inspect/{name}", handler: s.inspectPage},
 		{method: http.MethodGet, path: "/assets/", handler: http.FileServerFS(assetFS).ServeHTTP},
+		{method: http.MethodGet, path: "/oauth/callback", mutates: true, nonceGuarded: true,
+			handler: s.oauthCallback},
+		{method: http.MethodPost, path: "/api/backends/{name}/authorize", mutates: true,
+			handler: s.authorize},
 		{method: http.MethodPost, path: "/api/backends/{name}/enable", mutates: true,
 			handler: s.backendAction(s.reg.Enable)},
 		{method: http.MethodPost, path: "/api/backends/{name}/disable", mutates: true,
@@ -169,11 +183,89 @@ func (s *Server) invoke(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, invokeResponse{Result: res})
 }
 
+// oauthCallback is the one route that changes state on a GET: the provider
+// redirects the browser here, so the method rule cannot apply and the one-time
+// state nonce authorizes it instead. Nothing from the query reaches the response:
+// every parameter here is attacker reachable.
+func (s *Server) oauthCallback(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	if err := s.oauth.Deliver(q.Get("state"), q.Get("code"), q.Get("iss")); err != nil {
+		http.Error(w, "this callback matches no outstanding authorization request", http.StatusBadRequest)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Write([]byte("Authorization received. You can close this tab and return to the mcpd status page.\n"))
+}
+
+// authorize starts an authorization the user can complete. It reconnects first,
+// because a backend inside its failure backoff would otherwise ignore the request
+// and never reach the 401 the authorization URL is discovered from, then waits for
+// that URL so the answer can say where to send the user.
+func (s *Server) authorize(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	b, ok := s.reg.Get(name)
+	if !ok {
+		http.Error(w, "unknown backend", http.StatusNotFound)
+		return
+	}
+	if !b.UsesOAuth() {
+		// Refused rather than attempted: the reconnect below would drop a live session
+		// to look for an authorization this backend will never need.
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "this backend does not authorize with oauth"})
+		return
+	}
+	finished, err := awaitTransition(transitionTimeout, func() error { return s.reg.Reconnect(name) })
+	if !finished {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+			"status": "in-progress",
+			"error":  "the reconnect cannot be cancelled and is still running; it will finish in the background",
+		})
+		return
+	}
+	if err != nil {
+		writeJSON(w, transitionStatus(err), map[string]string{"error": err.Error()})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), authorizeWaitTimeout)
+	defer cancel()
+	authURL, err := s.oauth.Await(ctx, name)
+	if err != nil {
+		if b.Health().State == backend.StateUp {
+			writeJSON(w, http.StatusOK, map[string]string{"status": "authorized"})
+			return
+		}
+		writeJSON(w, http.StatusGatewayTimeout, map[string]string{
+			"error": "no authorization was started; the backend's own error is on the status page",
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "pending", "authorize_url": authURL})
+}
+
 // runTransition waits a bounded time for an operation that cannot be cancelled.
 // Registry.Enable, Disable and Reconnect take no context and can take none, because
 // gate.Lock has no cancellable variant. So on expiry the response gives up while
 // the work continues to completion, rather than the work being abandoned.
 func runTransition(w http.ResponseWriter, timeout time.Duration, op func() error) {
+	finished, err := awaitTransition(timeout, op)
+	switch {
+	case !finished:
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+			"status": "in-progress",
+			"error":  "the transition cannot be cancelled and is still running; it will finish in the background",
+		})
+	case err != nil:
+		writeJSON(w, transitionStatus(err), map[string]string{"error": err.Error()})
+	default:
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	}
+}
+
+// awaitTransition runs op and reports whether it finished within timeout. The work
+// continues either way, because it cannot be cancelled.
+func awaitTransition(timeout time.Duration, op func() error) (finished bool, err error) {
 	done := make(chan error, 1)
 	go func() { done <- op() }()
 
@@ -181,21 +273,17 @@ func runTransition(w http.ResponseWriter, timeout time.Duration, op func() error
 	defer timer.Stop()
 	select {
 	case err := <-done:
-		if err != nil {
-			status := http.StatusInternalServerError
-			if errors.Is(err, backend.ErrDisabled) {
-				status = http.StatusConflict
-			}
-			writeJSON(w, status, map[string]string{"error": err.Error()})
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+		return true, err
 	case <-timer.C:
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
-			"status": "in-progress",
-			"error":  "the transition cannot be cancelled and is still running; it will finish in the background",
-		})
+		return false, nil
 	}
+}
+
+func transitionStatus(err error) int {
+	if errors.Is(err, backend.ErrDisabled) {
+		return http.StatusConflict
+	}
+	return http.StatusInternalServerError
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
