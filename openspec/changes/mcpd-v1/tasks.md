@@ -117,34 +117,73 @@
 
 - [ ] 11.1 Write the failing test: all three surfaces answer, and the two MCP endpoints
       advertise different tool counts
-- [ ] 11.2 Implement `cmd/mcpd serve`: one mux, both MCP handlers sharing the guard's
-      protection value, overrides loaded before connecting, graceful shutdown draining and
-      terminating children. Must call `catalog.Load()` at startup (it is what backs the
-      spec's persistence requirement) and one startup `catalog.RefreshAll()`, because
-      `catalog.Start` deliberately performs no immediate refresh to avoid doubling every
-      cold start's reads. After `Load`, call `catalog.Drop(name)` for every
-      backend that loaded disabled: a crash between Task 5's override write and its tool
-      eviction leaves that backend's tools in the persisted catalog, and a disabled backend
-      is never re-listed, so nothing else would ever remove them
-- [ ] 11.3 Wire embeddings into ranking: add the gateway URL, key, and model to config, call
-      `embedding.Vectorize` at catalog-refresh time per the spec, and supply the query vector
-      to `rank.Fuse`. Until this lands, fusion degenerates to lexical-only and abstention is
-      provably inert (`qvec` always nil, so `HasCosine` is always false), which makes Tasks 6
-      and 7 dead code in production
-- [ ] 11.4 Wire `mcpsrv.Passthrough.Sync` to a catalog POST-COMMIT hook, invoked outside the
-      catalog mutex. The existing tool-list-changed hook fires pre-commit and so would sync
-      against stale entries, and `Sync` holds its own lock across `cat.Entries()`. Without
-      this, nothing calls `Sync` and the pass-through tool set never changes after startup.
-      **Contract, verified by review:** fire the hook only after `c.mu` is released for that
-      commit, at the same point `commit`/`exclude`/`Drop` already call `persist()`. Never
-      from inside the locked critical section
+- [ ] 11.2 Implement `cmd/mcpd serve`: one mux, both MCP handlers wrapped in
+      `guard.Protect` so they share the guard's protection value, overrides loaded before
+      connecting, graceful shutdown draining and terminating children. Shutdown is
+      `backend.Registry.Shutdown()`, which drains the dispatch gate, stops each refresh,
+      closes each session and terminates each child, writes no override and evicts no
+      tools. Cancel the context given to `catalog.Start` before calling it: a refresh that
+      outlives the shutdown records the backend as excluded and evicts the very tools the
+      next start was going to serve. Must call `catalog.Load()` at startup (it is what
+      backs the spec's persistence requirement) and one startup `catalog.RefreshAll()`,
+      because `catalog.Start` deliberately performs no immediate refresh to avoid doubling
+      every cold start's reads
+- [ ] 11.2a Immediately after `catalog.Load()`, call `catalog.Drop(name)` for every backend
+      that loaded disabled, and pin it with a test. A crash between Task 5's override write
+      and its tool eviction leaves that backend's tools in the persisted catalog, and a
+      disabled backend is never re-listed, so this is the only thing that ever removes
+      them. It is a step of its own because a paragraph is skippable and this is not
+- [ ] 11.3 Wire embeddings into ranking. This is a multi-package code change, not wiring:
+      nothing outside `internal/embedding` imports it today, so every seam below has to be
+      built. Until it lands, fusion degenerates to lexical-only and abstention is provably
+      inert (`qvec` always nil, so `HasCosine` is always false), which makes Tasks 6 and 7
+      dead code in production. The obligations, each of which is missing:
+      (a) config gains the gateway URL, the API key and the model, and
+      `embedding.NewClient(baseURL, apiKey)` has no way to take a model: its `model` field
+      is private and defaulted, so the constructor has to accept one;
+      (b) `mcpsrv.NewSearch(cat, reg, th)` accepts no embedding client and no vector
+      source, and `searchHandler` hardcodes `rank.Fuse(in.Query, entries, nil, nil, limit)`.
+      Both the per-entry vectors and the query vector have to reach that call, so
+      `internal/mcpsrv`'s API changes;
+      (c) the query vector needs a gateway call at search time, and it must fail soft: a
+      failed query embed passes nil to `rank.Fuse` and the search still answers, exactly as
+      `Vectorize` degrades a failed catalog embed to lexical-only rather than erroring;
+      (d) nothing ever calls `Cache.Load` or `Cache.Save`, so the spec's requirement that a
+      warm cache works offline has no data path: `Load` at startup, `Save` after each
+      `Vectorize`. `Vectorize` belongs at catalog-refresh time, and the natural place is
+      11.4's post-commit hook, which fires from each refresh goroutine, so several
+      `Vectorize` calls can run at once. `Cache` is safe for that;
+      (e) the tool-search spec's "the status surface reports how many tools are
+      unvectorized" has no field anywhere. `Vectorize` returns the count, but neither
+      `backend.Health` nor `web.statusView` can carry it, so one of them gains a field and
+      the template and the JSON render it.
+      For the shape of the construction, copy `internal/web/helpers_test.go:39` and
+      `internal/oauthstore/flow_test.go:55`: between them they stand up every piece of
+      production wiring, including the late-bound closures the registry/catalog/store cycle
+      needs, and they are the only place that wiring is written down
+- [ ] 11.4 Wire `mcpsrv.Passthrough.Sync` to the catalog's post-commit hook,
+      `catalog.OnCommit`, which fires outside the catalog mutex on all three mutation paths
+      (`commit`, `exclude`, `Drop`). The existing tool-list-changed hook fires pre-commit and
+      so would sync against stale entries, and `Sync` holds its own lock across
+      `cat.Entries()`. Without this, nothing calls `Sync` and the pass-through tool set never
+      changes after startup. Register it before the first refresh starts: the field is not
+      guarded, because it is written once at construction. Construct the pass-through after
+      `catalog.Load()`, because `NewPassthrough` syncs in its constructor and would otherwise
+      serve an empty tool set until the first refresh commits
 - [ ] 11.5 Wire all four catalog refresh triggers: `catalog.Start(ctx)` covers TTL expiry, and
       `backend.Hooks{ToolListChanged, Reconnected}` both point at `Catalog.Trigger`. The
       mechanisms are built in Tasks 3 and 4; only the wiring is left, and an unwired hook is a
       silently stale catalog. Task 5 added three more hooks that must also be wired, or a
       disable stops being a kill switch: `StopRefresh` to `Catalog.StopRefresh`, `DropTools`
       to `Catalog.Drop`, and `Refresh` to `Catalog.Trigger`. `NewRegistry` now also takes the
-      `*backend.Overrides` loaded from the state directory
+      `*backend.Overrides` loaded from the state directory. Task 10 added two more hooks that
+      tasks.md never wrote down and that only the test harnesses
+      (`internal/web/helpers_test.go:39` and `internal/oauthstore/flow_test.go:55`) show:
+      `backend.Hooks.AuthHandler` must be `store.Handler`, and `oauthstore.New` must receive
+      `Hooks{NeedsAuth: b.NoteNeedsAuth, Authorized: b.NoteAuthorized}` routed through the
+      registry. A nil `AuthHandler` fails loudly at the first dial of an OAuth backend; nil
+      store hooks fail **silently**, and needs-auth then never surfaces at all, which is the
+      worse half. Copy both harnesses rather than deriving the wiring again
 - [ ] 11.6 Write the systemd user unit, relying on the existing user environment import
       rather than an environment file
 - [ ] 11.7 Build, install, enable, and confirm the status endpoint answers with backends up.
@@ -190,7 +229,8 @@
 ## 14. Live provider acceptance
 
 - [ ] 14.1 Clear the stored token and confirm the backend reports needs-auth with a pending
-      URL
+      URL. The file is `oauth-notion.json` directly under the state directory: deleting
+      anything else clears nothing, and then 14.4's restart-reuse check proves nothing
 - [ ] 14.2 Complete authorization in the browser and confirm the backend connects with a
       non-zero tool count
 - [ ] 14.3 Make one real authenticated call through the inspector
