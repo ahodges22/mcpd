@@ -253,68 +253,206 @@
 - [ ] 14.5 Force access-token expiry and confirm a refresh rather than a return to needs-auth
 - [ ] 14.6 Append the outcome to `PHASE0.md` and commit
 
+
 ## 15. Backend management from the status surface
 
 Depends on Task 11, because there is nothing to add a backend to until the daemon runs, and
 on 11.4, because an added or removed backend must reach connected pass-through clients
 through the catalog's post-commit hook.
 
-- [ ] 15.1 Add one shared backend-name validator and apply it on both paths. The name
-      becomes a URL path segment, the `oauth-<name>.json` file name under the state
-      directory, and the prefix of every `mcp__<server>__<tool>` id, so it has three
-      injection surfaces and until now was trusted because only a hand-edited file could
-      supply it. Use `^[a-z0-9][a-z0-9_-]{0,63}$`, call it from `config.Load` as well as the
-      add route, and confirm all 13 currently declared names still load
-- [ ] 15.2 Write the failing tests for the write path, in `internal/config`: a field the
-      daemon's types do not model survives an add; the replaced content is readable from the
-      backup; a file changed on disk since load refuses the write and leaves the file byte
-      identical; a mode of 0644 becomes 0600 after a write
-- [ ] 15.3 Implement the write path. Read-modify-write over a preserving representation:
-      decode the document and its `backends` object as `map[string]json.RawMessage` and
-      re-encode only the entry that changed, so no unmodelled field is dropped. Record the
-      bytes read at load, re-read and compare immediately before writing, and return a
-      distinct sentinel error on mismatch so the route can answer 409. Copy the replaced
-      content to `config.json.bak` in the same directory, then temp-file-plus-rename as
-      `Overrides.save` already does. Stat the existing file and tighten the mode when it is
-      readable beyond its owner, never loosen it. Marshalling a Go map sorts its keys, so the
-      first write reformats the file into sorted order; that is accepted, and it is the reason
-      the backup exists
-- [ ] 15.4 Write the failing tests for runtime registration: an added backend serves a tool
-      with no restart; a removed backend's session closes, its stdio child exits and its
-      tools leave the catalog; a reload adopts a hand-added declaration and tears down a
-      hand-removed one; a reload that changes one backend leaves every other backend's
-      session, child and authorization intact
-- [ ] 15.5 Implement `Registry.Add` and `Registry.Remove`. `backends` and `names` are
-      currently immutable after `NewRegistry` and are read with no lock on the dispatch hot
-      path, so add an RWMutex and take it for reading in `Get`, `Names` and `Health`. It sits
-      **above** the existing four-level order (transition, gate, life, mu). Never hold it
-      across a teardown: `Remove` takes it, deletes the entry, releases it, and only then
-      tears the backend down, because teardown blocks on in-flight work. Tear down with the
-      terminal `forShutdown` latch, so nothing can respawn a child for a backend that is no
-      longer declared. `NewRegistry` must retain the `Hooks` value it was given, because
-      `Add` needs it to build the new backend
-- [ ] 15.6 Implement reload. Diff the freshly loaded declarations against the registered set:
-      unchanged backends are not touched at all, new ones go through `Add`, absent ones
-      through `Remove`, and a changed declaration is a `Remove` followed by an `Add`. A
-      reload-driven replace MUST NOT delete the backend's override or its stored OAuth
-      record, because the user changed a declaration rather than removing a backend; only an
-      explicit removal in 15.7 deletes runtime state
-- [ ] 15.7 Implement removal cleanup: delete the removed backend's override entry and its
-      stored OAuth record. State left under a name that is no longer declared would silently
-      apply to a later backend that reused the name
-- [ ] 15.8 Add the three routes to `routes()`, which is the sole registration path:
-      `POST /api/backends`, `POST /api/backends/{name}/remove`, and `POST /api/reload`. All
-      three are `mutates: true` and none is nonce-guarded, so they inherit the origin, method
-      and loopback-host guards. Reject a duplicate name with 409, an invalid declaration with
-      400, and a stale file with 409 carrying text the page can show
-- [ ] 15.9 Extend the page and the assets: an add form covering both transports, and a remove
-      action requiring a second confirming action through the existing `data-confirm`
-      mechanism. Insert every value with `textContent`. The add form MUST NOT prefill or
-      display any existing `env` or `headers` value, and the status snapshot must continue to
-      omit both, because a declaration can carry an inline credential
-- [ ] 15.10 Mutation-verify at minimum: drop the staleness comparison and the refusal test
-      must fail; drop the raw-message preservation and the unmodelled-field test must fail;
-      loosen the name validator and the traversal test must fail; make reload rebuild every
-      backend and the unchanged-backend test must fail; skip the `forShutdown` latch on remove
-      and the child-exits test must fail
-- [ ] 15.11 Tests green under `-race`, then commit
+This section went through seven adversarial review rounds. Several steps below say what an
+earlier draft did and why it was wrong; those notes are load-bearing, because each of those
+drafts looked correct.
+
+The lock order this section introduces, outermost first: the operation lock, the config writer
+mutex, the registry read-write lock, then the four existing backend levels (transition, gate,
+life, mu), then the declared-set lock, then the state-store mutexes. The writer mutex is never
+held across a registry mutation or a teardown, and the registry write lock is never held across
+a teardown.
+
+- [ ] 15.1 Add one shared backend-name validator, `^[a-z0-9][a-z0-9_-]{0,63}$`. The name
+      becomes a URL path segment, the `oauth-<name>.json` file name under the state directory,
+      and the prefix of every `mcp__<server>__<tool>` id, so it has three injection surfaces and
+      until now was trusted because only a hand-edited file could supply it. Call it from
+      `config.Load`, from the add route, and from every existing and new route that takes a
+      `{name}` path value, before any registry, override, filesystem or OAuth operation. The
+      remove route matters most, because it is the one that deletes a name-derived file. Confirm
+      all 13 currently declared names still load
+- [ ] 15.2 Write the failing tests for the config write path in `internal/config`: an unmodelled
+      field survives an add; a file changed on disk since load refuses the write and leaves the
+      file's content byte identical; an edit landing after the staleness comparison is
+      recoverable from an archive and survives ten later routine writes; an unsupported exchange
+      refuses the write; a second write after a successful one is not refused; a failing archive
+      still commits, reports a warning, and leaves the displaced file at 0600; a 0644 file and
+      its archive are both 0600 after a write
+- [ ] 15.3 Implement the config write path as one type owning the path, the baseline bytes, the
+      declared-set snapshot and a mutex
+- [ ] 15.3a Read-modify-write over a preserving representation: decode the document and its
+      `backends` object as `map[string]json.RawMessage` and re-encode only the entry that
+      changed, so no unmodelled field is dropped. Marshalling a Go map sorts its keys, so the
+      first write reformats the file into sorted order; that is accepted, and the archives are
+      the recovery path
+- [ ] 15.3b Hold the writer mutex across the whole sequence, in this order: re-read the file,
+      compare against the baseline, run the duplicate or existence check against the freshly
+      read content, marshal, write the temp file, tighten the existing file's mode if it is
+      readable beyond its owner, exchange, archive, adopt the written bytes as the new baseline,
+      refresh the declared-set snapshot. Adopting the new baseline is not optional: without it
+      the first write poisons every later one into a permanent false refusal
+- [ ] 15.3c Commit with `unix.Renameat2(RENAME_EXCHANGE)` swapping the temp file and the
+      configuration file, then archive the displaced content from the temp path. A copy taken
+      before the swap would miss an edit that landed in between, which is exactly the window
+      that matters. `golang.org/x/sys` is already an indirect dependency, so this is a promotion
+      to direct. On `EINVAL` or `ENOSYS`, refuse the write and change nothing. **There is no
+      plain-rename fallback**, because a fallback reintroduces the destruction window precisely
+      where nobody would notice
+- [ ] 15.3d The mode tightening at 15.3b is the ONLY pre-commit mutation, and it needs a
+      one-line comment saying why: the exchange moves the existing inode to the temporary path,
+      so tightening afterwards would come too late for a failed archive to be safe
+- [ ] 15.3e Split the return: an error for anything before the exchange, warnings for everything
+      after it. Archiving and retention are post-exchange, so neither may fail the operation, and
+      no caller may make its later steps conditional on them. If archiving fails, leave the
+      displaced file in place under its temporary name and say so in the warning. Return a
+      distinct sentinel error for a staleness mismatch and another for a duplicate name, so the
+      route can answer 409 for each
+- [ ] 15.3f Archive to a numbered file beside the configuration. Compare the displaced bytes
+      against the baseline: equal means the daemon displaced its own write, so the archive is
+      routine and the ten most recent routine archives are retained; unequal means it displaced
+      something it did not write, which is the only irreplaceable class, so retain it without
+      limit. Create every archive at 0600 and tighten an existing one that is more permissive
+- [ ] 15.3g Own the declared-set snapshot behind its own lock: a declared check, the declaration
+      identity for a name, and an explicit acquire/release pair so a state writer can hold the
+      read lock across its own file replacement. Refresh it inside the writer mutex on every
+      successful write and on reload adoption, and expose the write-lock drop that a removal or
+      reload calls before cleanup. Also expose a read-validate-adopt entry point for 15.12
+- [ ] 15.4 Write the failing tests for runtime registration: an added backend serves a tool with
+      no restart; a removed backend's session closes, its stdio child exits and its tools leave
+      the catalog; a reload adopts a hand-added declaration and tears down a hand-removed one; a
+      reload that changes one backend leaves every other backend's session, child and
+      authorization intact
+- [ ] 15.5 Implement `Registry.Add` and `Registry.Remove`. Add an RWMutex and take it for reading
+      in `Get`, `Names` and `Health`, which read the map and slice with no lock today because
+      nothing ever mutated them after construction. Never hold it across a teardown: `Remove`
+      takes it, deletes the entry, releases it, and only then tears the backend down, because
+      teardown blocks on in-flight work. Tear down with the terminal `forShutdown` latch so
+      nothing can respawn a child for a backend that is no longer declared; the latch is per
+      object, so a later `Add` of the same name is unaffected. Neither method returns an error,
+      which is what keeps the config write as the only commit point. `NewRegistry` must retain
+      the `Hooks` value it was given, because `Add` needs it
+- [ ] 15.5a `Add` takes the initial enabled state as a parameter and never consults the override
+      store, unlike `NewRegistry`. This needs a one-line comment, because the asymmetry with
+      construction is otherwise indistinguishable from a bug. Reading the store inside `Add`
+      would keep a reload replacement's disabled state and break a fresh add over a stale flag;
+      taking it from the caller satisfies both
+- [ ] 15.6 Write the failing tests for the transaction boundary, for serialization, and for the
+      enabled-state hand-off: a refused config write leaves the registry, the running backend,
+      the override and the stored token untouched; an add rejected as a duplicate leaves the
+      existing backend's token and override untouched; an add rejected because the exchange is
+      unavailable leaves both untouched; a backend added from the surface under a name carrying a
+      disabled flag starts enabled and is still enabled after a simulated restart; a disabled
+      backend whose declaration is edited and reloaded is still disabled and its stdio child is
+      not started; an add whose name carries a matching stored token does not authenticate with
+      it; a post-commit cleanup failure still removes the backend and still reports the failure;
+      a removal and an add of the same name issued concurrently leave the declaration and the
+      runtime agreeing
+- [ ] 15.7 Implement the operation lock: one mutex, taken by add, remove and reload, held across
+      the config write, the registry mutation, the teardown and the cleanup. Document in one line
+      why it extends past the commit point. Ending it at the write is a real race: a removal
+      commits, a concurrent add of the same name commits and registers, and the removal's cleanup
+      then deletes the new backend's registry entry, tools, override and token. That is the race
+      15.6's concurrency test pins
+- [ ] 15.8 Implement the declared-set protocol on the two state writers the operation lock cannot
+      cover. `Overrides.set` and the persisting token source each take the declared-set read
+      lock, check that the backend is declared and that the identity matches, perform their file
+      replacement, and only then release. A removal or reload takes the write lock and drops the
+      name before it begins cleanup. Checking and releasing before writing leaves a
+      time-of-check-to-time-of-use gap a removal can land inside; the property needed is "it was
+      still declared when this write landed, so the cleanup that follows will see it". Failing
+      tests first: an override write racing a removal either lands before the cleanup and is
+      deleted by it or is refused, and never survives it; a token refresh completing after
+      removal leaves no record
+- [ ] 15.8a Comment at each site why the operation lock is NOT used there, naming the inversion:
+      a token refresh persists from inside `oauth2`'s `Token()`, which runs underneath the
+      backend `life` lock, so taking the outermost operation lock there can deadlock against a
+      removal holding it while waiting on that same backend's teardown. Comment on the
+      acquire/release pair why the lock spans the write rather than just the check
+- [ ] 15.9 Implement the add operation: validate the name and the declaration, then hand off to
+      the writer, which performs the fresh read, the staleness check, the duplicate check and the
+      commit. Nothing is deleted before the exchange. After it succeeds, in this order: attempt
+      the hygiene deletion of any state found under the name, then `Registry.Add` with enabled
+      state true, then trigger a catalog refresh. The deletion precedes registration because a
+      registered backend is immediately routable and could dial and authenticate with the record
+      being deleted. None of the three is conditional on the writer's warnings, and a deletion
+      failure is reported without stopping the other two. The refresh is a trigger, not a gate: a
+      backend that cannot be reached stays declared and shows as down
+- [ ] 15.10 Implement the remove operation in commit order: validate the name, confirm it is
+      declared, commit the config write, drop the name from the declared-set snapshot under its
+      write lock, then `Registry.Remove`, then the cleanup of 15.11. Never tear down before the
+      write commits, or a refused write kills a live backend
+- [ ] 15.11 Implement removal cleanup, idempotent and non-aborting: evict the backend's tools,
+      delete its override entry, delete its stored OAuth record. Each tolerates an absent target,
+      and a failure in one is reported without skipping the others. A failure here is what 15.5a
+      and 15.13 exist to survive
+- [ ] 15.12 Implement reload. Read and validate the entire file inside the writer mutex and
+      return without touching anything if it does not load or any declaration is invalid. Adopt
+      the validated bytes as the baseline and refresh the declared-set snapshot in the same
+      critical section. Validating first and taking the mutex afterwards would let a concurrent
+      hand edit make reload report success while applying an obsolete declaration, including
+      starting a stdio child the current file no longer declares. Then release the writer mutex
+      and diff against the registered set: unchanged backends are not touched at all; new ones go
+      through `Add` with enabled state true; a name that has disappeared is a removal, including
+      the declared-set drop and the cleanup of 15.11
+- [ ] 15.12a A changed declaration under an unchanged name captures the existing backend's
+      enabled state, tears it down, and re-adds it with that captured state, deleting the stored
+      OAuth record when the declaration identity changed. Passing enabled unconditionally would
+      silently enable a disabled backend, and for a stdio backend that starts the process the
+      user disabled
+- [ ] 15.13 Implement the identity binding on both state stores: persist the declaration identity
+      tuple (resource URL, auth mode, transport kind) on each OAuth record and each override
+      entry, compare it against the current declaration before honouring either, and on a
+      mismatch discard, delete, and for a token report needs-auth. Comparing the resource URL
+      alone is not sufficient, because an unchanged URL hides a change to either of the others.
+      Failing tests first: a record whose stored identity differs is never presented and the
+      backend reports needs-auth; a matching record is used normally; a record written by an
+      earlier version with no stored identity is treated as a mismatch rather than as a match; an
+      override entry whose identity differs does not disable the backend after a restart and is
+      deleted
+- [ ] 15.14 Implement startup reconciliation: delete any override entry and any stored OAuth
+      record whose backend is not declared, and any whose identity does not match. Test that a
+      declared backend's own matching state survives it
+- [ ] 15.15 Add three routes to `routes()`, which is the sole registration path: `POST
+      /api/backends`, `POST /api/backends/{name}/remove`, `POST /api/reload`. All three
+      `mutates: true`, none nonce-guarded, so they inherit the origin, method and loopback-host
+      guards. Reject an invalid name or declaration with 400, a duplicate name with 409, and a
+      stale file with 409 carrying text the page can show. Surface a post-commit warning as a
+      success with a note, not as a failure
+- [ ] 15.16 Extend the page and the assets: an add form covering both transports, and a remove
+      action using the existing `data-confirm` second-confirming-action mechanism. Insert every
+      value with `textContent`. The add form MUST NOT prefill or display any existing `env` or
+      `headers` value, and the status snapshot must continue to omit both, because a declaration
+      can carry an inline credential
+- [ ] 15.17 Mutation-verify, at minimum: drop the staleness comparison and the refusal test must
+      fail; drop the baseline advance and the second-write test must fail; drop reload's baseline
+      adoption and the write-after-reload test must fail; move reload's validation outside the
+      writer mutex and the edited-between test must fail; replace the atomic exchange with a
+      copy-then-rename and the archive-recovery test must fail; reinstate a plain-rename fallback
+      and the unsupported-exchange test must fail; move the mode tightening after the exchange
+      and the failed-archive-mode test must fail; make an archive failure fatal and the
+      commit-with-warning test must fail; apply a flat retention cap to every archive and the
+      survives-ten-writes test must fail; drop the raw-message preservation and the
+      unmodelled-field test must fail; loosen the name validator and the traversal test must fail
+      on both routes; move the hygiene deletion before the exchange and the
+      rejected-unavailable-exchange test must fail; move it after `Registry.Add` and the
+      add-does-not-authenticate test must fail; make `Add` consult the override store and the
+      starts-enabled test must fail; make reload's replacement pass enabled unconditionally and
+      the stays-disabled test must fail; release the declared-set read lock between the check and
+      the write and the override-racing-removal test must fail; drop the declared check in
+      `Overrides.set` and that same test must fail; drop it in the token source and the
+      refresh-after-removal test must fail; compare only the resource URL instead of the identity
+      tuple and the changed-auth-mode test must fail; treat an absent identity as a match and the
+      legacy-record test must fail; skip the override identity comparison and the
+      enabled-after-restart test must fail; move the teardown before the config write and the
+      refused-write test must fail; release the operation lock at the commit point and the
+      concurrency test must fail; make reload apply a partially invalid file and the
+      all-or-nothing test must fail; make reload rebuild every backend and the unchanged-backend
+      test must fail; skip the `forShutdown` latch on remove and the child-exits test must fail
+- [ ] 15.18 Tests green under `-race`, then commit

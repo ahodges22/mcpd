@@ -84,7 +84,13 @@ None. This is the first change in this repo; `openspec/specs/` is empty.
   tokens at 0600).
 - **Second writer on a hand-authored file:** the user and the daemon both write
   `config.json`, with no lock between them. Mitigated by refusing a write when the file
-  changed on disk, and by keeping the replaced content beside it.
+  changed on disk, and by keeping every version the daemon displaces in a numbered archive
+  beside it. Seven adversarial review rounds went into `backend-management` for this reason;
+  roughly half of that capability is machinery for sharing one file with a text editor, which
+  is the price of the single-file choice over a daemon-owned overlay.
+- **Name-keyed state is bound to its declaration:** a stored OAuth token or a disable override
+  now records the declaration it was written under, and is inert under any other. Without it a
+  repointed backend would present a token to an endpoint it was never issued for.
 - **External dependency:** the LiteLLM gateway for embeddings at catalog-refresh time.
   Verified reachable, 1536 dimensions. Off-VPN with a warm cache stays fully
   functional.
@@ -93,5 +99,6 @@ None. This is the first change in this repo; `openspec/specs/` is empty.
   deliberately, mitigated with `Restart=always`.
 - **Out of scope:** OS-level sandboxing of stdio backends, per-tool enable/disable,
   editing an existing backend declaration from the UI (remove and re-add instead, so no
-  stored credential is ever sent to the browser), user authentication on the daemon,
-  forwarding sampling/elicitation/roots, and `metabase`.
+  stored credential is ever sent to the browser), making a backend's reachability a
+  precondition for declaring it, a per-declaration generation counter, user authentication on
+  the daemon, forwarding sampling/elicitation/roots, and `metabase`.

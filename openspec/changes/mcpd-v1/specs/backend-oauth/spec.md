@@ -54,6 +54,23 @@ Tokens and any registered client credentials SHALL be written to per-backend fil
 mode 0600, inside a directory at mode 0700. A refreshed token SHALL be written back, so a
 restart reuses it rather than re-authorizing.
 
+A record SHALL also persist the declaration identity it was issued under, and that identity
+SHALL be compared against the current declaration before the record authenticates anything. A
+record is keyed only by backend name, and the name says nothing about which provider issued the
+token or under what declaration, so a repointed backend would otherwise present a token to an
+endpoint it was not issued for. A record whose identity does not match, including one that
+carries no identity at all, is unusable: it is discarded, deleted, and the backend reports
+`needs-auth`. A refresh SHALL NOT persist a record for a backend that is no longer declared.
+The `backend-management` capability covers what changes an identity, and why deleting the
+record at the moment of change is not sufficient on its own.
+
+#### Scenario: A repointed declaration does not reuse its token
+
+- **WHEN** a backend's declared URL, auth mode or transport differs from the identity its
+  stored record was issued under
+- **THEN** the record is discarded and deleted, the token is never sent to the provider, and
+  the backend reports `needs-auth`
+
 #### Scenario: A restart reuses the stored token
 
 - **WHEN** the daemon is restarted after a successful authorization
