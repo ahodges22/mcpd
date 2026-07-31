@@ -1,0 +1,22 @@
+[Unit]
+Description=mcpd, the local MCP proxy daemon
+Documentation=https://github.com/ahodges22/mcpd
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/mcpd
+Restart=always
+RestartSec=2
+# The user environment is imported rather than an EnvironmentFile: backends reference
+# credentials the user's session already holds through ${VAR}, and a second copy of those
+# in a file under the state directory is one more place a token can leak from.
+PassEnvironment=PATH HOME USER LOGNAME SHELL LANG TZ TERM TMPDIR
+# A stdio backend is a child of this unit. control-group is what reaps one that outlives a
+# shutdown whose teardown budget expired, which the daemon deliberately allows rather than
+# blocking exit on an unbounded tool call.
+KillMode=control-group
+TimeoutStopSec=30
+
+[Install]
+WantedBy=default.target

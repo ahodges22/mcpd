@@ -115,9 +115,9 @@
 
 ## 11. Daemon entrypoint and first real run
 
-- [ ] 11.1 Write the failing test: all three surfaces answer, and the two MCP endpoints
+- [x] 11.1 Write the failing test: all three surfaces answer, and the two MCP endpoints
       advertise different tool counts
-- [ ] 11.2 Implement `cmd/mcpd serve`: one mux, both MCP handlers wrapped in
+- [x] 11.2 Implement `cmd/mcpd serve`: one mux, both MCP handlers wrapped in
       `guard.Protect` so they share the guard's protection value, overrides loaded before
       connecting, graceful shutdown draining and terminating children. Shutdown is
       `backend.Registry.Shutdown()`, which drains the dispatch gate, stops each refresh,
@@ -133,7 +133,7 @@
       startup (it is what backs the spec's persistence requirement) and one startup
       `catalog.RefreshAll()`, because `catalog.Start` deliberately performs no immediate
       refresh to avoid doubling every cold start's reads
-- [ ] 11.2a Immediately after `catalog.Load()`, call `catalog.Drop(name)` for every backend
+- [x] 11.2a Immediately after `catalog.Load()`, call `catalog.Drop(name)` for every backend
       that loaded disabled, and pin it with a test. A crash between Task 5's override write
       and its tool eviction leaves that backend's tools in the persisted catalog, and a
       disabled backend is never re-listed, so this is the only thing that ever removes
@@ -169,7 +169,7 @@
       `internal/oauthstore/flow_test.go:55`: between them they stand up every piece of
       production wiring, including the late-bound closures the registry/catalog/store cycle
       needs, and they are the only place that wiring is written down
-- [ ] 11.4 Wire `mcpsrv.Passthrough.Sync` to the catalog's post-commit hook,
+- [x] 11.4 Wire `mcpsrv.Passthrough.Sync` to the catalog's post-commit hook,
       `catalog.OnCommit`, which fires outside the catalog mutex on all three mutation paths
       (`commit`, `exclude`, `Drop`). The existing tool-list-changed hook fires pre-commit and
       so would sync against stale entries, and `Sync` holds its own lock across
@@ -185,7 +185,7 @@
       pass-through after `catalog.Load()`, because `NewPassthrough` syncs in its constructor
       and would otherwise
       serve an empty tool set until the first refresh commits
-- [ ] 11.5 Wire all four catalog refresh triggers: `catalog.Start(ctx)` covers TTL expiry, and
+- [x] 11.5 Wire all four catalog refresh triggers: `catalog.Start(ctx)` covers TTL expiry, and
       `backend.Hooks{ToolListChanged, Reconnected}` both point at `Catalog.Trigger`. The
       mechanisms are built in Tasks 3 and 4; only the wiring is left, and an unwired hook is a
       silently stale catalog. Task 5 added three more hooks that must also be wired, or a
@@ -199,7 +199,7 @@
       registry. A nil `AuthHandler` fails loudly at the first dial of an OAuth backend; nil
       store hooks fail **silently**, and needs-auth then never surfaces at all, which is the
       worse half. Copy both harnesses rather than deriving the wiring again
-- [ ] 11.6 Write the systemd user unit, relying on the existing user environment import
+- [x] 11.6 Write the systemd user unit, relying on the existing user environment import
       rather than an environment file
 - [ ] 11.7 Build, install, enable, and confirm the status endpoint answers with backends up.
       A backend that is down here is a missing passthrough variable, to be added rather than
@@ -515,7 +515,7 @@ across its own map mutation to keep a concurrent enable or disable out.
       value with `textContent`. The add form MUST NOT prefill or display any existing `env` or
       `headers` value, and the status snapshot must continue to omit both, because a declaration
       can carry an inline credential
-- [ ] 15.17 Mutation-verify, at minimum: drop the staleness comparison and the refusal test must
+- [x] 15.17 Mutation-verify, at minimum: drop the staleness comparison and the refusal test must
       fail; drop the baseline advance and the second-write test must fail; drop reload's baseline
       adoption and the write-after-reload test must fail; move reload's validation outside the
       writer mutex and the edited-between test must fail; replace the atomic exchange with a
@@ -554,4 +554,4 @@ across its own map mutation to keep a concurrent enable or disable out.
       concurrency test must fail; make reload apply a partially invalid file and the
       all-or-nothing test must fail; make reload rebuild every backend and the unchanged-backend
       test must fail; skip the `forShutdown` latch on remove and the child-exits test must fail
-- [ ] 15.18 Tests green under `-race`, then commit
+- [x] 15.18 Tests green under `-race`, then commit
