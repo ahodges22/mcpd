@@ -37,6 +37,17 @@ import (
 // exit, and the child is reaped by the unit's KillMode anyway.
 const shutdownBudget = 20 * time.Second
 
+// abstainCosine is the calibrated low-confidence threshold, produced by cmd/evalrank against
+// this machine's catalog and checked in rather than configured: the number is only meaningful
+// for the embedding model and the tool set it was calibrated over, so it belongs beside the
+// code that was measured, and recalibrating means running evalrank and changing it here.
+//
+// Calibration of 2026-07-30: answerable cosine floor 0.3096, no-answer ceiling 0.2215,
+// separated, midpoint 0.2649. Scored once against a held-out no-answer set it had never seen:
+// 10 of 10 correctly flagged. Zero disables abstention, which is the right default for a
+// catalog nobody has calibrated against.
+const abstainCosine = 0.2649
+
 // embedBudget bounds one catalog vectorization. It is generous because a cold cache embeds
 // every tool in the catalog, and it runs detached from the refresh that triggered it.
 const embedBudget = 2 * time.Minute
@@ -209,11 +220,21 @@ func (d *daemon) wire(cfg *config.Config, addr string) error {
 		vectors = d.vecs
 		surface = surface.WithUnvectorized(d.vecs.Unvectorized)
 	}
-	mux.Handle("/mcp/search", guard.Protect(streamable(mcpsrv.NewSearch(d.cat, d.reg, rank.Thresholds{}, vectors))))
+	mux.Handle("/mcp/search", guard.Protect(streamable(mcpsrv.NewSearch(d.cat, d.reg, d.thresholds(), vectors))))
 	mux.Handle("/mcp/passthrough", guard.Protect(streamable(d.pass.Server())))
 	mux.Handle("/", surface.Handler())
 	d.handler = mux
 	return nil
+}
+
+// thresholds is the abstention configuration this daemon runs with. Abstention is only
+// meaningful with a gateway: with no vectors there is no cosine to judge against, and
+// LowConfidence goes quiet rather than flagging every query.
+func (d *daemon) thresholds() rank.Thresholds {
+	if d.vecs == nil || abstainCosine <= 0 {
+		return rank.Thresholds{}
+	}
+	return rank.Thresholds{Cosine: abstainCosine, Enabled: true}
 }
 
 func streamable(srv *mcp.Server) http.Handler {

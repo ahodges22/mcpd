@@ -13,6 +13,8 @@ import (
 
 	"github.com/ahodges/mcpd/internal/backend"
 	"github.com/ahodges/mcpd/internal/config"
+	"github.com/ahodges/mcpd/internal/embedding"
+	"github.com/ahodges/mcpd/internal/mcpsrv"
 	"github.com/ahodges/mcpd/internal/testfake"
 )
 
@@ -286,4 +288,30 @@ func cfgFull(t *testing.T, d *daemon) *config.Config {
 
 func tool(name string) *mcp.Tool {
 	return &mcp.Tool{Name: name, Description: name + " description"}
+}
+
+// Abstention is inert unless it is wired, and an unwired threshold is invisible: search keeps
+// answering, just without ever saying it found nothing good. Task 7 built the mechanism and
+// Task 13 calibrated the number, so this asserts the one thing neither of those can: that the
+// daemon actually hands the calibrated value to the facade, and that it stays off when there
+// is no gateway to produce a cosine to judge against.
+func TestAbstentionIsWiredOnlyWhenAGatewayCanProduceACosine(t *testing.T) {
+	if abstainCosine <= 0 {
+		t.Skip("no threshold is calibrated, so there is nothing to wire")
+	}
+	d, _ := wireDaemon(t, tool("kubectl_logs"))
+	if d.vecs != nil {
+		t.Fatal("this harness configures no embeddings gateway, so the case below is not the one being tested")
+	}
+	if got := d.thresholds(); got.Enabled {
+		t.Errorf("abstention is enabled with no gateway: %+v", got)
+	}
+
+	// And with a gateway, the calibrated number reaches the facade.
+	d.vecs = mcpsrv.NewVectorStore(embedding.NewClient("https://gateway.test", "", ""),
+		embedding.NewCache(filepath.Join(t.TempDir(), "embeddings.json"), "m"))
+	got := d.thresholds()
+	if !got.Enabled || got.Cosine != abstainCosine {
+		t.Errorf("thresholds = %+v, want the calibrated %v enabled", got, abstainCosine)
+	}
 }
