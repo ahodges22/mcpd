@@ -5,6 +5,7 @@ import (
 	"embed"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -290,6 +291,14 @@ func (s *Server) invoke(w http.ResponseWriter, r *http.Request) {
 // every parameter here is attacker reachable.
 func (s *Server) oauthCallback(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
+	// The issuer and the presence of an error, and never the code or the state. RFC 9207
+	// makes iss conditional on the authorization server advertising support for it, and the
+	// SDK refuses an authorization whose iss does not match what the metadata promised, so
+	// whether it arrived at all is the first thing worth knowing about a consent that
+	// completed and then went nowhere.
+	slog.Info("oauth callback received",
+		"iss", q.Get("iss"), "has_code", q.Get("code") != "",
+		"provider_error", q.Get("error"), "provider_error_description", q.Get("error_description"))
 	if err := s.oauth.Deliver(q.Get("state"), q.Get("code"), q.Get("iss")); err != nil {
 		http.Error(w, "this callback matches no outstanding authorization request", http.StatusBadRequest)
 		return

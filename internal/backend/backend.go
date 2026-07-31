@@ -7,6 +7,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/exec"
@@ -531,6 +532,10 @@ func (b *Backend) failConnect(stage string, cause error) error {
 	}
 	b.health.LastErr = cause.Error()
 	b.retryAt = time.Now().Add(min(backoffBase<<min(b.failures-1, 8), backoffMax))
+	// Logged as well as recorded, because the health record holds only the latest failure.
+	// A handshake that fails and is immediately retried overwrites the cause of the first
+	// with the cause of the second, and the first is the one that explains the second.
+	slog.Warn("handshake failed", "server", b.name, "stage", stage, "failures", b.failures, "error", cause)
 	return fmt.Errorf("%s: %w", stage, cause)
 }
 

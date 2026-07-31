@@ -4,10 +4,12 @@
 package oauthstore
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -206,7 +208,52 @@ func (t publicClient) RoundTrip(req *http.Request) (*http.Response, error) {
 	if _, _, ok := req.BasicAuth(); ok {
 		return nil, errors.New("mcpd is a public oauth client and sends no client secret")
 	}
-	return t.base.RoundTrip(req)
+	res, err := t.base.RoundTrip(req)
+	if err != nil {
+		return res, err
+	}
+	reportProviderRefusal(req, res)
+	return res, nil
+}
+
+// providerErrorLimit caps how much of a refusal is read back. An OAuth error response is a
+// small JSON object; anything larger is not one.
+const providerErrorLimit = 4 << 10
+
+// reportProviderRefusal logs why a provider refused an OAuth request.
+//
+// Without it a failed code exchange leaves no trace of its cause, because the SDK's response
+// to a refused exchange is to begin a fresh authorization: the reason sits in a response body
+// nothing else looks at, and the error the user is finally shown belongs to that second
+// attempt rather than to the failure that caused it.
+//
+// Only a refusal is read, and only its RFC 6749 error fields are logged. A successful response
+// carries the token and is never touched, and the request body, which carries the
+// authorization code and the PKCE verifier, is never read here at all.
+func reportProviderRefusal(req *http.Request, res *http.Response) {
+	if res.StatusCode < 400 || res.Body == nil {
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(res.Body, providerErrorLimit))
+	res.Body.Close()
+	// Put it back: this is a diagnostic, and the SDK still has to read the response it
+	// would have read had nothing been logged.
+	res.Body = io.NopCloser(bytes.NewReader(body))
+	if err != nil {
+		return
+	}
+	var refusal struct {
+		Error       string `json:"error"`
+		Description string `json:"error_description"`
+		URI         string `json:"error_uri"`
+	}
+	// A body that is not an OAuth error object is reported by its status alone rather than
+	// echoed: an HTML error page from a proxy in front of the provider does not belong in a
+	// log line.
+	_ = json.Unmarshal(body, &refusal)
+	slog.Warn("the authorization provider refused a request",
+		"endpoint", req.URL.Path, "status", res.StatusCode,
+		"error", refusal.Error, "description", refusal.Description, "uri", refusal.URI)
 }
 
 // record is one backend's persisted OAuth state. The client_id is kept because
