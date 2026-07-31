@@ -14,6 +14,18 @@
 - [x] 1.5 **Defect: `WantedBy=default.target` with lingering enabled starts the daemon at
       boot**, before a session has established any credentials. Lingering is on for an
       unrelated service on this machine, so turning it off was not an acceptable fix
+- [x] 1.6 Correct 1.5's reasoning, which was first recorded as "no credentials at boot" and is
+      not what happens. Three of the four are declared in `~/.config/environment.d/`, which a
+      user environment generator reads at manager start with no session involved. Only
+      `GITHUB_TOKEN` is rc-only. **The boot failure is partial, not total: `github` alone, 81
+      tools, which reads as GitHub being down rather than as a local misconfiguration.** The
+      vault already held this lesson under `references/gui-launch-env-datadog-mcp-auth`, where
+      the same rc-versus-`environment.d` split broke Datadog header auth; consulting it before
+      the analysis rather than after would have got this right first time
+- [ ] 1.7 Durable fix, left to the user because it means writing a credential: declare
+      `GITHUB_TOKEN` in `~/.config/environment.d/` at mode 600. It is a distinct secret, not a
+      copy of the `GH_PAT` already declared there. Once it is there the unit can go back to
+      `WantedBy=default.target` and the daemon no longer needs a session at all
 
 ## 2. Fix Linux and add macOS
 

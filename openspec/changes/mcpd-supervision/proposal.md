@@ -14,8 +14,15 @@ machine found a defect that would have made installing it worse than not:
   and every backend behind a bearer header would have failed its handshake while the daemon
   itself reported healthy. Nine of fourteen backends.
 - The unit was wanted by `default.target`, which is the user manager's own target. This machine
-  has `loginctl enable-linger` set for an unrelated service, so the daemon would have started
-  at boot, before any session had established the credentials it needs.
+  has `loginctl enable-linger` set for an unrelated service, so the daemon would have started at
+  boot. Whether that matters depends on where each variable comes from, and the four are not
+  alike: three are declared in `~/.config/environment.d/`, which a systemd user environment
+  generator reads when the manager starts, so they are present at boot with no session. The
+  fourth, `GITHUB_TOKEN`, is declared only in `~/.bashrc` and reaches the manager environment
+  only because something imported it during a session. At boot it would be absent.
+
+  A partial failure is the awkward outcome here, not a total one: thirteen backends would work
+  and `github` alone, 81 tools, would fail its handshake, which reads as GitHub being down.
 
 macOS was not covered at all.
 

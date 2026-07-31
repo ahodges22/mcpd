@@ -39,11 +39,18 @@ shipped unit: it named none of the four, which would have taken out nine of four
 A service definition SHALL start the daemon with the user's login session, and SHALL NOT start
 it at boot.
 
-The credentials exist only once a session has established them, so a daemon started earlier
-comes up with none. On Linux this means the unit is wanted by the graphical session rather than
-by the user manager, whose own target starts at boot wherever lingering is enabled. Lingering
-is frequently enabled for an unrelated service, and requiring it to be turned off to make this
-daemon correct would trade one broken thing for another.
+A variable declared in a shell rc file exists only once a session has established it, so a
+daemon started before that comes up without it. On Linux this means the unit is wanted by the
+graphical session rather than by the user manager, whose own target starts at boot wherever
+lingering is enabled. Lingering is frequently enabled for an unrelated service, and requiring it
+to be turned off to make this daemon correct would trade one broken thing for another.
+
+Variables declared under `~/.config/environment.d/` do not have this problem: a systemd user
+environment generator reads them when the manager starts, session or not. A set that mixes the
+two sources therefore fails *partially* at boot, which is harder to diagnose than failing
+completely, because the backends that do work make the daemon look healthy. Declaring every
+needed variable there is the durable fix, and binding to the session is what makes the daemon
+correct until that is done.
 
 Where a platform or installation has no session to bind to, the documentation SHALL state the
 consequence rather than leave the boot-time case looking supported.
