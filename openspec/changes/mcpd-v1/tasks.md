@@ -270,6 +270,15 @@
       assumption. Sizeable: it rewrites the install and revert cores and the tests that pin the
       current stash behaviour
 
+- [x] 12.14 Independent review of `internal/install` and `internal/mcpsrv`: **APPROVED, no
+      merge-blocking findings**, with the reviewer verifying against go-sdk v1.7.0 and BurntSushi
+      TOML v1.6.0 and running `go test ./...` and `-race` itself. It took five attempts to get a
+      verdict at all: the reviewer kept spawning a second review wrapper and blocking on it until
+      the outer timeout killed the run, which is a defect in the review engine rather than in this
+      change, now fixed there. Worth recording honestly that the reviews contributed one finding
+      across those attempts while running the tool against real configs contributed three, and
+      that the defect the user actually hit, the missing MCP `instructions`, came from neither
+
 ## 13. Ranking eval and calibration
 
 - [x] 13.1 Port the prototype's queries verbatim as a regression baseline and convert
