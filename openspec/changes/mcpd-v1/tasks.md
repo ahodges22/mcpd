@@ -283,39 +283,39 @@ across its own map mutation to keep a concurrent enable or disable out.
       `{name}` path value, before any registry, override, filesystem or OAuth operation. The
       remove route matters most, because it is the one that deletes a name-derived file. Confirm
       all 13 currently declared names still load
-- [ ] 15.2 Write the failing tests for the config write path in `internal/config`: an unmodelled
+- [x] 15.2 Write the failing tests for the config write path in `internal/config`: an unmodelled
       field survives an add; a file changed on disk since load refuses the write and leaves the
       file's content byte identical; an edit landing after the staleness comparison is
       recoverable from an archive and survives ten later routine writes; an unsupported exchange
       refuses the write; a second write after a successful one is not refused; a failing archive
       still commits, reports a warning, and leaves the displaced file at 0600; a 0644 file and
       its archive are both 0600 after a write
-- [ ] 15.3 Implement the config write path as one type owning the path, the baseline bytes, the
+- [x] 15.3 Implement the config write path as one type owning the path, the baseline bytes, the
       declared-set snapshot and a mutex
-- [ ] 15.3a Read-modify-write over a preserving representation: decode the document and its
+- [x] 15.3a Read-modify-write over a preserving representation: decode the document and its
       `backends` object as `map[string]json.RawMessage` and re-encode only the entry that
       changed, so no unmodelled field is dropped. Marshalling a Go map sorts its keys, so the
       first write reformats the file into sorted order; that is accepted, and the archives are
       the recovery path
-- [ ] 15.3b Hold the writer mutex across the whole sequence, in this order: re-read the file,
+- [x] 15.3b Hold the writer mutex across the whole sequence, in this order: re-read the file,
       compare against the baseline, run the duplicate or existence check against the freshly
       read content, marshal, write the temp file, exchange, restrict the displaced inode, archive,
       adopt the written bytes as the new baseline, refresh the declared-set snapshot. Every step
       before the exchange is a read or a check, so a failure at any of them leaves nothing mutated.
       Adopting the new baseline is not optional: without it the first write poisons every later one
       into a permanent false refusal
-- [ ] 15.3c Commit with `unix.Renameat2(RENAME_EXCHANGE)` swapping the temp file and the
+- [x] 15.3c Commit with `unix.Renameat2(RENAME_EXCHANGE)` swapping the temp file and the
       configuration file, then archive the displaced content from the temp path. A copy taken
       before the swap would miss an edit that landed in between, which is exactly the window
       that matters. `golang.org/x/sys` is already an indirect dependency, so this is a promotion
       to direct. On `EINVAL` or `ENOSYS`, refuse the write and change nothing. **There is no
       plain-rename fallback**, because a fallback reintroduces the destruction window precisely
       where nobody would notice
-- [ ] 15.3d Ensure the resolved declaration directory is 0700 at startup and refuse to write
+- [x] 15.3d Ensure the resolved declaration directory is 0700 at startup and refuse to write
       declarations if it cannot be. That is the control, and putting it at startup is what keeps it
       compatible with 15.3e: a `chmod` can fail, so a guarantee resting on one would force a choice
       between aborting after the commit and knowingly keeping a readable credential
-- [ ] 15.3da Restrict the displaced inode to 0600 immediately after the exchange and before
+- [x] 15.3da Restrict the displaced inode to 0600 immediately after the exchange and before
       archiving, as defence in depth. A failure here is a warning: the file stays inside the 0700
       directory and is NOT deleted, so neither confidentiality nor recoverability is given up. Do
       NOT tighten the existing file before the exchange instead: an earlier draft did, and it is
@@ -323,25 +323,25 @@ across its own map mutation to keep a concurrent enable or disable out.
       inode after the check, so the mode of the inode you checked is not the mode of the inode you
       displace. Failing test first: replace the file with a 0644 inode between the daemon's read and
       its commit, force an archive failure, and assert the displaced file is owner-only
-- [ ] 15.3db Resolve the declaration path through symlinks once at startup and use the resolved
+- [x] 15.3db Resolve the declaration path through symlinks once at startup and use the resolved
       path for every read and write. A config symlinked into a dotfiles repo is a normal setup, and
       `RENAME_EXCHANGE` on the link swaps the LINK for a regular file: the daemon would then read a
       detached copy while the user kept editing the original, and a mode change would follow the
       link to a file it was never asked to touch. Failing test first, with a symlinked config:
       after a write the link is still a link, its target holds the new content, and no unrelated
       file changed mode
-- [ ] 15.3e Split the return: an error for anything before the exchange, warnings for everything
+- [x] 15.3e Split the return: an error for anything before the exchange, warnings for everything
       after it. Archiving and retention are post-exchange, so neither may fail the operation, and
       no caller may make its later steps conditional on them. If archiving fails, leave the
       displaced file in place under its temporary name and say so in the warning. Return a
       distinct sentinel error for a staleness mismatch and another for a duplicate name, so the
       route can answer 409 for each
-- [ ] 15.3f Archive to a numbered file beside the configuration. Compare the displaced bytes
+- [x] 15.3f Archive to a numbered file beside the configuration. Compare the displaced bytes
       against the baseline: equal means the daemon displaced its own write, so the archive is
       routine and the ten most recent routine archives are retained; unequal means it displaced
       something it did not write, which is the only irreplaceable class, so retain it without
       limit. Create every archive at 0600 and tighten an existing one that is more permissive
-- [ ] 15.3g Own the declared-set snapshot behind its own lock: a declared check, the declaration
+- [x] 15.3g Own the declared-set snapshot behind its own lock: a declared check, the declaration
       identity for a name, and an explicit acquire/release pair so a state writer can hold the
       read lock across its own file replacement. Refresh it inside the writer mutex on every
       successful write and on reload adoption, and expose the write-lock drop that a removal or
