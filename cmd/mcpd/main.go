@@ -227,9 +227,12 @@ func (d *daemon) serve(addr string) error {
 
 	refreshCtx, cancelRefresh := context.WithCancel(context.Background())
 	defer cancelRefresh()
-	// Start covers the TTL tick only and deliberately performs no immediate refresh, so
-	// a cold start needs this one explicitly rather than doubling every start's reads.
-	d.cat.RefreshAll(refreshCtx)
+	// Start covers the TTL tick only and deliberately performs no immediate refresh, so a
+	// cold start needs this one explicitly rather than doubling every start's reads. It
+	// runs detached, and that is not a detail: a first refresh dials every backend and
+	// vectorizes the whole catalog, so serving only afterwards leaves the listener bound
+	// and silent for as long as that takes, which reads as a hung daemon.
+	go d.cat.RefreshAll(refreshCtx)
 	d.cat.Start(refreshCtx)
 
 	errs := make(chan error, 1)

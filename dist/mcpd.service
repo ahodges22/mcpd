@@ -11,7 +11,11 @@ RestartSec=2
 # The user environment is imported rather than an EnvironmentFile: backends reference
 # credentials the user's session already holds through ${VAR}, and a second copy of those
 # in a file under the state directory is one more place a token can leak from.
-PassEnvironment=PATH HOME USER LOGNAME SHELL LANG TZ TERM TMPDIR
+# PATH is set explicitly because PassEnvironment cannot carry it: systemd always sets a
+# default PATH for a service, which wins. The directories are named rather than inherited,
+# which is the same principle the least-privilege child environment applies.
+Environment=PATH=%h/.local/bin:%h/.bin:/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:/usr/local/bin:/usr/bin:/bin
+PassEnvironment=HOME USER LOGNAME SHELL LANG TZ TERM TMPDIR
 # A stdio backend is a child of this unit. control-group is what reaps one that outlives a
 # shutdown whose teardown budget expired, which the daemon deliberately allows rather than
 # blocking exit on an unbounded tool call.

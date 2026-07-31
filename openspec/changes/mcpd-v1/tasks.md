@@ -201,10 +201,10 @@
       worse half. Copy both harnesses rather than deriving the wiring again
 - [x] 11.6 Write the systemd user unit, relying on the existing user environment import
       rather than an environment file
-- [ ] 11.7 Build, install, enable, and confirm the status endpoint answers with backends up.
+- [x] 11.7 Build, install, enable, and confirm the status endpoint answers with backends up.
       A backend that is down here is a missing passthrough variable, to be added rather than
       worked around by inheriting everything
-- [ ] 11.8 Commit
+- [x] 11.8 Commit
 
 ## 12. Client wiring
 
