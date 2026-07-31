@@ -577,3 +577,7 @@ func (t headerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 // identity is the part of a backend's declaration that name-keyed state is bound to.
 func (b *Backend) identity() config.Identity { return config.IdentityOf(b.spec) }
+
+// Spec is the declaration this backend was built from, which a reload compares against
+// the file to decide whether anything actually changed.
+func (b *Backend) Spec() config.Backend { return b.spec }

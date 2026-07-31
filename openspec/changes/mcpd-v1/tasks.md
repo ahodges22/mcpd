@@ -373,7 +373,7 @@ across its own map mutation to keep a concurrent enable or disable out.
       does NOT cover this: the dangerous case is a backend that was not in the map when shutdown
       read it, whose stdio child then outlives the daemon. Failing test first, run under `-race`:
       an add concurrent with shutdown is refused, nothing races, and no child survives
-- [ ] 15.5c All three operations check that latch before they mutate anything, and for the add
+- [x] 15.5c All three operations check that latch before they mutate anything, and for the add
       that means BEFORE its commit point, not inside `Registry.Add`. Refusing at registration would
       leave the declaration committed and the registry without it, and would make `Add` fallible,
       breaking 15.5's guarantee. Reload is not an exception: it registers backends exactly as an add
@@ -381,7 +381,7 @@ across its own map mutation to keep a concurrent enable or disable out.
       that spawns a stdio child after shutdown had already walked the registry. Test both
       linearizations: reload first and shutdown tears down what it added, or shutdown first and
       reload refuses
-- [ ] 15.6 Write the failing tests for the transaction boundary, for serialization, and for the
+- [x] 15.6 Write the failing tests for the transaction boundary, for serialization, and for the
       enabled-state hand-off: a refused config write leaves the registry, the running backend,
       the override and the stored token untouched; an add rejected as a duplicate leaves the
       existing backend's token and override untouched; an add rejected because the exchange is
@@ -392,13 +392,13 @@ across its own map mutation to keep a concurrent enable or disable out.
       it; a post-commit cleanup failure still removes the backend and still reports the failure;
       a removal and an add of the same name issued concurrently leave the declaration and the
       runtime agreeing
-- [ ] 15.7 Implement the operation lock: one mutex, taken by add, remove and reload, held across
+- [x] 15.7 Implement the operation lock: one mutex, taken by add, remove and reload, held across
       the config write, the registry mutation, the teardown and the cleanup. Document in one line
       why it extends past the commit point. Ending it at the write is a real race: a removal
       commits, a concurrent add of the same name commits and registers, and the removal's cleanup
       then deletes the new backend's registry entry, tools, override and token. That is the race
       15.6's concurrency test pins
-- [ ] 15.8 Implement the declared-set protocol on the two state writers the operation lock cannot
+- [x] 15.8 Implement the declared-set protocol on the two state writers the operation lock cannot
       cover. `Overrides.set` and the persisting token source each take the declared-set read
       lock, check that the backend is declared and that the identity matches, perform their file
       replacement, and only then release. A removal or reload takes the write lock and drops the
@@ -408,12 +408,12 @@ across its own map mutation to keep a concurrent enable or disable out.
       tests first: an override write racing a removal either lands before the cleanup and is
       deleted by it or is refused, and never survives it; a token refresh completing after
       removal leaves no record
-- [ ] 15.8a Comment at each site why the operation lock is NOT used there, naming the inversion:
+- [x] 15.8a Comment at each site why the operation lock is NOT used there, naming the inversion:
       a token refresh persists from inside `oauth2`'s `Token()`, which runs underneath the
       backend `life` lock, so taking the outermost operation lock there can deadlock against a
       removal holding it while waiting on that same backend's teardown. Comment on the
       acquire/release pair why the lock spans the write rather than just the check
-- [ ] 15.9 Implement the add operation: validate the name and the declaration, then hand off to
+- [x] 15.9 Implement the add operation: validate the name and the declaration, then hand off to
       the writer, which performs the fresh read, the staleness check, the duplicate check and the
       commit. Nothing is deleted before the exchange. After it succeeds, in this order: attempt
       the hygiene deletion of any state found under the name, then `Registry.Add` with enabled
@@ -431,15 +431,15 @@ across its own map mutation to keep a concurrent enable or disable out.
       accepted, and a malformed hand edit would boot with every backend silently absent. Accept a
       present, non-null `backends` object including `{}`, and keep rejecting a missing or null one.
       Failing tests first, one per accepted and rejected shape, parameterized in one test
-- [ ] 15.10 Implement the remove operation in commit order: validate the name, confirm it is
+- [x] 15.10 Implement the remove operation in commit order: validate the name, confirm it is
       declared, commit the config write, drop the name from the declared-set snapshot under its
       write lock, then `Registry.Remove`, then the cleanup of 15.11. Never tear down before the
       write commits, or a refused write kills a live backend
-- [ ] 15.11 Implement removal cleanup, idempotent and non-aborting: evict the backend's tools,
+- [x] 15.11 Implement removal cleanup, idempotent and non-aborting: evict the backend's tools,
       delete its override entry, delete its stored OAuth record. Each tolerates an absent target,
       and a failure in one is reported without skipping the others. A failure here is what 15.5a
       and 15.13 exist to survive
-- [ ] 15.12 Implement reload. Read and validate the entire file inside the writer mutex and
+- [x] 15.12 Implement reload. Read and validate the entire file inside the writer mutex and
       return without touching anything if it does not load or any declaration is invalid. Adopt
       the validated bytes as the baseline and refresh the declared-set snapshot in the same
       critical section. Validating first and taking the mutex afterwards would let a concurrent
@@ -448,7 +448,7 @@ across its own map mutation to keep a concurrent enable or disable out.
       and diff against the registered set: unchanged backends are not touched at all; new ones go
       through `Add` with enabled state true; a name that has disappeared is a removal, including
       the declared-set drop and the cleanup of 15.11
-- [ ] 15.12a A changed declaration under an unchanged name captures the existing backend's
+- [x] 15.12a A changed declaration under an unchanged name captures the existing backend's
       enabled state, tears it down, and re-adds it with that captured state, deleting the stored
       OAuth record when the declaration identity changed. Passing enabled unconditionally would
       silently enable a disabled backend, and for a stdio backend that starts the process the
@@ -460,13 +460,13 @@ across its own map mutation to keep a concurrent enable or disable out.
       backend object, not to a name, so once the replacement is published an enable takes the NEW
       object's lock and never sees the old one held. Publication last is what closes that. Failing
       tests first, one with a concurrent disable and one with a concurrent enable
-- [ ] 15.12b When such a replacement preserves a DISABLED state and the declaration identity
+- [x] 15.12b When such a replacement preserves a DISABLED state and the declaration identity
       changed, also re-persist the override entry under the new identity, so the recorded state
       matches the declaration it now belongs to. This is hygiene: 15.13's rebind-and-honour rule
       keeps the entry in force either way, which is what makes a crash partway through a
       replacement safe. Test across a simulated restart, because a runtime-only assertion passes
       while a whole class of bug in this area is present
-- [ ] 15.12c Trigger a catalog refresh for every backend reload adds or replaces. `Registry.Add`
+- [x] 15.12c Trigger a catalog refresh for every backend reload adds or replaces. `Registry.Add`
       does not do it: 15.9 triggers the refresh separately for the add route, so reload must too.
       Without it a hand-added backend is registered but its tools never appear until the next TTL
       tick, and a replacement is left with no tools at all because its removal evicted them. The
@@ -497,7 +497,7 @@ across its own map mutation to keep a concurrent enable or disable out.
       (`overrideDocument` is `{"disabled": ["name"]}`), still disables every backend it lists on
       the first start after the upgrade. The second is the migration case, and getting it wrong
       silently starts every disabled stdio child on upgrade
-- [ ] 15.14 Implement startup reconciliation: delete any override entry and any stored OAuth
+- [x] 15.14 Implement startup reconciliation: delete any override entry and any stored OAuth
       record whose backend is not declared. For state whose backend IS declared but whose identity
       differs, follow 15.13's split rather than deleting both alike: delete the OAuth record,
       rebind and honour the override. Deleting a mismatched override here would undo 15.13c at the

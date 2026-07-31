@@ -131,11 +131,29 @@ func (r *Registry) Remove(name string) {
 	b.teardown(forShutdown)
 }
 
-// RemoveHeld is Remove for a caller already holding b's transition lock, which a reload
-// replacement does so no enable or disable can land mid-swap.
-func (r *Registry) RemoveHeld(b *Backend) {
-	r.unpublish(b.name)
+// Replace swaps a backend's declaration, preserving whether it was enabled, and reports
+// that state so the caller can rebind the persisted override to the new declaration.
+//
+// The outgoing backend's transition lock is held from the capture through the teardown,
+// because the operation lock does not cover enable and disable and one landing mid-swap
+// would be reported as succeeding while the replacement came up the other way. Holding it
+// is necessary but not sufficient on its own: a transition lock belongs to a backend
+// object rather than to a name, so once the replacement is published an enable takes the
+// new object's lock and never sees this one held. Publication is therefore last.
+func (r *Registry) Replace(name string, spec config.Backend) (enabled bool) {
+	b, ok := r.Get(name)
+	if !ok {
+		r.Add(name, spec, true)
+		return true
+	}
+	b.transition.Lock()
+	enabled = b.Health().State != StateDisabled
+	r.unpublish(name)
 	b.teardown(forShutdown)
+	b.transition.Unlock()
+
+	r.Add(name, spec, enabled)
+	return enabled
 }
 
 func (r *Registry) unpublish(name string) (*Backend, bool) {

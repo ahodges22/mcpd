@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -419,3 +420,8 @@ func validate(name string, b Backend) error {
 	}
 	return nil
 }
+
+// SameBackend reports whether two declarations are equivalent. Backend holds slices and
+// maps, so it is not comparable with ==, and a reload has to know whether anything
+// actually changed before it tears a working session down.
+func SameBackend(a, b Backend) bool { return reflect.DeepEqual(a, b) }

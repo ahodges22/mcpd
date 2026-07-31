@@ -184,3 +184,37 @@ func (o *Overrides) save(disabled map[string]config.Identity) error {
 	}
 	return nil
 }
+
+// Forget deletes name's entry outright. A removal calls it, because state left under a
+// name that is no longer declared would silently apply to a later backend that reused it.
+func (o *Overrides) Forget(name string) error {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if _, ok := o.disabled[name]; !ok {
+		return nil
+	}
+	next := maps.Clone(o.disabled)
+	delete(next, name)
+	if err := o.save(next); err != nil {
+		return err
+	}
+	o.disabled = next
+	return nil
+}
+
+// Rebind records name's existing disable under a new declaration identity, which is what a
+// reload replacement does so the disable survives a restart under the edited declaration.
+func (o *Overrides) Rebind(name string, id config.Identity) error {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if _, ok := o.disabled[name]; !ok {
+		return nil
+	}
+	next := maps.Clone(o.disabled)
+	next[name] = id
+	if err := o.save(next); err != nil {
+		return err
+	}
+	o.disabled = next
+	return nil
+}
