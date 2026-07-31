@@ -2,7 +2,6 @@ package install
 
 import (
 	"fmt"
-	"regexp"
 	"strings"
 
 	"github.com/BurntSushi/toml"
@@ -10,44 +9,53 @@ import (
 	"github.com/ahodges/mcpd/internal/catalog"
 )
 
-// serverHeader matches a Codex MCP server table header at the start of a line. Anchored
-// there so a header the prototype commented out, which begins with its own marker, is left
-// alone: it is already inert, and the only thing wanted from it is its approvals.
-var serverHeader = regexp.MustCompile(`(?m)^\[mcp_servers\.`)
-
 // tomlEditor rewires Codex.
 type tomlEditor struct{}
 
-func (tomlEditor) plan(c Client, body, endpoint string) ([]edit, []string, error) {
+// commentPrefix marks a line this tool made inert. TOML has comments, so the displaced tables can
+// stay exactly where the user wrote them rather than moving into mcpd's state: a comment cannot be
+// rejected by a client, which is the property that matters, and leaving the text in place keeps it
+// readable and keeps revert a pure text inverse.
+//
+// This replaces renaming each table into `[_mcpd_stashed.*]`. That was a key mcpd invented, and a
+// client is entitled to reject one: OpenCode refuses to start on an unrecognised key in its own
+// format. Codex tolerated it, but tolerance is the client's choice to withdraw, so it was the same
+// defect waiting for a version bump.
+const commentPrefix = "#mcpd# "
+
+func (tomlEditor) plan(c Client, body, endpoint string) ([]edit, []string, string, error) {
 	var edits []edit
 	var warnings []string
 
 	if strings.Contains(body, "[mcp_servers."+ServerName+"]") {
-		return nil, nil, fmt.Errorf("config.toml already declares [mcp_servers.%s]", ServerName)
+		return nil, nil, "", fmt.Errorf("config.toml already declares [mcp_servers.%s]", ServerName)
 	}
 	if strings.Contains(body, "["+StashKey+".") {
-		return nil, nil, fmt.Errorf("[%s.*] is already present, so a previous install was not reverted", StashKey)
+		return nil, nil, "", fmt.Errorf("[%s.*] is already present, so a previous install was not reverted", StashKey)
+	}
+	if strings.Contains(body, commentPrefix) {
+		return nil, nil, "", fmt.Errorf("%q is already present, so a previous install was not reverted", strings.TrimSpace(commentPrefix))
 	}
 
-	// Every active server table is renamed into an unknown top-level table, which Codex
-	// ignores. One replacement per header, so the bodies keep their bytes and a revert is
-	// the same rename in the other direction.
-	for _, loc := range serverHeader.FindAllStringIndex(body, -1) {
-		close := strings.Index(body[loc[0]:], "]")
-		if close < 0 {
-			return nil, nil, fmt.Errorf("unterminated table header at offset %d", loc[0])
-		}
-		full := body[loc[0] : loc[0]+close+1]
+	// Each run of server tables is commented out whole, in one edit, so the bodies keep their
+	// bytes and a revert is the same edit inverted. Addressed by content rather than by offset:
+	// a run contains its own table header, TOML forbids declaring the same table twice, so the
+	// text is unique and no offset has to survive the edits applied before it.
+	blocks, err := serverBlocks(body)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	for _, b := range blocks {
 		edits = append(edits, edit{
-			Address: strings.Trim(full, "[]"),
-			From:    full,
-			To:      "[" + StashKey + "." + strings.TrimPrefix(full, "[mcp_servers."),
-			Note:    "move " + full + " aside",
+			Address: b.address,
+			From:    b.text,
+			To:      commentOut(b.text),
+			Note:    "comment out [" + b.address + "]",
 		})
 	}
-	if n := len(edits); n > 0 {
+	if n := len(blocks); n > 0 {
 		warnings = append(warnings, fmt.Sprintf(
-			"codex stops loading %d server table(s) directly; those backends reach it through mcpd instead", n))
+			"codex stops loading %d server table run(s) directly; those backends reach it through mcpd instead", n))
 	}
 
 	approvals := migrateApprovals(body)
@@ -61,7 +69,71 @@ func (tomlEditor) plan(c Client, body, endpoint string) ([]edit, []string, error
 	for _, note := range approvals.notes {
 		edits[len(edits)-1].Note += "\n      " + note
 	}
-	return edits, warnings, nil
+	// Nothing leaves the file, so the receipt holds no displaced text.
+	return edits, warnings, "", nil
+}
+
+type serverBlock struct {
+	address string
+	text    string
+}
+
+// serverBlocks returns each contiguous run of `[mcp_servers.*]` tables, with the run's own text.
+// A table runs from its header to the next line that opens a different table, or to the end of the
+// file, so a run carries its keys, its sub-tables and the blank lines between them.
+func serverBlocks(body string) ([]serverBlock, error) {
+	lines := strings.SplitAfter(body, "\n")
+	inside := make([]bool, len(lines))
+	within := false
+	for i, line := range lines {
+		if strings.HasPrefix(line, "[") {
+			within = strings.HasPrefix(line, "[mcp_servers.")
+		}
+		inside[i] = within
+	}
+
+	var out []serverBlock
+	var run strings.Builder
+	var address string
+	flush := func() {
+		if run.Len() == 0 {
+			return
+		}
+		out = append(out, serverBlock{address: address, text: run.String()})
+		run.Reset()
+		address = ""
+	}
+	for i, line := range lines {
+		if !inside[i] {
+			flush()
+			continue
+		}
+		if address == "" {
+			end := strings.Index(line, "]")
+			if end < 0 {
+				return nil, fmt.Errorf("unterminated table header: %q", strings.TrimSpace(line))
+			}
+			address = strings.Trim(line[:end+1], "[]")
+		}
+		run.WriteString(line)
+	}
+	flush()
+	return out, nil
+}
+
+// commentOut makes every line of a run inert, preserving the bytes after the prefix so stripping it
+// again restores the run exactly.
+func commentOut(text string) string {
+	lines := strings.SplitAfter(text, "\n")
+	var b strings.Builder
+	for _, line := range lines {
+		if line == "" {
+			continue
+		}
+		b.WriteString(commentPrefix)
+		b.WriteString(line)
+	}
+	return b.String()
 }
 
 type approvalSet struct {

@@ -261,14 +261,27 @@
 - [x] 12.12 Note what the parse check cannot do. The file remained valid JSON throughout, so
       12.8's guard was never going to catch this. Parsing proves a file is readable, not that
       the client accepts it, and no guard inside this daemon can establish the latter
-- [ ] 12.13 Move displaced declarations out of the client's file and into the receipt, so no
-      invented key is written anywhere. Chosen over a per-client allowance because the three
-      clients that tolerate the key today do so by their own choice, and a version bump can
-      withdraw it, which makes tolerance a latent instance of the same defect. Revert must still
-      carry over declarations added after installing, so it cannot become the plain textual
-      inverse. Applies to the TOML path too, which is not broken today but depends on the same
-      assumption. Sizeable: it rewrites the install and revert cores and the tests that pin the
-      current stash behaviour
+- [x] 12.13 Stop writing a key of mcpd's own into a client's file. Done format-appropriately
+      rather than uniformly, which is a change from how this task was first written: **JSON has no
+      comments, so its displaced container text moves into the receipt** (`Receipt.Displaced`), and
+      the install now replaces the container outright instead of renaming it aside. **TOML has
+      comments, so its server tables are commented in place** with a `#mcpd# ` prefix. A comment is
+      not a key, no client can reject one, the text stays where the user wrote it and stays
+      readable, and revert remains a pure text inverse. Moving TOML into the receipt instead would
+      have needed per-fragment offsets, because the real file interleaves server tables with
+      others, and that would have cost the byte-for-byte revert guarantee for no gain
+- [x] 12.13a Revert still carries over declarations added after installing, so it is not the plain
+      textual inverse: it reads the current container, keeps what is not mcpd's, and folds it into
+      the restored text
+- [x] 12.13b **A receipt from the superseded scheme still reverts.** Three existed on this machine
+      when the scheme changed, and a revert that could not read one would strand the declarations
+      it exists to restore, leaving the client's own file the only copy and mcpd refusing to touch
+      it. Detected by the absence of `Displaced` together with the old key still being in the file
+- [x] 12.13c Retire the assertions that pinned the old mechanism. Two tests checked for
+      `_mcpd_stashed` in the file, which is now precisely what must not be there; they assert the
+      property instead, that the client reads only mcpd, that no invented key is written, and that
+      revert reproduces what was displaced. A third had to move its broken line outside a server
+      table, because commenting a malformed block out now makes the file parse
 
 - [x] 12.14 Independent review of `internal/install` and `internal/mcpsrv`: **APPROVED, no
       merge-blocking findings**, with the reviewer verifying against go-sdk v1.7.0 and BurntSushi

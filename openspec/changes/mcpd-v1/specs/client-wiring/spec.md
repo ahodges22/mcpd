@@ -40,8 +40,12 @@ undifferentiated approval decision for every upstream tool.
 
 ### Requirement: No key the client does not define is written into its configuration
 
-The tool SHALL NOT introduce a key of its own into a client's configuration file. Displaced
-declarations SHALL be kept in the tool's own state, beside the receipt.
+The tool SHALL NOT introduce a key of its own into a client's configuration file.
+
+Where the format has comments, displaced declarations SHALL be commented in place. A comment is
+not a key and no client can reject one, the text stays where the user wrote it and remains
+readable, and revert stays a pure text inverse. Where the format has no comments, as JSON does
+not, they SHALL be kept in the tool's own state beside the receipt.
 
 A client is entitled to reject a key it does not know, and one does: OpenCode validates its
 configuration against a schema and refuses to start on an unrecognised top-level key, so
@@ -57,10 +61,19 @@ Where displaced declarations live outside the client's file, revert SHALL still 
 declarations the user added after installing, and a timestamped backup SHALL remain the second
 recovery path.
 
+A receipt written before displaced text moved out of the file SHALL still revert. Such receipts
+exist, and a revert that could not read one would strand the declarations it exists to restore.
+
 #### Scenario: A client that validates its configuration still starts after installing
 
 - **WHEN** a client that rejects unrecognised keys is rewired
 - **THEN** it starts, and its configuration contains no key the tool invented
+
+#### Scenario: A receipt from the superseded scheme still reverts
+
+- **WHEN** a revert runs against a receipt that recorded the displaced text as living in the
+  client's own file
+- **THEN** those declarations are restored and the tool's key is gone
 
 ### Requirement: A change that would leave a configuration unreadable is refused
 

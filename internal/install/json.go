@@ -16,59 +16,73 @@ type jsonEditor struct {
 	entry map[string]any
 }
 
-func (j jsonEditor) plan(c Client, body, endpoint string) ([]edit, []string, error) {
+// plan replaces the whole existing container with one holding mcpd alone, and hands the text it
+// replaced back for the receipt to keep.
+//
+// It used to rename the container aside to a key of mcpd's own inside this same file. JSON has no
+// comments, so there was nowhere inert to put it, and an invented key is not inert: OpenCode
+// validates its configuration against a schema and refuses to start on one it does not recognise,
+// which took the client down rather than only its MCP servers. Nothing mcpd invents goes in the
+// file now.
+func (j jsonEditor) plan(c Client, body, endpoint string) ([]edit, []string, string, error) {
 	var edits []edit
 	var warnings []string
+	var displaced string
 
-	// The whole existing block is renamed as one unit rather than moved server by server.
-	// A rename touches only the key's own bytes, so every declaration inside keeps its
-	// formatting, its key order and its credential references exactly as the user wrote
-	// them, and a revert puts it back by renaming it again.
+	container, err := j.renderContainer(endpoint)
+	if err != nil {
+		return nil, nil, "", err
+	}
+
 	if at, ok := findKey(body, j.container); ok {
 		existing, err := serverNames(body, j.container)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, "", err
 		}
 		if _, taken := existing[ServerName]; taken {
-			return nil, nil, fmt.Errorf("%q already declares a server called %q", j.container, ServerName)
+			return nil, nil, "", fmt.Errorf("%q already declares a server called %q", j.container, ServerName)
 		}
 		if _, stashed := findKey(body, StashKey); stashed {
-			return nil, nil, fmt.Errorf("%q is already present, so a previous install was not reverted", StashKey)
+			return nil, nil, "", fmt.Errorf("%q is already present, so a previous install was not reverted", StashKey)
+		}
+		_, objEnd, err := objectSpan(body, at)
+		if err != nil {
+			return nil, nil, "", fmt.Errorf("%q in %s: %w", j.container, c.Path, err)
 		}
 		// Addressed by offset: findKey resolved the top-level key by depth, and the same
-		// container name legitimately recurs deeper in the document. Claude Code keeps one
-		// per project it has ever opened.
+		// container name legitimately recurs deeper in the document. Claude Code keeps one per
+		// project it has ever opened.
+		displaced = body[at:objEnd]
 		edits = append(edits, edit{
 			Address: j.container,
-			From:    body[at : at+len(j.container)+2],
-			To:      `"` + StashKey + `"`,
+			From:    displaced,
+			To:      container,
 			At:      at,
-			Note:    fmt.Sprintf("move the %d server(s) in %q aside to %q", len(existing), j.container, StashKey),
+			Note: fmt.Sprintf("replace %q with mcpd alone, keeping the %d displaced server(s) in mcpd's own state",
+				j.container, len(existing)),
 		})
 		if len(existing) > 0 {
 			warnings = append(warnings,
 				fmt.Sprintf("%s stops loading %s directly; those backends reach it through mcpd instead",
 					c.Name, strings.Join(sorted(existing), ", ")))
 		}
+		return edits, warnings, displaced, nil
 	}
 
-	block, err := j.render(endpoint)
-	if err != nil {
-		return nil, nil, err
-	}
-	// Inserted right after the document's opening brace, which is the one position that
-	// does not depend on anything else in the file being where it was.
+	// No container at all, so there is nothing to displace. Inserted right after the document's
+	// opening brace, which is the one position that does not depend on anything else in the file
+	// being where it was.
 	open := strings.Index(body, "{")
 	if open < 0 {
-		return nil, nil, fmt.Errorf("not a JSON object")
+		return nil, nil, "", fmt.Errorf("not a JSON object")
 	}
 	edits = append(edits, edit{
 		Address: j.container + "." + ServerName,
-		To:      block,
+		To:      "\n  " + container + ",",
 		At:      open + 1,
 		Note:    fmt.Sprintf("point %q at %s", j.container+"."+ServerName, endpoint),
 	})
-	return edits, warnings, nil
+	return edits, warnings, "", nil
 }
 
 // revert undoes an install against the file's current bytes.
@@ -114,9 +128,72 @@ func (j jsonEditor) revert(c Client, body string, rec Receipt) ([]edit, error) {
 		return nil, fmt.Errorf("%w: %s.%s in %s", ErrConflict, j.container, ServerName, c.Path)
 	}
 
-	// The container region as mcpd wrote it: its own leading newline and indent through the
-	// comma after its closing brace. Removing exactly that is what makes a revert with no
-	// intervening edits byte-for-byte.
+	// A receipt written before the displaced text moved out of the file: the stash is still in
+	// there under mcpd's own key, so it is put back the way it was put aside. Kept because
+	// receipts written by that scheme exist on disk, and a revert that cannot read them would
+	// strand the very declarations it is meant to restore.
+	if rec.Displaced == "" {
+		if _, stashed := findKey(body, StashKey); stashed {
+			return j.revertInFileStash(body, cStart, objEnd, theirs)
+		}
+		// Nothing was displaced, so the container is mcpd's own and goes away with it.
+		from := lineStart(body, cStart)
+		to := objEnd
+		if to < len(body) && body[to] == ',' {
+			to++
+		}
+		return []edit{{
+			Address: j.container + "." + ServerName,
+			From:    body[from:to],
+			To:      "",
+			At:      from,
+			Note:    "remove " + j.container + "." + ServerName,
+		}}, nil
+	}
+
+	// The displaced text goes back verbatim, with anything the user declared alongside mcpd
+	// since installing folded into it. A snapshot restore would silently destroy those, which
+	// is why revert works on current content rather than on the bytes the install saw.
+	restored, err := mergeIntoContainer(rec.Displaced, theirs)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %q in %s: %v", ErrConflict, j.container, c.Path, err)
+	}
+	note := fmt.Sprintf("put the displaced server(s) back under %q", j.container)
+	if len(theirs) > 0 {
+		note += fmt.Sprintf(", carrying over the %d declared after installing", len(theirs))
+	}
+	return []edit{{
+		Address: j.container,
+		From:    body[cStart:objEnd],
+		To:      restored,
+		At:      cStart,
+		Note:    note,
+	}}, nil
+}
+
+// mergeIntoContainer folds members the user added into the displaced container text, which is a
+// `"name": { ... }` fragment exactly as it was lifted out of the file.
+func mergeIntoContainer(displaced string, theirs []string) (string, error) {
+	if len(theirs) == 0 {
+		return displaced, nil
+	}
+	objStart, _, err := objectSpan(displaced, 0)
+	if err != nil {
+		return "", err
+	}
+	existing, err := members(displaced, objStart)
+	if err != nil {
+		return "", err
+	}
+	added := "\n    " + strings.Join(theirs, ",\n    ")
+	if len(existing) > 0 {
+		added += ","
+	}
+	return displaced[:objStart+1] + added + displaced[objStart+1:], nil
+}
+
+// revertInFileStash restores an install that renamed the container aside inside the file itself.
+func (j jsonEditor) revertInFileStash(body string, cStart, objEnd int, theirs []string) ([]edit, error) {
 	from := lineStart(body, cStart)
 	to := objEnd
 	if to < len(body) && body[to] == ',' {
@@ -132,8 +209,7 @@ func (j jsonEditor) revert(c Client, body string, rec Receipt) ([]edit, error) {
 	if err != nil {
 		return nil, err
 	}
-	edits = append(edits, unstashed)
-	return edits, nil
+	return append(edits, unstashed), nil
 }
 
 // unstash renames the stash back to the container and, in the same edit, carries over any
@@ -214,15 +290,16 @@ func canonicalMember(member string) (string, error) {
 	return string(raw), nil
 }
 
-// render builds the inserted text: the container, holding mcpd and nothing else, on its own
-// lines so a reader can see at a glance what mcpd added. The trailing comma makes it valid
-// wherever it lands in a non-empty object, which the document always is.
-func (j jsonEditor) render(endpoint string) (string, error) {
+// renderContainer builds the container holding mcpd and nothing else, on its own lines so a
+// reader can see at a glance what mcpd put there. It carries no leading newline and no trailing
+// comma, because it replaces an existing `"name": {...}` fragment in place; the insertion path
+// adds both when there was no container to replace.
+func (j jsonEditor) renderContainer(endpoint string) (string, error) {
 	inner, err := json.MarshalIndent(j.merged(endpoint), "    ", "  ")
 	if err != nil {
 		return "", fmt.Errorf("encode entry: %w", err)
 	}
-	return fmt.Sprintf("\n  %q: {\n    %q: %s\n  },", j.container, ServerName, string(inner)), nil
+	return fmt.Sprintf("%q: {\n    %q: %s\n  }", j.container, ServerName, string(inner)), nil
 }
 
 // findKey reports where a top-level object key starts, including its opening quote. Only the

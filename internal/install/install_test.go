@@ -219,17 +219,28 @@ func TestAJSONClientDeclaresOnlyMcpdAndKeepsWhatItHad(t *testing.T) {
 			if _, ok := block[ServerName]; !ok {
 				t.Errorf("%q does not declare %q", tc.container, ServerName)
 			}
-			stash, ok := after[StashKey].(map[string]any)
-			if !ok {
-				t.Fatalf("%q is missing, so the user's declarations were deleted rather than stashed", StashKey)
+			// Nothing mcpd invented is written into the file. A client is entitled to reject a
+			// key it does not know, and OpenCode does: it validates against a schema and refuses
+			// to start, so the displaced declarations live in mcpd's own state instead.
+			for key := range after {
+				if strings.HasPrefix(key, "_mcpd") {
+					t.Errorf("install wrote %q into the client's own file", key)
+				}
 			}
+			// Displaced rather than deleted, which for this scheme means revert can produce them
+			// again. That is the only place the guarantee is observable now.
 			original := before[tc.container].(map[string]any)
-			if len(stash) != len(original) {
-				t.Errorf("stash holds %d of %d declarations", len(stash), len(original))
+			f.revert(t)
+			restored, ok := parse(t, f.read(t))[tc.container].(map[string]any)
+			if !ok {
+				t.Fatalf("%q is missing after revert, so the displaced declarations were lost", tc.container)
+			}
+			if len(restored) != len(original) {
+				t.Errorf("revert restored %d of %d declarations: %v", len(restored), len(original), keysOf(restored))
 			}
 			for name, want := range original {
-				if got := stash[name]; !sameJSON(t, got, want) {
-					t.Errorf("stashed %s changed:\n got %v\nwant %v", name, got, want)
+				if got := restored[name]; !sameJSON(t, got, want) {
+					t.Errorf("restored %s changed:\n got %v\nwant %v", name, got, want)
 				}
 			}
 			// Everything the tool has no business touching.
@@ -282,10 +293,21 @@ func TestCodexApprovalGatesSurviveUnderTheNewToolNames(t *testing.T) {
 	if n := strings.Count(body, once); n != 1 {
 		t.Errorf("the migrated table appears %d times, want 1: duplicate keys make config.toml unloadable", n)
 	}
-	// A sub-table of a stashed server has to move with its parent. Left behind, it recreates
-	// its parent as a server with no command and no url, which is a broken declaration.
-	if strings.Contains(body, "[mcp_servers.tool-search") {
-		t.Errorf("a stashed server left a sub-table behind under mcp_servers:\n%s", body)
+	// A sub-table of a displaced server has to go inert with its parent. Left live, it recreates
+	// its parent as a server with no command and no url, which is a broken declaration. Checked
+	// per line rather than by substring, because a commented line still contains its own text.
+	for _, line := range strings.Split(body, "\n") {
+		if strings.HasPrefix(line, commentPrefix) {
+			continue
+		}
+		if strings.HasPrefix(line, "[mcp_servers.") && !strings.HasPrefix(line, "[mcp_servers."+ServerName) {
+			t.Errorf("a displaced server left a live table behind: %q\n%s", line, body)
+		}
+	}
+	// And nothing mcpd invented is a key: the displaced tables are comments, which no client can
+	// reject, rather than a table under a name of mcpd's own.
+	if strings.Contains(body, "["+StashKey+".") {
+		t.Errorf("install wrote a %q table into the client's own file:\n%s", StashKey, body)
 	}
 }
 
@@ -506,11 +528,13 @@ func TestARepeatedNestedContainerKeyDoesNotBlockTheTopLevelEdit(t *testing.T) {
 	if keys := keysOf(servers); len(keys) != 1 || keys[0] != ServerName {
 		t.Errorf("top-level mcpServers = %v, want only %q", keys, ServerName)
 	}
-	if _, ok := got[StashKey]; !ok {
-		t.Errorf("the original servers were not stashed under %q", StashKey)
+	for key := range got {
+		if strings.HasPrefix(key, "_mcpd") {
+			t.Errorf("install wrote %q into the client's own file", key)
+		}
 	}
 	// Every project keeps its own container. Those are the client's per-project records and
-	// renaming one would strand it under a key the client does not read.
+	// touching one would strand it under a key the client does not read.
 	projects, _ := got["projects"].(map[string]any)
 	if len(projects) != 2 {
 		t.Fatalf("projects = %v, want 2 entries", keysOf(projects))
@@ -610,7 +634,10 @@ func TestAChangeThatWouldLeaveTheFileUnparseableIsRefused(t *testing.T) {
 // A file that was already unparseable is the user's to fix. Saying so is the difference between
 // a refusal they can act on and one that reads as mcpd having broken their config.
 func TestAnAlreadyUnparseableFileIsNotBlamedOnTheTool(t *testing.T) {
-	f := newFixture(t, "codex", "[mcp_servers.alpha]\ncommand = \n")
+	// The broken line sits outside any server table on purpose. Inside one it would be commented
+	// out along with the rest of the block, and the result would parse: this tool can make an
+	// unparseable file parse, which is not the branch under test.
+	f := newFixture(t, "codex", "oops\n[mcp_servers.alpha]\ncommand = \"a\"\n")
 	p, err := f.client.PlanInstall("127.0.0.1:7420")
 	if err != nil {
 		t.Fatalf("PlanInstall: %v", err)
@@ -621,5 +648,55 @@ func TestAnAlreadyUnparseableFileIsNotBlamedOnTheTool(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "before this change either") {
 		t.Errorf("refusal does not say the file was already broken: %v", err)
+	}
+}
+
+// A receipt written before the displaced text moved out of the client's file still reverts. Three
+// such receipts existed on this machine when the scheme changed, and a revert that could not read
+// them would strand the very declarations it exists to restore, with the client's own file the only
+// remaining copy and mcpd refusing to touch it.
+func TestAReceiptFromTheInFileStashSchemeStillReverts(t *testing.T) {
+	// The file as the old scheme left it: mcpd in the container, the user's servers under a key
+	// mcpd invented.
+	const installed = `{
+  "mcpServers": {
+    "mcpd": {
+      "type": "http",
+      "url": "http://127.0.0.1:7420/mcp/passthrough"
+    }
+  },
+  "_mcpd_stashed": {
+    "notion": {
+      "type": "http",
+      "url": "https://mcp.notion.com/mcp"
+    }
+  },
+  "hasSeenTasksHint": true
+}
+`
+	f := newFixture(t, "claude", installed)
+	// A receipt from that scheme carries no displaced text, because the file held it.
+	if err := writeReceipt(f.state, Receipt{
+		Client: "claude", Path: f.client.Path,
+		Endpoint: "http://127.0.0.1:7420/mcp/passthrough", InstallAt: "2026-07-31T00:00:00Z",
+	}); err != nil {
+		t.Fatalf("writeReceipt: %v", err)
+	}
+
+	f.revert(t)
+
+	got := parse(t, f.read(t))
+	servers, ok := got["mcpServers"].(map[string]any)
+	if !ok {
+		t.Fatalf("mcpServers is gone after revert; keys are %v", keysOf(got))
+	}
+	if _, ok := servers["notion"]; !ok {
+		t.Errorf("revert lost the stashed declaration: %v", keysOf(servers))
+	}
+	if _, ok := servers[ServerName]; ok {
+		t.Error("revert left mcpd behind")
+	}
+	if _, ok := got[StashKey]; ok {
+		t.Errorf("revert left %q behind", StashKey)
 	}
 }

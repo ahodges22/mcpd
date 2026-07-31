@@ -67,8 +67,10 @@ type Client struct {
 
 // editor is a client format's splicing rules.
 type editor interface {
-	// plan returns the edits to make against these bytes, in order.
-	plan(c Client, body, endpoint string) ([]edit, []string, error)
+	// plan returns the edits to make against these bytes, in order, plus any text lifted out
+	// of the file that only the receipt will hold. A format with comments returns none of the
+	// latter: it can leave the text in place, inert, where the user can still read it.
+	plan(c Client, body, endpoint string) ([]edit, []string, string, error)
 	// revert returns the edits that undo a receipt against the current bytes. It is
 	// format-specific because only one of the two formats can use the plain inverse.
 	revert(c Client, body string, rec Receipt) ([]edit, error)
@@ -130,6 +132,16 @@ type Receipt struct {
 	InstallAt string `json:"installed_at"`
 	// Edits are in the order they were applied. A revert walks them backwards.
 	Edits []edit `json:"edits"`
+	// Displaced is the text the install took out of the client's file, held here because the
+	// file itself must not carry a key mcpd invented. A client is entitled to reject a key it
+	// does not know and one does: OpenCode validates its configuration against a schema and
+	// refuses to start on an unrecognised top-level key, so the stash that used to live under
+	// `_mcpd_stashed` inside the file took the whole client down rather than only its servers.
+	//
+	// Empty for a format whose displaced text stays in the file, commented out, and empty in a
+	// receipt written before this field existed. Revert distinguishes those two cases from a
+	// receipt that genuinely displaced nothing by looking for the old key in the file.
+	Displaced string `json:"displaced,omitempty"`
 }
 
 // Plan is what an install or a revert would do. It is what --dry-run prints, and it is
@@ -146,6 +158,8 @@ type Plan struct {
 	// body is the bytes the edits were computed against. Apply re-reads and refuses if
 	// they have moved on, so a plan can never be applied to a file it did not see.
 	body string
+	// displaced is text the edits lift out of the file for the receipt to hold.
+	displaced string
 }
 
 // Empty reports that there is nothing to do.
@@ -193,13 +207,13 @@ func (c Client) PlanInstall(addr string) (Plan, error) {
 		return Plan{}, fmt.Errorf("read %s: %w", c.Path, err)
 	}
 	endpoint := c.Endpoint(addr)
-	edits, warnings, err := c.edit.plan(c, string(raw), endpoint)
+	edits, warnings, displaced, err := c.edit.plan(c, string(raw), endpoint)
 	if err != nil {
 		return Plan{}, fmt.Errorf("%s: %w", c.Path, err)
 	}
 	p := Plan{
 		Client: c.Name, Path: c.Path, Endpoint: endpoint,
-		Warnings: warnings, edits: edits, body: string(raw),
+		Warnings: warnings, edits: edits, body: string(raw), displaced: displaced,
 	}
 	for _, e := range edits {
 		p.Notes = append(p.Notes, e.Note)
@@ -238,6 +252,7 @@ func (c Client) Apply(state string, p Plan) error {
 	return writeReceipt(state, Receipt{
 		Client: c.Name, Path: c.Path, Endpoint: p.Endpoint,
 		InstallAt: time.Now().UTC().Format(time.RFC3339), Edits: p.edits,
+		Displaced: p.displaced,
 	})
 }
 
