@@ -4,11 +4,13 @@ package backend
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"net/http"
 	"os"
 	"os/exec"
+	"regexp"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -537,13 +539,29 @@ func (b *Backend) stdioTransport(context.Context) (mcp.Transport, error) {
 	return &mcp.CommandTransport{Command: cmd}, nil
 }
 
+// streamableBase is the base RoundTripper for every streamable HTTP backend. It
+// deliberately does not negotiate HTTP/2, because an upstream that mishandles the
+// standalone SSE stream over HTTP/2 costs the whole backend while HTTP/2 itself buys
+// nothing here: a backend holds one or two long-lived streams, so there is no
+// concurrency for multiplexing to win back. One observed upstream withholds the SSE
+// response headers for a full minute over HTTP/2 and then resets the stream, while
+// answering immediately over HTTP/1.1.
+var streamableBase = func() *http.Transport {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.ForceAttemptHTTP2 = false
+	// Named rather than left to the field interaction above, so the ALPN offer itself
+	// carries the decision and a later clone cannot quietly restore h2.
+	t.TLSClientConfig = &tls.Config{NextProtos: []string{"http/1.1"}}
+	return t
+}()
+
 func (b *Backend) httpTransport(context.Context) (mcp.Transport, error) {
 	t := &mcp.StreamableClientTransport{
 		Endpoint: b.spec.HTTPURL,
 		// No http.Client.Timeout: it would also cap the long-lived standalone SSE
 		// stream. Per-call deadlines come from withTimeout instead.
 		HTTPClient: &http.Client{Transport: headerTransport{
-			base:    http.DefaultTransport,
+			base:    streamableBase,
 			headers: b.spec.ExpandHeaders(environ()),
 		}},
 	}
@@ -572,7 +590,39 @@ func (t headerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 			req.Header.Set(k, v)
 		}
 	}
-	return t.base.RoundTrip(req)
+	res, err := t.base.RoundTrip(req)
+	if err != nil {
+		return res, err
+	}
+	repairChallengeHeader(res.Header)
+	return res, nil
+}
+
+// missingComma matches a quoted auth-param value followed by another parameter with no
+// comma between them, which is the one malformation seen in the wild. RE2 has no
+// lookahead, so the following parameter name is captured and put back rather than merely
+// required, which is why the caller has to iterate: one pass consumes the name it matched,
+// and a second gap immediately after it is only reachable on the next.
+var missingComma = regexp.MustCompile(`(="[^"]*")[ \t]+([A-Za-z0-9!#$%&'*+.^_` + "`" + `|~-]+[ \t]*=)`)
+
+// repairChallengeHeader inserts the commas RFC 9110 requires between the auth-params of a
+// WWW-Authenticate challenge. One upstream sends `Bearer realm="mcp" resource_metadata="..."`,
+// which is malformed, and the SDK's parser rightly refuses it; refusing it here too would
+// mean that upstream can never be authorized at all. A well-formed header already has the
+// comma, so this leaves it untouched. Nothing is loosened by this: the repaired header goes
+// through exactly the same parser and the same checks.
+func repairChallengeHeader(h http.Header) {
+	const key = "Www-Authenticate"
+	for i, v := range h[key] {
+		for {
+			fixed := missingComma.ReplaceAllString(v, "$1, $2")
+			if fixed == v {
+				break
+			}
+			v = fixed
+		}
+		h[key][i] = v
+	}
 }
 
 // identity is the part of a backend's declaration that name-keyed state is bound to.

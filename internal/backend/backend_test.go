@@ -2,8 +2,11 @@ package backend
 
 import (
 	"context"
+	"crypto/x509"
 	"errors"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -13,6 +16,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/modelcontextprotocol/go-sdk/oauthex"
 
 	"github.com/ahodges/mcpd/internal/config"
 	"github.com/ahodges/mcpd/internal/testfake"
@@ -457,6 +461,95 @@ func textOf(t *testing.T, res *mcp.CallToolResult) string {
 		t.Fatalf("content is %T, want *mcp.TextContent", res.Content[0])
 	}
 	return tc.Text
+}
+
+// A streamable backend must reach its upstream over HTTP/1.1. One real upstream
+// withholds the standalone SSE stream's response headers for a full minute over
+// HTTP/2 and then resets the stream, which fails the handshake and takes the whole
+// backend down, while answering that same GET immediately over HTTP/1.1.
+func TestAStreamableBackendDoesNotNegotiateHTTP2(t *testing.T) {
+	seen := make(chan string, 1)
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		select {
+		case seen <- r.Proto:
+		default:
+		}
+	}))
+	// Offered by the server, so HTTP/1.1 is the client's choice and not the only option.
+	srv.EnableHTTP2 = true
+	srv.StartTLS()
+	defer srv.Close()
+
+	tr := streamableBase.Clone()
+	pool := x509.NewCertPool()
+	pool.AddCert(srv.Certificate())
+	tr.TLSClientConfig.RootCAs = pool
+
+	res, err := (&http.Client{Transport: tr}).Get(srv.URL)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	res.Body.Close()
+
+	if got := <-seen; got != "HTTP/1.1" {
+		t.Errorf("upstream saw %s, want HTTP/1.1", got)
+	}
+}
+
+// A real upstream answers its 401 with `Bearer realm="mcp" resource_metadata="..."`, with
+// no comma, which RFC 9110 does not permit and the SDK's parser refuses. Refusing it here
+// too would mean that upstream can never be authorized at all, so the transport repairs it
+// on the way in. Asserted through the SDK's own parser rather than against an expected
+// string, because interoperating with that parser is the entire point, and the first
+// assertion retires this repair on its own once the parser grows to accept the malformed
+// form itself.
+func TestAChallengeMissingItsCommaIsRepairedForTheSDKParser(t *testing.T) {
+	const challenge = `Bearer realm="mcp" resource_metadata="https://example.test/.well-known/oauth-protected-resource/api/mcp"`
+	if _, err := oauthex.ParseWWWAuthenticate([]string{challenge}); err == nil {
+		t.Skip("the SDK parser now accepts a challenge with no comma between its parameters; this repair is obsolete")
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("WWW-Authenticate", challenge)
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	// Through the transport a backend actually dials with, so the repair is proven to be
+	// installed on the response path and not merely to exist.
+	res, err := (&http.Client{Transport: headerTransport{base: streamableBase}}).Get(srv.URL)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	res.Body.Close()
+
+	got, err := oauthex.ParseWWWAuthenticate(res.Header[http.CanonicalHeaderKey("WWW-Authenticate")])
+	if err != nil {
+		t.Fatalf("the repaired challenge is still unparseable: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("parsed %d challenges, want 1: %+v", len(got), got)
+	}
+	// The pointer to the protected-resource metadata is the parameter the whole flow
+	// hangs on: without it there is no discovery and no authorization.
+	const want = "https://example.test/.well-known/oauth-protected-resource/api/mcp"
+	if got[0].Params["resource_metadata"] != want {
+		t.Errorf("resource_metadata = %q, want %q", got[0].Params["resource_metadata"], want)
+	}
+	if got[0].Params["realm"] != "mcp" {
+		t.Errorf("realm = %q, want mcp: the repair dropped the parameter it split from", got[0].Params["realm"])
+	}
+}
+
+// A well-formed challenge is left exactly as it arrived, so the repair above cannot
+// corrupt the upstreams that were already correct.
+func TestAWellFormedChallengeIsUntouched(t *testing.T) {
+	const good = `Bearer realm="mcp", resource_metadata="https://example.test/.well-known/x", error="invalid_token"`
+	h := http.Header{"Www-Authenticate": []string{good}}
+	repairChallengeHeader(h)
+	if got := h.Get("Www-Authenticate"); got != good {
+		t.Errorf("challenge was rewritten:\n got %s\nwant %s", got, good)
+	}
 }
 
 // deadEndpoint returns a URL on a port that has just been released, so a dial
