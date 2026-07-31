@@ -227,7 +227,7 @@ func (r *Registry) Disable(name string) error {
 		return err
 	}
 	defer done()
-	if err := r.overrides.set(name, true); err != nil {
+	if err := r.overrides.set(name, true, b.identity()); err != nil {
 		return fmt.Errorf("disable %s: %w", name, err)
 	}
 	b.teardown(forDisable)
@@ -335,7 +335,7 @@ func (r *Registry) Enable(name string) error {
 		return err
 	}
 	defer done()
-	if err := r.overrides.set(name, false); err != nil {
+	if err := r.overrides.set(name, false, b.identity()); err != nil {
 		return fmt.Errorf("enable %s: %w", name, err)
 	}
 	b.restore()

@@ -575,7 +575,7 @@ func TestARemovedBackendStopsServing(t *testing.T) {
 func TestAddTakesItsEnabledStateFromItsCaller(t *testing.T) {
 	statePath := filepath.Join(t.TempDir(), "overrides.json")
 	ov := overridesAt(t, statePath)
-	if err := ov.set("beta", true); err != nil {
+	if err := ov.set("beta", true, config.Identity{Transport: "stdio"}); err != nil {
 		t.Fatalf("seed override: %v", err)
 	}
 	r := NewRegistry(stdioConfig("alpha"), ov, Hooks{})

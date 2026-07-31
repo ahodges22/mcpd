@@ -38,6 +38,7 @@ type daemon struct {
 	cat   *catalog.Catalog
 	web   *httptest.Server
 	swap  *swapHandler
+	cfg   *config.Config
 
 	lastCallback string
 }
@@ -53,15 +54,21 @@ func (s *swapHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func start(t *testing.T, dir string, p *provider, ts *httptest.Server, swap *swapHandler) *daemon {
+	return startDeclaring(t, dir, p, ts, swap, p.mcpURL())
+}
+
+// startDeclaring is start with control over the declared URL, so a test can repoint a
+// backend the way a hand edit does and see what the stored grant is worth afterwards.
+func startDeclaring(t *testing.T, dir string, p *provider, ts *httptest.Server, swap *swapHandler, declaredURL string) *daemon {
 	t.Helper()
 	cfg := &config.Config{Backends: map[string]config.Backend{
-		server: {Name: server, HTTPURL: p.mcpURL(), Auth: "oauth", TimeoutSec: 10},
+		server: {Name: server, HTTPURL: declaredURL, Auth: "oauth", TimeoutSec: 10},
 	}}
 	ov, err := backend.LoadOverrides(filepath.Join(dir, "overrides.json"))
 	if err != nil {
 		t.Fatalf("load overrides: %v", err)
 	}
-	d := &daemon{t: t, dir: dir, prov: p, web: ts, swap: swap}
+	d := &daemon{t: t, dir: dir, prov: p, web: ts, swap: swap, cfg: cfg}
 	// The redirect URI is the address this server already answers on, rather than a
 	// port a test assumed.
 	d.store = oauthstore.New(dir, "http://"+ts.Listener.Addr().String()+"/oauth/callback",
@@ -77,6 +84,15 @@ func start(t *testing.T, dir string, p *provider, ts *httptest.Server, swap *swa
 				}
 			},
 		})
+	// The daemon supplies the declared set, which is what binds a stored grant to the
+	// declaration it was issued under.
+	d.store.Declared = func(name string) (config.Identity, bool) {
+		b, ok := d.cfg.Backends[name]
+		if !ok {
+			return config.Identity{}, false
+		}
+		return config.IdentityOf(b), true
+	}
 	d.reg = backend.NewRegistry(cfg, ov, backend.Hooks{
 		Reconnected: func(s string) { d.cat.Trigger(s) },
 		StopRefresh: func(s string) { d.cat.StopRefresh(s) },
@@ -107,6 +123,12 @@ func newDaemon(t *testing.T, tools ...*mcp.Tool) *daemon {
 // looks like from the provider's side: the redirect URI it registered has not moved.
 func (d *daemon) restart() *daemon { return start(d.t, d.dir, d.prov, d.web, d.swap) }
 
+// restartRepointed restarts with the backend declaring a different URL, which is what a
+// hand edit to http_url looks like across a stop and start: no reload ever sees it.
+func (d *daemon) restartRepointed(url string) *daemon {
+	return startDeclaring(d.t, d.dir, d.prov, d.web, d.swap, url)
+}
+
 func (d *daemon) list() ([]*mcp.Tool, error) {
 	d.t.Helper()
 	b, ok := d.reg.Get(server)
@@ -125,13 +147,14 @@ func (d *daemon) tokenPath() string {
 // stored is the persisted shape, declared here rather than shared with the package
 // so a test would notice the on-disk format changing under it.
 type stored struct {
-	ClientID     string    `json:"client_id"`
-	Issuer       string    `json:"issuer"`
-	TokenURL     string    `json:"token_url"`
-	AccessToken  string    `json:"access_token"`
-	RefreshToken string    `json:"refresh_token"`
-	TokenType    string    `json:"token_type"`
-	Expiry       time.Time `json:"expiry"`
+	Identity     config.Identity `json:"identity"`
+	ClientID     string          `json:"client_id"`
+	Issuer       string          `json:"issuer"`
+	TokenURL     string          `json:"token_url"`
+	AccessToken  string          `json:"access_token"`
+	RefreshToken string          `json:"refresh_token"`
+	TokenType    string          `json:"token_type"`
+	Expiry       time.Time       `json:"expiry"`
 }
 
 func (d *daemon) stored() stored {
@@ -987,4 +1010,140 @@ func redact(rec stored) stored {
 		rec.RefreshToken = "(set)"
 	}
 	return rec
+}
+
+// Scenario (backend-management spec, "A token whose identity does not match is never
+// presented"): a grant is bound to the declaration it was issued under, so repointing a
+// backend cannot send its bearer token to an endpoint that never issued it. Deleting the
+// record at the moment of change is hygiene, not the control: this repoint happens while
+// the daemon is stopped, so nothing observes it.
+func TestARepointedDeclarationDoesNotReuseItsToken(t *testing.T) {
+	d := newDaemon(t, tool("search"))
+	d.authorize(nil)
+	if got := d.health().State; got != backend.StateUp {
+		t.Fatalf("state after authorization = %q, want up", got)
+	}
+
+	moved := d.restartRepointed(d.prov.mcpURL() + "/elsewhere")
+
+	if _, err := moved.list(); err == nil {
+		t.Error("a repointed backend authenticated with the previous declaration's token")
+	}
+	if got := moved.health().State; got != backend.StateNeedsAuth {
+		t.Errorf("state after a repoint = %q, want %q", got, backend.StateNeedsAuth)
+	}
+	if !moved.noTokenFile() {
+		t.Error("the unusable record was left on disk")
+	}
+	if got := d.prov.counts().exchanges; got != 1 {
+		t.Errorf("code exchanges = %d, want 1: the old grant was presented again", got)
+	}
+}
+
+// A record written before identities existed carries none, and cannot be shown to belong
+// to the current declaration, so it counts as a mismatch rather than as a match.
+func TestARecordWithNoIdentityIsTreatedAsAMismatch(t *testing.T) {
+	d := newDaemon(t, tool("search"))
+	d.authorize(nil)
+	d.rewriteRecord(func(rec *stored) { rec.Identity = config.Identity{} })
+
+	restarted := d.restart()
+
+	if _, err := restarted.list(); err == nil {
+		t.Error("a record with no recorded identity was accepted")
+	}
+	if got := restarted.health().State; got != backend.StateNeedsAuth {
+		t.Errorf("state = %q, want %q", got, backend.StateNeedsAuth)
+	}
+}
+
+// A matching identity changes nothing: this is the guard against the check being so
+// strict that it breaks the restart reuse the store exists for.
+func TestAMatchingIdentityStillReusesItsToken(t *testing.T) {
+	d := newDaemon(t, tool("search"))
+	d.authorize(nil)
+
+	restarted := d.restart()
+
+	if _, err := restarted.list(); err != nil {
+		t.Fatalf("list after restart: %v", err)
+	}
+	if got := restarted.health().State; got != backend.StateUp {
+		t.Errorf("state = %q, want up", got)
+	}
+	if got := restarted.prov.counts().exchanges; got != 1 {
+		t.Errorf("code exchanges = %d, want 1: the stored grant was not reused", got)
+	}
+}
+
+// Deleting the record alone removes only the copy that was not in use: the cached handler
+// owns the live token source and holds the token in memory. Forget must discard both.
+func TestForgetDiscardsTheCachedHandlerNotJustTheRecord(t *testing.T) {
+	d := newDaemon(t, tool("search"))
+	d.authorize(nil)
+	if _, err := d.list(); err != nil {
+		t.Fatalf("list: %v", err)
+	}
+
+	if err := d.store.Forget(server); err != nil {
+		t.Fatalf("Forget: %v", err)
+	}
+	if !d.noTokenFile() {
+		t.Fatal("Forget left the record on disk")
+	}
+
+	if err := d.reg.Reconnect(server); err != nil {
+		t.Fatalf("reconnect: %v", err)
+	}
+	if _, err := d.list(); err == nil {
+		t.Error("the backend authenticated from the discarded handler's in-memory token")
+	}
+}
+
+// The cached handler is the path that matters, and it is the one a restart never
+// exercises: a fresh store has no cache, so a check placed on the record read alone still
+// looks correct. Here the declaration is repointed inside one daemon run, with a handler
+// already built and holding a usable token in memory.
+func TestARepointWithinOneRunDiscardsTheCachedHandler(t *testing.T) {
+	d := newDaemon(t, tool("search"))
+	d.authorize(nil)
+	if _, err := d.list(); err != nil {
+		t.Fatalf("list: %v", err)
+	}
+
+	// What a reload of an edited declaration does to the declared set.
+	repointed := d.cfg.Backends[server]
+	repointed.HTTPURL = d.prov.mcpURL() + "/elsewhere"
+	d.cfg.Backends[server] = repointed
+
+	if _, err := d.store.Handler(server); err != nil {
+		t.Fatalf("Handler after a repoint: %v", err)
+	}
+	if err := d.reg.Reconnect(server); err != nil {
+		t.Fatalf("reconnect: %v", err)
+	}
+	if _, err := d.list(); err == nil {
+		t.Error("the repointed backend authenticated from the cached handler's in-memory token")
+	}
+	if !d.noTokenFile() {
+		t.Error("the unusable record was left on disk")
+	}
+}
+
+// The identity is a tuple, not just a URL: an unchanged URL would otherwise hide a change
+// to the auth mode or the transport, either of which invalidates the grant just as much.
+func TestAChangedAuthModeInvalidatesTheGrant(t *testing.T) {
+	d := newDaemon(t, tool("search"))
+	d.authorize(nil)
+
+	sameURL := d.cfg.Backends[server]
+	sameURL.Auth = ""
+	d.cfg.Backends[server] = sameURL
+
+	if _, err := d.store.Handler(server); err != nil {
+		t.Fatalf("Handler: %v", err)
+	}
+	if !d.noTokenFile() {
+		t.Error("a grant survived its declaration's auth mode changing, with the URL unchanged")
+	}
 }

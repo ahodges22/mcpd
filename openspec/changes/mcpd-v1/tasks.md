@@ -471,7 +471,7 @@ across its own map mutation to keep a concurrent enable or disable out.
       Without it a hand-added backend is registered but its tools never appear until the next TTL
       tick, and a replacement is left with no tools at all because its removal evicted them. The
       hand-added-appears-on-reload scenario asserts the tools are listed, so it pins this
-- [ ] 15.13 Implement the identity binding on both state stores: persist the declaration identity
+- [x] 15.13 Implement the identity binding on both state stores: persist the declaration identity
       tuple (resource URL, auth mode, transport kind) on each OAuth record and each override
       entry, and compare it against the current declaration before honouring either. Comparing
       the resource URL alone is not sufficient, because an unchanged URL hides a change to either
@@ -481,17 +481,17 @@ across its own map mutation to keep a concurrent enable or disable out.
       declaration and honoured. A mismatch cannot distinguish a stale entry from a repointed one
       without a generation counter, so each store fails toward its own safe answer, and for a
       disable that means not starting a process the user stopped
-- [ ] 15.13a Failing tests for the token side first: a record whose stored identity differs is
+- [x] 15.13a Failing tests for the token side first: a record whose stored identity differs is
       never presented and the backend reports needs-auth; a matching record is used normally; a
       record written by an earlier version with no stored identity is treated as a mismatch
-- [ ] 15.13b Put the token comparison where the handler is obtained, not only where a record is
+- [x] 15.13b Put the token comparison where the handler is obtained, not only where a record is
       read. `Store.Handler` at `internal/oauthstore/store.go:212` returns a cached handler per
       backend name and never rereads disk on a hit, and that handler owns a live token source
       holding the token in memory, so a check on the disk read alone never runs for a primed
       handler. Deleting a record must also discard that backend's cached handler, its token
       source and any pending authorization. Failing test first: prime a handler, delete the
       record, and confirm the predecessor's token is not presented
-- [ ] 15.13c Failing tests for the override side, both of which fail today: an entry recording a
+- [x] 15.13c Failing tests for the override side, both of which fail today: an entry recording a
       different identity for a still-declared backend keeps it disabled across a restart; an
       override file written before this change, carrying names and no identities at all
       (`overrideDocument` is `{"disabled": ["name"]}`), still disables every backend it lists on

@@ -13,12 +13,15 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/oauthex"
 	"golang.org/x/oauth2"
+
+	"github.com/ahodges/mcpd/internal/config"
 )
 
 const (
@@ -60,8 +63,22 @@ type Store struct {
 	hooks       Hooks
 	client      *http.Client
 
+	// Declared reports the current declaration identity for a backend, or false once it
+	// is no longer declared. It is a hook rather than a direct dependency because this
+	// store is consulted from beneath the backend locks, where taking the daemon's
+	// outermost operation lock would invert the lock order.
+	Declared func(server string) (config.Identity, bool)
+	// Held, when set, runs fn while the declared set cannot change, reporting whether
+	// server is declared under want. It is what makes a token write atomic against a
+	// concurrent removal rather than merely preceded by a check.
+	Held func(server string, want config.Identity, fn func()) bool
+
 	mu       sync.Mutex
 	handlers map[string]auth.OAuthHandler
+	// builtFor records the identity each cached handler was built for. The comparison
+	// has to happen here rather than only on the record read: a cache hit never reaches
+	// disk, and the cached handler owns a live token source holding the token in memory.
+	builtFor map[string]config.Identity
 	pending  map[string]*pending
 	// grants records what is known against a backend's stored grant, which is what
 	// decides whether a 401 may start a browser authorization by itself.
@@ -78,6 +95,7 @@ func New(dir, redirectURL string, hooks Hooks) *Store {
 		hooks:       hooks,
 		client:      &http.Client{Timeout: providerTimeout, Transport: publicClient{http.DefaultTransport}},
 		handlers:    make(map[string]auth.OAuthHandler),
+		builtFor:    make(map[string]config.Identity),
 		pending:     make(map[string]*pending),
 		grants:      make(map[string]grantState),
 	}
@@ -196,13 +214,18 @@ func (t publicClient) RoundTrip(req *http.Request) (*http.Response, error) {
 // issuer and token endpoint are kept so a restart can restore a token source
 // without a discovery round trip.
 type record struct {
-	ClientID     string    `json:"client_id"`
-	Issuer       string    `json:"issuer,omitempty"`
-	TokenURL     string    `json:"token_url"`
-	AccessToken  string    `json:"access_token"`
-	RefreshToken string    `json:"refresh_token,omitempty"`
-	TokenType    string    `json:"token_type,omitempty"`
-	Expiry       time.Time `json:"expiry"`
+	// Identity is the declaration this grant was issued under. A record is keyed only
+	// by backend name, and the name says nothing about which provider issued the token
+	// or for which resource, so without this a repointed backend would present a token
+	// to an endpoint it was never issued for.
+	Identity     config.Identity `json:"identity"`
+	ClientID     string          `json:"client_id"`
+	Issuer       string          `json:"issuer,omitempty"`
+	TokenURL     string          `json:"token_url"`
+	AccessToken  string          `json:"access_token"`
+	RefreshToken string          `json:"refresh_token,omitempty"`
+	TokenType    string          `json:"token_type,omitempty"`
+	Expiry       time.Time       `json:"expiry"`
 }
 
 // Handler returns the authorization handler for server, built on first use from
@@ -212,14 +235,37 @@ type record struct {
 func (s *Store) Handler(server string) (auth.OAuthHandler, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	// The identity check comes first and applies to the cached handler too. A cache hit
+	// never reaches disk, so a check placed on the record read alone would never run for
+	// a primed handler, and that handler holds a usable token in memory.
+	want, declared := config.Identity{}, true
+	if s.Declared != nil {
+		want, declared = s.Declared(server)
+		if !declared {
+			return nil, fmt.Errorf("%s: %w", server, ErrUndeclared)
+		}
+	}
 	if h, ok := s.handlers[server]; ok {
-		return h, nil
+		if s.Declared == nil || s.builtFor[server] == want {
+			return h, nil
+		}
+		s.discardLocked(server)
 	}
 	rec, err := s.load(server)
 	if err != nil {
 		return nil, err
 	}
-	h := &handler{store: s, server: server}
+	// A stored grant issued under a different declaration is unusable rather than
+	// merely stale: it is discarded, deleted, and the backend is reported as needing
+	// authorization. An absent identity counts as a mismatch, because a record written
+	// before identities existed cannot be shown to belong here.
+	if rec != nil && s.Declared != nil && rec.Identity != want {
+		s.deleteLocked(server)
+		rec = nil
+		s.hooks.NeedsAuth(server, repointedNote)
+	}
+	h := &handler{store: s, server: server, identity: want}
 	if rec != nil {
 		h.registeredAs = rec.ClientID
 	}
@@ -234,7 +280,73 @@ func (s *Store) Handler(server string) (auth.OAuthHandler, error) {
 	}
 	h.inner = inner
 	s.handlers[server] = h
+	s.builtFor[server] = want
 	return h, nil
+}
+
+// ErrUndeclared reports that a backend is no longer declared, so nothing may be
+// authenticated or persisted for it.
+var ErrUndeclared = errors.New("backend no longer declared")
+
+const repointedNote = "declaration changed since authorization; re-authorize"
+
+// Forget discards everything held for a backend, in memory and on disk. Deleting the
+// record alone would remove only the copy that was not being used: the cached handler
+// owns the live token source.
+func (s *Store) Forget(server string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.discardLocked(server)
+	return s.deleteLocked(server)
+}
+
+func (s *Store) discardLocked(server string) {
+	delete(s.handlers, server)
+	delete(s.builtFor, server)
+	delete(s.grants, server)
+	for state, p := range s.pending {
+		if p.server == server {
+			delete(s.pending, state)
+		}
+	}
+}
+
+func (s *Store) deleteLocked(server string) error {
+	if err := os.Remove(s.path(server)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("delete oauth state for %s: %w", server, err)
+	}
+	return nil
+}
+
+// Reconcile settles stored grants against the current declarations: a record for a
+// backend that is not declared, or one issued under a different declaration, is
+// discarded and deleted.
+func (s *Store) Reconcile(declared map[string]config.Identity) error {
+	entries, err := os.ReadDir(s.dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read state directory: %w", err)
+	}
+	for _, e := range entries {
+		server, ok := serverFromFile(e.Name())
+		if !ok {
+			continue
+		}
+		s.mu.Lock()
+		rec, loadErr := s.load(server)
+		want, isDeclared := declared[server]
+		if loadErr == nil && (!isDeclared || rec == nil || rec.Identity != want) {
+			s.discardLocked(server)
+			if err := s.deleteLocked(server); err != nil {
+				s.mu.Unlock()
+				return err
+			}
+		}
+		s.mu.Unlock()
+	}
+	return nil
 }
 
 // newAuthorizer builds one SDK authorization handler over rec, which may be nil on
@@ -264,6 +376,7 @@ func (s *Store) newAuthorizer(h *handler, rec *record, restoreToken bool) (*auth
 		Client:                   s.client,
 		NewTokenSource: func(ctx context.Context, oc *oauth2.Config, tok *oauth2.Token) (oauth2.TokenSource, error) {
 			src := s.persisting(h.server, record{
+				Identity: h.identity,
 				ClientID: oc.ClientID,
 				Issuer:   h.issuerSeen(),
 				TokenURL: oc.Endpoint.TokenURL,
@@ -398,11 +511,45 @@ func (p *persistingSource) persistLocked(tok *oauth2.Token) error {
 	rec.RefreshToken = tok.RefreshToken
 	rec.TokenType = tok.Type()
 	rec.Expiry = tok.Expiry
-	if err := p.store.save(p.server, rec); err != nil {
+	// A refresh must not resurrect a record for a backend that has been removed, nor
+	// write one under a declaration it was not issued for. The check and the write are
+	// one critical section against the declared set, so a write that saw the backend as
+	// declared has landed before that removal's cleanup runs, and a later one is refused.
+	// Refusing loses nothing: the token in hand still serves this request.
+	if p.store.Declared != nil {
+		saved := false
+		var err error
+		if !p.store.holdDeclared(p.server, rec.Identity, func() {
+			err = p.store.save(p.server, rec)
+			saved = true
+		}) {
+			return fmt.Errorf("%s: %w", p.server, ErrUndeclared)
+		}
+		if err != nil {
+			return err
+		}
+		if !saved {
+			return fmt.Errorf("%s: %w", p.server, ErrUndeclared)
+		}
+	} else if err := p.store.save(p.server, rec); err != nil {
 		return err
 	}
 	p.lastAccess, p.lastRefresh = tok.AccessToken, tok.RefreshToken
 	return nil
+}
+
+// holdDeclared runs fn only while server is declared under want, and holds that answer
+// for the duration of fn.
+func (s *Store) holdDeclared(server string, want config.Identity, fn func()) bool {
+	if s.Held != nil {
+		return s.Held(server, want, fn)
+	}
+	id, ok := s.Declared(server)
+	if !ok || id != want {
+		return false
+	}
+	fn()
+	return true
 }
 
 func (s *Store) needsAuth(server, note string) {
@@ -421,6 +568,24 @@ func (s *Store) authorized(server string) {
 // it is escaped rather than trusted to be a single path element.
 func (s *Store) path(server string) string {
 	return filepath.Join(s.dir, "oauth-"+url.PathEscape(server)+".json")
+}
+
+// serverFromFile is path's inverse, used by Reconcile to find records whose backend is
+// gone from the declarations entirely.
+func serverFromFile(name string) (string, bool) {
+	rest, ok := strings.CutPrefix(name, "oauth-")
+	if !ok {
+		return "", false
+	}
+	rest, ok = strings.CutSuffix(rest, ".json")
+	if !ok {
+		return "", false
+	}
+	server, err := url.PathUnescape(rest)
+	if err != nil {
+		return "", false
+	}
+	return server, true
 }
 
 // TokenExpiry reports when server's stored access token expires, which the status
@@ -493,6 +658,9 @@ func (s *Store) save(server string, rec record) error {
 type handler struct {
 	store  *Store
 	server string
+	// identity is the declaration this handler was built for, carried so a persisted
+	// refresh records the same one.
+	identity config.Identity
 
 	mu sync.Mutex
 	// inner is rebuilt when registeredAs falls behind the persisted client_id.

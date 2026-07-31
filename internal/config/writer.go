@@ -43,7 +43,8 @@ type Identity struct {
 	Transport string `json:"transport"`
 }
 
-func identityOf(b Backend) Identity {
+// IdentityOf derives the identity a declaration's name-keyed state is bound to.
+func IdentityOf(b Backend) Identity {
 	transport := "http"
 	if b.IsStdio() {
 		transport = "stdio"
@@ -152,7 +153,7 @@ func (w *Writer) Undeclare(name string) {
 func (w *Writer) publish(cfg *Config) {
 	next := make(map[string]Identity, len(cfg.Backends))
 	for name, b := range cfg.Backends {
-		next[name] = identityOf(b)
+		next[name] = IdentityOf(b)
 	}
 	w.declMu.Lock()
 	w.declared = next
