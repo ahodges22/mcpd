@@ -282,15 +282,49 @@
       authorize URL. metabase reaches this state for the first time: it advertises RFC 9728
       discovery with dynamic client registration, and the only reason it never authenticated
       anywhere is that nothing had ever declared it as an OAuth backend**
-- [ ] 14.2 Complete authorization in the browser and confirm the backend connects with a
-      non-zero tool count. **Blocked on a human at a browser, which is this task's whole
-      point. Everything up to the consent screen is verified: open the panel, press Authorize
-      on notion or on metabase, and the tab navigates to the provider. 14.3 through 14.6 all
-      follow from this one**
-- [ ] 14.3 Make one real authenticated call through the inspector
-- [ ] 14.4 Restart the daemon and confirm the token is reused with no re-authorization
-- [ ] 14.5 Force access-token expiry and confirm a refresh rather than a return to needs-auth
-- [ ] 14.6 Append the outcome to `PHASE0.md` and commit
+- [x] 14.2 Complete authorization in the browser and confirm the backend connects with a
+      non-zero tool count. **Done for notion: consent completed in the browser, the backend
+      is up and serving 20 tools, and `oauth-notion.json` is on disk at 0600. Notion has
+      never worked through a proxy before. metabase still needs a human, and needs one for a
+      reason worth writing down: it redirects to `/auth/login` before it will show a consent
+      screen, so the user has to log in to Metabase first, and that is what made its
+      authorization slow enough to expose the abandonment bug below**
+- [x] 14.3 Make one real authenticated call through the inspector. **Done:
+      `mcp__notion__notion-get-users` returned a real 11.7KB directory response**
+- [x] 14.4 Restart the daemon and confirm the token is reused with no re-authorization.
+      **Done across several restarts: notion comes back up with its 20 tools and the same
+      token expiry, and never returns to needs-auth**
+- [x] 14.5 Force access-token expiry and confirm a refresh rather than a return to
+      needs-auth. **Done: the stored expiry was rewritten to a past instant, leaving the
+      refresh token intact. On restart the backend refreshed silently, moving its expiry from
+      16:04 to 16:31, stayed up with 20 tools, and a real call succeeded on the new token**
+- [ ] 14.6 Append the outcome to `PHASE0.md` and commit. **Waiting on metabase, which is the
+      one remaining browser step**
+
+### 14.7 Two defects this section found in the interactive flow, both fixed
+
+- [x] 14.7a An abandoned authorize request destroyed the authorization it had started. The
+      wait's context is the HTTP request's, so navigating the panel to the consent screen in
+      the same tab cancelled it, and the route read that cancellation as evidence that the
+      stored grant was unusable. It then discarded the grant and reconnected, and that
+      reconnect's teardown abandoned the authorization the user was about to complete, so the
+      code their browser came back with matched no outstanding request. The state left behind
+      was a live pending URL beside an "abandoned: context canceled" error, from two different
+      attempts, which is exactly what metabase showed. Cancellation and deadline expiry are now
+      distinguished: only our own budget expiring is weak evidence against the grant and still
+      retries, which is what keeps a genuinely unusable grant recoverable in one click
+- [x] 14.7b The window a person had to complete a consent was bounded by a machine handshake
+      budget: 60 seconds by default, and 180 for metabase. A provider that makes the user log
+      in first cannot be completed in that, and `oauthstore.pendingWindow` of 5 minutes could
+      never be reached because the connect deadline always fired first. A handshake the user
+      explicitly asked for now gets a budget sized for a person
+- [x] 14.7c The consent screen opens in its own tab, so the panel stays where it is. That is
+      not only convenience: it is what stops the navigation aborting the request in the first
+      place. The tab is opened before the await, while the click still counts as user
+      activation, and its `window.opener` is severed while it is still `about:blank`
+- [x] 14.7d The flow logged nothing at all, which is why 14.7a took a frame-by-frame
+      reconstruction to find rather than a look at the journal. It now logs the provider host,
+      the budget, and every way a wait can end, and never the URL, the state nonce or the code
 
 
 ## 15. Backend management from the status surface
