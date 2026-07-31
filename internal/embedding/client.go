@@ -43,11 +43,17 @@ func NewClient(baseURL, apiKey, model string) *Client {
 		model = defaultModel
 	}
 	return &Client{
-		baseURL:    strings.TrimRight(baseURL, "/"),
-		apiKey:     apiKey,
-		model:      model,
-		batchSize:  defaultBatchSize,
-		httpClient: &http.Client{Timeout: 30 * time.Second},
+		baseURL:   strings.TrimRight(baseURL, "/"),
+		apiKey:    apiKey,
+		model:     model,
+		batchSize: defaultBatchSize,
+		// The timeout has to cover reading the response body, not just reaching the gateway, and
+		// the body scales with the model's width. A batch of 96 vectors is about 1.5 MB at 1536
+		// dimensions and about 3.5 MB at 3072, and 30 seconds was enough for the first and not the
+		// second: switching model left a third of the catalogue unvectorized, with every failure
+		// reported as "context deadline exceeded while reading body" rather than as anything to do
+		// with size.
+		httpClient: &http.Client{Timeout: 120 * time.Second},
 	}
 }
 
