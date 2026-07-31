@@ -334,6 +334,10 @@ func (s *Server) authorize(w http.ResponseWriter, r *http.Request) {
 		if attempt > 0 {
 			s.oauth.DiscardStoredGrant(name)
 		}
+		// Set per attempt, because it is cleared when a handshake ends: this handshake
+		// cannot finish until the user has logged in to the provider and consented, so it
+		// needs a budget sized for a person rather than for a dial.
+		b.ExpectAuthorization()
 		var generation uint64
 		finished, err := awaitTransition(transitionTimeout, func() error {
 			var err error
@@ -367,6 +371,15 @@ func (s *Server) authorize(w http.ResponseWriter, r *http.Request) {
 				"error": "another lifecycle transition superseded this authorization attempt",
 			})
 			return
+		case authorizeUnfinished:
+			// Left running deliberately. The discovery this is waiting on will finish and
+			// publish its URL, and the next press answers from the pending check at the top
+			// rather than starting anything, so pressing again is safe and picks it up.
+			writeJSON(w, http.StatusAccepted, map[string]string{
+				"status":  "starting",
+				"message": "still setting up the authorization for " + name + "; press Authorize again in a moment",
+			})
+			return
 		}
 	}
 	writeJSON(w, http.StatusGatewayTimeout, map[string]string{
@@ -378,11 +391,17 @@ func (s *Server) authorize(w http.ResponseWriter, r *http.Request) {
 type authorizeOutcome int
 
 const (
-	// authorizeUnusable: neither of the other two, so the stored grant is not working.
+	// authorizeUnusable: the handshake this reconnect started failed, so the stored grant
+	// is not working and discarding it is justified.
 	authorizeUnusable authorizeOutcome = iota
 	authorizePending
 	authorizeServing
 	authorizeSuperseded
+	// authorizeUnfinished: the wait ended without learning anything, because the request
+	// was abandoned or the budget ran out. It says nothing about the grant, and must not be
+	// treated as though it did: the retry that follows an unusable grant tears the backend
+	// down, which would destroy an authorization the user is part way through.
+	authorizeUnfinished
 )
 
 // awaitAuthorization waits for one of the four outcomes of a reconnect, counting a
@@ -407,6 +426,15 @@ func (s *Server) awaitAuthorization(ctx context.Context, b *backend.Backend, nam
 		select {
 		case <-tick.C:
 		case <-ctx.Done():
+			// Which kind of done matters, because only one of them says anything about the
+			// grant. This budget expiring is weak evidence against it: nothing appeared and
+			// nothing failed, so one retry is worth spending. The request being cancelled is
+			// no evidence at all, because it means the browser navigated away or gave up,
+			// and retrying on that tears down an authorization the user may be part way
+			// through and leaves the code they come back with matching nothing.
+			if errors.Is(ctx.Err(), context.Canceled) {
+				return "", authorizeUnfinished
+			}
 			return "", authorizeUnusable
 		}
 	}

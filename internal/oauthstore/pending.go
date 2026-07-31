@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"time"
 
@@ -49,17 +50,31 @@ func (s *Store) fetchCode(server string) auth.AuthorizationCodeFetcher {
 		// be read stale by the very page the URL was published for.
 		s.needsAuth(server, "authorize at "+args.URL)
 		s.publish(state, p)
+		// The provider's host and the deadline, never the URL: it carries the state nonce
+		// and the PKCE challenge, and this log is the one place that would put them
+		// somewhere the journal keeps them.
+		deadline, hasDeadline := ctx.Deadline()
+		slog.Info("authorization waiting on the browser",
+			"server", server, "provider", parsed.Host,
+			"budget", budgetOf(deadline, hasDeadline))
 
 		timer := time.NewTimer(pendingWindow)
 		defer timer.Stop()
 		select {
 		case res := <-p.result:
+			slog.Info("authorization code received", "server", server)
 			return res, nil
 		case <-ctx.Done():
 			s.withdraw(state)
+			// Logged as a warning because it is nearly always something the user can act
+			// on: the handshake budget ran out while they were still at the provider, or a
+			// lifecycle transition cancelled it underneath them.
+			slog.Warn("authorization abandoned before the browser came back",
+				"server", server, "cause", ctx.Err())
 			return nil, fmt.Errorf("authorization for %s was abandoned: %w", server, ctx.Err())
 		case <-timer.C:
 			s.withdraw(state)
+			slog.Warn("authorization timed out with no callback", "server", server, "after", pendingWindow)
 			return nil, fmt.Errorf("authorization for %s timed out after %s with no callback", server, pendingWindow)
 		}
 	}
@@ -77,10 +92,24 @@ func (s *Store) Deliver(state, code, iss string) error {
 	delete(s.pending, state)
 	s.mu.Unlock()
 	if p == nil {
+		// The common cause is an authorization that was abandoned while the user was at the
+		// provider, so the code they came back with belongs to a request that no longer
+		// exists. Neither the state nor the code is logged.
+		slog.Warn("callback matched no outstanding authorization; the request it belongs to is gone")
 		return ErrNoPending
 	}
+	slog.Info("callback matched an outstanding authorization", "server", p.server)
 	p.result <- &auth.AuthorizationResult{Code: code, State: state, Iss: iss}
 	return nil
+}
+
+// budgetOf renders how long the handshake will keep waiting, so a log line says whether the
+// window the user has is a machine-sized one or a person-sized one.
+func budgetOf(deadline time.Time, ok bool) string {
+	if !ok {
+		return "unbounded"
+	}
+	return time.Until(deadline).Round(time.Second).String()
 }
 
 // Pending reports the URL an outstanding authorization for server is waiting on. The

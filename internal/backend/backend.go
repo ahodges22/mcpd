@@ -75,6 +75,15 @@ const (
 	// timeout. Unbounded, a hung spawn would hold the lifecycle mutex forever and
 	// a disable could never take it.
 	defaultConnectTimeout = 60 * time.Second
+	// interactiveConnectTimeout is the budget for a handshake the user explicitly asked for,
+	// and it is sized for a person rather than for a machine. A first authorization sends the
+	// user to a provider that may make them log in, and sometimes through single sign-on,
+	// before it will show a consent screen; the handshake cannot complete until they finish.
+	// Bounding that by the ordinary dial budget abandons the authorization while the consent
+	// screen is still open, and the code the browser eventually brings back then matches no
+	// outstanding request. It matches oauthstore's own pendingWindow, which is the backstop
+	// for the same wait.
+	interactiveConnectTimeout = 5 * time.Minute
 )
 
 // Backend is one upstream MCP server, shared by every connected client.
@@ -114,6 +123,11 @@ type Backend struct {
 	connectCancel  context.CancelFunc
 	connectAttempt ConnectAttempt
 	connected      bool // a session has existed, so the next connect is a reconnect
+	// interactive latches that the next handshake is one a user asked for and is waiting on
+	// in a browser, so it gets the budget above. Atomic rather than guarded by mu, because
+	// connectTimeout is read with mu already held.
+	interactive atomic.Bool
+
 	// stopping and connectCancel share one critical section so teardown cannot miss a new handshake.
 	stopping bool
 	// shutdown latches for the life of the process: the daemon is exiting, so nothing
@@ -295,6 +309,7 @@ func (b *Backend) connect(ctx context.Context) (*mcp.ClientSession, error) {
 	b.mu.Unlock()
 	defer func() {
 		cancel()
+		b.interactive.Store(false)
 		b.mu.Lock()
 		b.connectCancel = nil
 		b.mu.Unlock()
@@ -361,11 +376,20 @@ func (b *Backend) cancelConnect() {
 func (b *Backend) ConnectTimeout() time.Duration { return b.connectTimeout() }
 
 func (b *Backend) connectTimeout() time.Duration {
+	configured := defaultConnectTimeout
 	if b.spec.TimeoutSec > 0 {
-		return time.Duration(b.spec.TimeoutSec) * time.Second
+		configured = time.Duration(b.spec.TimeoutSec) * time.Second
 	}
-	return defaultConnectTimeout
+	if b.interactive.Load() {
+		return max(configured, interactiveConnectTimeout)
+	}
+	return configured
 }
+
+// ExpectAuthorization tells this backend that its next handshake is one the user asked for
+// and is waiting on in a browser, so it is given a budget a person can meet. It is cleared
+// when that handshake finishes, however it finishes.
+func (b *Backend) ExpectAuthorization() { b.interactive.Store(true) }
 
 // teardownMode distinguishes the kill switch from a reconnect. Only the kill
 // switch latches StateDisabled and evicts the tools: a reconnect leaves the
