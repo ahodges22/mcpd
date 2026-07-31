@@ -27,14 +27,24 @@ func entry(tool, description string) catalog.Entry {
 	}
 }
 
-func TestCacheKeyChangesWhenNameDescriptionOrSchemaChanges(t *testing.T) {
+// The key tracks the embedded text and nothing else. Anything that changes that text has to
+// change the key, or a cache hit serves a vector of text this tool no longer embeds; anything that
+// does not change it must not, or the gateway is re-billed for a vector that was still correct.
+func TestCacheKeyTracksExactlyTheEmbeddedText(t *testing.T) {
 	base := entry("weather", "get the weather")
+	base.Server = "met"
+	base.Schema = json.RawMessage(`{"type":"object","properties":{"city":{"type":"string"}}}`)
+
 	renamed := base
 	renamed.Tool = "forecast"
 	reworded := base
 	reworded.Description = "get the forecast"
-	reschema := base
-	reschema.Schema = json.RawMessage(`{"type":"object"}`)
+	// Neither of these is embedded, so neither may cost a re-embed. Including them was measured
+	// and made retrieval worse, so what the key tracks and what is embedded stay one thing.
+	rehomed := base
+	rehomed.Server = "noaa"
+	reschemad := base
+	reschemad.Schema = json.RawMessage(`{"type":"object","properties":{"town":{"type":"integer"}}}`)
 
 	c := NewCache(filepath.Join(t.TempDir(), "cache.json"), testModel)
 	baseKey := c.Key(base)
@@ -44,10 +54,20 @@ func TestCacheKeyChangesWhenNameDescriptionOrSchemaChanges(t *testing.T) {
 	}{
 		{"renamed", renamed},
 		{"reworded", reworded},
-		{"reschema", reschema},
 	} {
 		if c.Key(tc.e) == baseKey {
-			t.Errorf("%s: key unchanged, want it to differ from the base entry's key", tc.name)
+			t.Errorf("%s: key unchanged, so a stale vector would be served", tc.name)
+		}
+	}
+	for _, tc := range []struct {
+		name string
+		e    catalog.Entry
+	}{
+		{"rehomed onto another server", rehomed},
+		{"schema replaced", reschemad},
+	} {
+		if c.Key(tc.e) != baseKey {
+			t.Errorf("%s: key changed, so the gateway is re-billed for the same text", tc.name)
 		}
 	}
 	if c.Key(base) != baseKey {

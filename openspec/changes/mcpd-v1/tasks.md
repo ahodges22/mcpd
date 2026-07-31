@@ -337,6 +337,44 @@
       terse one-line descriptions, and that is all the semantic ranker has to work with. Left
       open deliberately rather than closed by widening the acceptable sets or lowering the
       gate after seeing the scores
+- [x] 13.7b **The embedded-text lever was tried and it does not work.** Widening `embedText` was
+      the stated next step and measurement refused it. Over the 47 answerable queries: name and
+      description alone give top-1 66.0% / top-3 78.7%; adding parameter names gives 66.0% / 76.6%;
+      adding the server name as well gives 61.7% / 78.7%. Both additions are shared rather than
+      distinguishing vocabulary. `account`, `region`, `role` and `workspace` are parameters of
+      almost every art tool, and one backend holds 315 of the 611 tools so its name is a token half
+      the catalogue carries. Both make tools look more alike, which is the opposite of retrieval.
+      Reverted, and recorded in the function so nobody spends the same day on it
+- [x] 13.7c **Found while doing that: `Cache.Key` did not track the embedded text.** It hashed
+      name, description and schema, which is nearly the same inputs and quietly wrong: widening
+      `embedText` changed every tool's text and not one key, so every lookup would have hit and
+      served a vector of the old text, and the experiment would have measured as no change at all.
+      The key now hashes `embedText(e)` itself, so text and key cannot diverge by construction.
+      This was a real defect independent of the experiment that exposed it
+- [x] 13.7d **Per-server result cap, kept: top-3 78.7% to 80.9%.** The miss list, not a hunch,
+      pointed here: three misses returned three tools from the backend holding 315 of 611, for
+      questions another backend answered exactly. "how much cpu and memory are the pods using"
+      returned three of its metrics tools while `kubectl_top` sat outside the cut. No backend now
+      takes more than 2 of the returned places until the others have had theirs, and the remainder
+      fills in fused order, so the cap decides ordering and never the count. A cap of 1 was tried
+      and is worse (78.7%). Held out scored above tuned-on by 11.6 points on top-3, so it is not
+      overfitted
+- [x] 13.7e **text-embedding-3-large, kept: top-1 66.0% to 68.1%.** Vectors go 1536 to 3072 wide,
+      so the cache doubles and an embed costs more; it is cached, so the cost is per change and not
+      per query. Abstention was recalibrated with it, because a cosine threshold does not carry
+      across models: floor 0.2466, ceiling 0.1716, midpoint 0.2091, still 10 of 10 held-out
+      no-answer queries flagged. `abstainCosine` moved with it. Leaving that constant at the
+      small-model 0.2649 would have left abstention quietly wrong, which is the failure the cache's
+      model header exists to catch
+- [ ] 13.7f **The gate still fails: top-1 68.1% against 80%, top-3 80.9% against 95%.** Net
+      movement this pass is +2.1 top-1 and +2.2 top-3, both held-out validated. The remaining
+      misses are semantic retrieval failures on descriptions mcpd does not own: `list_oncalls` sits
+      at cosine 376 for "who do I wake up about a production problem", and `kubectl_top`'s entire
+      description is "Run `art kubectl -- top <kind>`. Read-only metrics." **The honest reading is
+      that this gate may not be reachable from inside mcpd**, because the input is one line of prose
+      per tool written by someone else. Levers left, in order of expected value: a reranking pass
+      over the fused top-N, query expansion, or persuading the noisiest backends to describe their
+      tools in terms of what they are for. Still not closed by lowering the gate
 - [x] 13.7a Abstention, by contrast, calibrated cleanly and is now live: answerable cosine
       floor 0.3096 against a no-answer ceiling of 0.2215, separated, threshold 0.2649, and
       **10 of 10 held-out no-answer queries correctly flagged**. The lexical bounds do not

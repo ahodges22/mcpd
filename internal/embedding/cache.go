@@ -81,13 +81,17 @@ func (c *Cache) Prune(entries []catalog.Entry) int {
 	return dropped
 }
 
+// Key is a content hash of the text that was embedded, and of nothing else.
+//
+// It used to hash the tool's name, description and schema instead, which is nearly the same set
+// of inputs and quietly wrong: the key has to change whenever the embedded text changes, or a
+// cache hit returns a vector of text that is no longer what this tool embeds. Widening embedText
+// to include the server name and the parameter names changed every tool's text and not one key,
+// so every lookup would have hit and served the old vector, and the change would have measured as
+// having no effect at all. Hashing the text itself makes that impossible by construction.
 func (c *Cache) Key(e catalog.Entry) string {
 	h := sha256.New()
-	h.Write([]byte(e.Tool))
-	h.Write([]byte{0})
-	h.Write([]byte(e.Description))
-	h.Write([]byte{0})
-	h.Write(e.Schema)
+	h.Write([]byte(embedText(e)))
 	return hex.EncodeToString(h.Sum(nil))
 }
 
@@ -242,6 +246,17 @@ func Vectorize(ctx context.Context, client *Client, cache *Cache, entries []cata
 	return vecs, unvectorized
 }
 
+// embedText is the text a tool is found by, and a word absent from it is a word the semantic
+// ranker cannot retrieve the tool with at any rank. That makes widening it the obvious lever when
+// the eval misses, and it was measured rather than assumed: adding the server name and the
+// parameter names made the gate **worse**, so it is deliberately not done here.
+//
+// The numbers, over 47 answerable queries: name and description alone score top-1 66.0% and top-3
+// 78.7%. Adding parameter names leaves top-1 at 66.0% and drops top-3 to 76.6%. Adding the server
+// name as well drops top-1 to 61.7%. Both additions are shared vocabulary rather than
+// distinguishing vocabulary: `account`, `region`, `role` and `workspace` are parameters of nearly
+// every art tool, and one server contributes 315 of the 611 tools, so its name is a token half the
+// catalogue has. Each makes tools look more alike, which is the opposite of what retrieval needs.
 func embedText(e catalog.Entry) string {
 	if e.Description == "" {
 		return e.Tool

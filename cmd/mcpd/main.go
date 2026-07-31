@@ -42,11 +42,15 @@ const shutdownBudget = 20 * time.Second
 // for the embedding model and the tool set it was calibrated over, so it belongs beside the
 // code that was measured, and recalibrating means running evalrank and changing it here.
 //
-// Calibration of 2026-07-30: answerable cosine floor 0.3096, no-answer ceiling 0.2215,
-// separated, midpoint 0.2649. Scored once against a held-out no-answer set it had never seen:
-// 10 of 10 correctly flagged. Zero disables abstention, which is the right default for a
-// catalog nobody has calibrated against.
-const abstainCosine = 0.2649
+// Recalibrated 2026-07-31 for text-embedding-3-large: answerable cosine floor 0.2466, no-answer
+// ceiling 0.1716, separated, midpoint 0.2091, 10 of 10 held-out
+// no-answer queries correctly flagged. The previous 0.2649 was calibrated over
+// text-embedding-3-small and means nothing for these vectors: cosine thresholds do not carry
+// across models, which is the whole reason the cache records which model wrote it. Changing the
+// configured model without changing this number leaves abstention quietly wrong, so the two move
+// together or not at all. Zero disables abstention, which is the right default for a catalog
+// nobody has calibrated against.
+const abstainCosine = 0.2091
 
 // embedBudget bounds one catalog vectorization. It is generous because a cold cache embeds
 // every tool in the catalog, and it runs detached from the refresh that triggered it.

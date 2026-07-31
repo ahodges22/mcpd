@@ -117,9 +117,46 @@ func Fuse(query string, entries []catalog.Entry, vecs map[string][]float32, qvec
 		return fused[i].ID < fused[j].ID
 	})
 	if limit > 0 && len(fused) > limit {
-		fused = fused[:limit]
+		fused = capPerServer(fused, limit)
 	}
 	return fused, Evidence{BestCosine: bestCosine, BestLexical: bestLexical, HasCosine: len(semantic) > 0}
+}
+
+// capPerServer fills the result set in fused order, but lets no single backend take more than
+// perServer places until every other backend has had its chance, then fills any remainder in
+// order.
+//
+// One backend here declares 315 of 611 tools, so it holds a majority of the catalogue and its
+// tools are near neighbours of each other. Three of the eval's misses returned three of its tools
+// for a question another backend answered exactly: "how much cpu and memory are the pods using"
+// returned three of its metrics tools while `kubectl_top` sat outside the cut. Crowding a result
+// set is not the same as being the best answer, and a caller sees only what fits in the limit.
+func capPerServer(fused []Result, limit int) []Result {
+	const perServer = 2
+
+	out := make([]Result, 0, limit)
+	held := make([]Result, 0, len(fused))
+	count := make(map[string]int, limit)
+	for _, r := range fused {
+		if len(out) == limit {
+			break
+		}
+		if count[r.Server] >= perServer {
+			held = append(held, r)
+			continue
+		}
+		count[r.Server]++
+		out = append(out, r)
+	}
+	// A caller asked for `limit` results and gets them: the cap decides the order, never the
+	// count, so a query only one backend can answer is not punished for that.
+	for _, r := range held {
+		if len(out) == limit {
+			break
+		}
+		out = append(out, r)
+	}
+	return out
 }
 
 // Cosine ranks entries by the similarity of their cached vector to the query's, highest
