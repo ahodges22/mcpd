@@ -61,8 +61,16 @@ token or under what declaration, so a repointed backend would otherwise present 
 endpoint it was not issued for. A record whose identity does not match, including one that
 carries no identity at all, is unusable: it is discarded, deleted, and the backend reports
 `needs-auth`. A refresh SHALL NOT persist a record for a backend that is no longer declared.
-The `backend-management` capability covers what changes an identity, and why deleting the
-record at the moment of change is not sufficient on its own.
+
+The comparison SHALL happen where the authorization handler is obtained, not only where a record
+is read. One handler is cached per backend name and returned without rereading, and it owns a live
+token source holding the token in memory, so a check on the record read alone would never run once
+a handler is primed. Deleting a record SHALL therefore also discard that backend's cached handler,
+its token source and any pending authorization.
+
+The `backend-management` capability covers what changes an identity, why deleting the record at
+the moment of change is not sufficient on its own, and why the override store resolves the same
+ambiguity in the opposite direction.
 
 #### Scenario: A repointed declaration does not reuse its token
 

@@ -270,6 +270,11 @@ life, mu), then the declared-set lock, then the state-store mutexes. The writer 
 held across a registry mutation or a teardown, and the registry write lock is never held across
 a teardown.
 
+One refinement matters for 15.12a: the registry lock is never held while any backend lock is
+acquired, so no path holds it and then reaches for a backend lock. That is what makes the reverse
+safe, and a reload replacement needs the reverse, because it holds one backend's transition lock
+across its own map mutation to keep a concurrent enable or disable out.
+
 - [ ] 15.1 Add one shared backend-name validator, `^[a-z0-9][a-z0-9_-]{0,63}$`. The name
       becomes a URL path segment, the `oauth-<name>.json` file name under the state directory,
       and the prefix of every `mcp__<server>__<tool>` id, so it has three injection surfaces and
@@ -294,10 +299,11 @@ a teardown.
       the recovery path
 - [ ] 15.3b Hold the writer mutex across the whole sequence, in this order: re-read the file,
       compare against the baseline, run the duplicate or existence check against the freshly
-      read content, marshal, write the temp file, tighten the existing file's mode if it is
-      readable beyond its owner, exchange, archive, adopt the written bytes as the new baseline,
-      refresh the declared-set snapshot. Adopting the new baseline is not optional: without it
-      the first write poisons every later one into a permanent false refusal
+      read content, marshal, write the temp file, exchange, restrict the displaced inode, archive,
+      adopt the written bytes as the new baseline, refresh the declared-set snapshot. Every step
+      before the exchange is a read or a check, so a failure at any of them leaves nothing mutated.
+      Adopting the new baseline is not optional: without it the first write poisons every later one
+      into a permanent false refusal
 - [ ] 15.3c Commit with `unix.Renameat2(RENAME_EXCHANGE)` swapping the temp file and the
       configuration file, then archive the displaced content from the temp path. A copy taken
       before the swap would miss an edit that landed in between, which is exactly the window
@@ -305,9 +311,25 @@ a teardown.
       to direct. On `EINVAL` or `ENOSYS`, refuse the write and change nothing. **There is no
       plain-rename fallback**, because a fallback reintroduces the destruction window precisely
       where nobody would notice
-- [ ] 15.3d The mode tightening at 15.3b is the ONLY pre-commit mutation, and it needs a
-      one-line comment saying why: the exchange moves the existing inode to the temporary path,
-      so tightening afterwards would come too late for a failed archive to be safe
+- [ ] 15.3d Ensure the resolved declaration directory is 0700 at startup and refuse to write
+      declarations if it cannot be. That is the control, and putting it at startup is what keeps it
+      compatible with 15.3e: a `chmod` can fail, so a guarantee resting on one would force a choice
+      between aborting after the commit and knowingly keeping a readable credential
+- [ ] 15.3da Restrict the displaced inode to 0600 immediately after the exchange and before
+      archiving, as defence in depth. A failure here is a warning: the file stays inside the 0700
+      directory and is NOT deleted, so neither confidentiality nor recoverability is given up. Do
+      NOT tighten the existing file before the exchange instead: an earlier draft did, and it is
+      defeatable, because a hand editor can atomically replace the file with a fresh permissive
+      inode after the check, so the mode of the inode you checked is not the mode of the inode you
+      displace. Failing test first: replace the file with a 0644 inode between the daemon's read and
+      its commit, force an archive failure, and assert the displaced file is owner-only
+- [ ] 15.3db Resolve the declaration path through symlinks once at startup and use the resolved
+      path for every read and write. A config symlinked into a dotfiles repo is a normal setup, and
+      `RENAME_EXCHANGE` on the link swaps the LINK for a regular file: the daemon would then read a
+      detached copy while the user kept editing the original, and a mode change would follow the
+      link to a file it was never asked to touch. Failing test first, with a symlinked config:
+      after a write the link is still a link, its target holds the new content, and no unrelated
+      file changed mode
 - [ ] 15.3e Split the return: an error for anything before the exchange, warnings for everything
       after it. Archiving and retention are post-exchange, so neither may fail the operation, and
       no caller may make its later steps conditional on them. If archiving fails, leave the
@@ -343,6 +365,22 @@ a teardown.
       construction is otherwise indistinguishable from a bug. Reading the store inside `Add`
       would keep a reload replacement's disabled state and break a fresh add over a stale flag;
       taking it from the caller satisfies both
+- [ ] 15.5b Bring `Registry.Shutdown` under the same lock and latch the registry against later
+      publication. `Shutdown` walks `r.names` and `r.backends` with no lock today, which was safe
+      only because nothing mutated them after construction; 15.5 makes them mutable. Take the
+      registry lock to snapshot the set, set a registry-level shutdown latch, and hold the
+      operation lock so a mutation cannot interleave. The existing per-backend `forShutdown` latch
+      does NOT cover this: the dangerous case is a backend that was not in the map when shutdown
+      read it, whose stdio child then outlives the daemon. Failing test first, run under `-race`:
+      an add concurrent with shutdown is refused, nothing races, and no child survives
+- [ ] 15.5c All three operations check that latch before they mutate anything, and for the add
+      that means BEFORE its commit point, not inside `Registry.Add`. Refusing at registration would
+      leave the declaration committed and the registry without it, and would make `Add` fallible,
+      breaking 15.5's guarantee. Reload is not an exception: it registers backends exactly as an add
+      does, so a reload queued behind shutdown would otherwise publish them and trigger a refresh
+      that spawns a stdio child after shutdown had already walked the registry. Test both
+      linearizations: reload first and shutdown tears down what it added, or shutdown first and
+      reload refuses
 - [ ] 15.6 Write the failing tests for the transaction boundary, for serialization, and for the
       enabled-state hand-off: a refused config write leaves the registry, the running backend,
       the override and the stored token untouched; an add rejected as a duplicate leaves the
@@ -384,6 +422,15 @@ a teardown.
       being deleted. None of the three is conditional on the writer's warnings, and a deletion
       failure is reported without stopping the other two. The refresh is a trigger, not a gate: a
       backend that cannot be reached stays declared and shows as down
+- [ ] 15.9a Replace the empty-set rejection at `internal/config/config.go:110`, which currently
+      fails `Load` when a file declares no backends, with a presence check. Removing the last
+      backend otherwise commits an empty set that the next start cannot load, so a supported
+      operation would leave a daemon that will not boot; no spec scenario depends on the set being
+      non-empty. Do NOT simply delete the check: `Backends` is a plain map, so `{}`,
+      `{"backends": null}` and a top-level `null` all unmarshal to a nil map and would then all be
+      accepted, and a malformed hand edit would boot with every backend silently absent. Accept a
+      present, non-null `backends` object including `{}`, and keep rejecting a missing or null one.
+      Failing tests first, one per accepted and rejected shape, parameterized in one test
 - [ ] 15.10 Implement the remove operation in commit order: validate the name, confirm it is
       declared, commit the config write, drop the name from the declared-set snapshot under its
       write lock, then `Registry.Remove`, then the cleanup of 15.11. Never tear down before the
@@ -405,20 +452,58 @@ a teardown.
       enabled state, tears it down, and re-adds it with that captured state, deleting the stored
       OAuth record when the declaration identity changed. Passing enabled unconditionally would
       silently enable a disabled backend, and for a stdio backend that starts the process the
-      user disabled
+      user disabled. Hold the OUTGOING backend's transition lock continuously across the capture,
+      the registry mutation and the teardown, and finish every persisted-state hand-off (15.12b)
+      BEFORE publishing the replacement. The operation lock does not cover enable and disable, so a
+      disable landing mid-replacement would be reported as succeeding while the replacement comes up
+      enabled. Holding the outgoing lock alone is not enough either: a transition lock belongs to a
+      backend object, not to a name, so once the replacement is published an enable takes the NEW
+      object's lock and never sees the old one held. Publication last is what closes that. Failing
+      tests first, one with a concurrent disable and one with a concurrent enable
+- [ ] 15.12b When such a replacement preserves a DISABLED state and the declaration identity
+      changed, also re-persist the override entry under the new identity, so the recorded state
+      matches the declaration it now belongs to. This is hygiene: 15.13's rebind-and-honour rule
+      keeps the entry in force either way, which is what makes a crash partway through a
+      replacement safe. Test across a simulated restart, because a runtime-only assertion passes
+      while a whole class of bug in this area is present
+- [ ] 15.12c Trigger a catalog refresh for every backend reload adds or replaces. `Registry.Add`
+      does not do it: 15.9 triggers the refresh separately for the add route, so reload must too.
+      Without it a hand-added backend is registered but its tools never appear until the next TTL
+      tick, and a replacement is left with no tools at all because its removal evicted them. The
+      hand-added-appears-on-reload scenario asserts the tools are listed, so it pins this
 - [ ] 15.13 Implement the identity binding on both state stores: persist the declaration identity
       tuple (resource URL, auth mode, transport kind) on each OAuth record and each override
-      entry, compare it against the current declaration before honouring either, and on a
-      mismatch discard, delete, and for a token report needs-auth. Comparing the resource URL
-      alone is not sufficient, because an unchanged URL hides a change to either of the others.
-      Failing tests first: a record whose stored identity differs is never presented and the
-      backend reports needs-auth; a matching record is used normally; a record written by an
-      earlier version with no stored identity is treated as a mismatch rather than as a match; an
-      override entry whose identity differs does not disable the backend after a restart and is
-      deleted
+      entry, and compare it against the current declaration before honouring either. Comparing
+      the resource URL alone is not sufficient, because an unchanged URL hides a change to either
+      of the others. The two stores resolve a mismatch in OPPOSITE directions and that is
+      deliberate, so it needs a comment at each site: a token is discarded, deleted and reported
+      as needs-auth, while an override for a still-declared name is rebound to the current
+      declaration and honoured. A mismatch cannot distinguish a stale entry from a repointed one
+      without a generation counter, so each store fails toward its own safe answer, and for a
+      disable that means not starting a process the user stopped
+- [ ] 15.13a Failing tests for the token side first: a record whose stored identity differs is
+      never presented and the backend reports needs-auth; a matching record is used normally; a
+      record written by an earlier version with no stored identity is treated as a mismatch
+- [ ] 15.13b Put the token comparison where the handler is obtained, not only where a record is
+      read. `Store.Handler` at `internal/oauthstore/store.go:212` returns a cached handler per
+      backend name and never rereads disk on a hit, and that handler owns a live token source
+      holding the token in memory, so a check on the disk read alone never runs for a primed
+      handler. Deleting a record must also discard that backend's cached handler, its token
+      source and any pending authorization. Failing test first: prime a handler, delete the
+      record, and confirm the predecessor's token is not presented
+- [ ] 15.13c Failing tests for the override side, both of which fail today: an entry recording a
+      different identity for a still-declared backend keeps it disabled across a restart; an
+      override file written before this change, carrying names and no identities at all
+      (`overrideDocument` is `{"disabled": ["name"]}`), still disables every backend it lists on
+      the first start after the upgrade. The second is the migration case, and getting it wrong
+      silently starts every disabled stdio child on upgrade
 - [ ] 15.14 Implement startup reconciliation: delete any override entry and any stored OAuth
-      record whose backend is not declared, and any whose identity does not match. Test that a
-      declared backend's own matching state survives it
+      record whose backend is not declared. For state whose backend IS declared but whose identity
+      differs, follow 15.13's split rather than deleting both alike: delete the OAuth record,
+      rebind and honour the override. Deleting a mismatched override here would undo 15.13c at the
+      one moment it matters most, the first start after the upgrade, when no entry carries an
+      identity. Test that a declared backend's own matching state survives, and that a mismatched
+      pair resolves in the two different directions
 - [ ] 15.15 Add three routes to `routes()`, which is the sole registration path: `POST
       /api/backends`, `POST /api/backends/{name}/remove`, `POST /api/reload`. All three
       `mutates: true`, none nonce-guarded, so they inherit the origin, method and loopback-host
@@ -435,8 +520,16 @@ a teardown.
       adoption and the write-after-reload test must fail; move reload's validation outside the
       writer mutex and the edited-between test must fail; replace the atomic exchange with a
       copy-then-rename and the archive-recovery test must fail; reinstate a plain-rename fallback
-      and the unsupported-exchange test must fail; move the mode tightening after the exchange
-      and the failed-archive-mode test must fail; make an archive failure fatal and the
+      and the unsupported-exchange test must fail; move the displaced-inode restriction to before
+      the exchange and 15.3da's editor-swap test must fail; write through the unresolved path and
+      15.3db's symlink test must fail; skip reload's latch check and 15.5c's shutdown-then-reload
+      test must fail; publish the replacement before the state hand-off completes and 15.12a's
+      concurrent-enable test must fail; check the shutdown latch inside
+      `Registry.Add` instead of before the commit and the add-during-shutdown test must show a
+      committed declaration with no registry entry; drop the transition hold in 15.12a and the
+      concurrent-disable test must fail; delete a mismatched override at startup and the
+      upgrade test must fail; accept `{"backends": null}` and 15.9a's rejected-shape test must
+      fail; make an archive failure fatal and the
       commit-with-warning test must fail; apply a flat retention cap to every archive and the
       survives-ten-writes test must fail; drop the raw-message preservation and the
       unmodelled-field test must fail; loosen the name validator and the traversal test must fail
@@ -444,7 +537,13 @@ a teardown.
       rejected-unavailable-exchange test must fail; move it after `Registry.Add` and the
       add-does-not-authenticate test must fail; make `Add` consult the override store and the
       starts-enabled test must fail; make reload's replacement pass enabled unconditionally and
-      the stays-disabled test must fail; release the declared-set read lock between the check and
+      the stays-disabled test must fail; reinstate the empty-set rejection in `config.Load` and
+      the remove-the-last-backend test must fail; make a mismatched override discard rather than
+      rebind and both 15.13c tests must fail; skip the handler-cache invalidation on record
+      deletion and 15.13b's primed-handler test must fail; drop reload's catalog refresh and the
+      hand-added-appears-on-reload test must fail; leave `Shutdown` unlocked and unlatched and
+      15.5b's race test must fail under `-race`; release the declared-set read lock between the
+      check and
       the write and the override-racing-removal test must fail; drop the declared check in
       `Overrides.set` and that same test must fail; drop it in the token source and the
       refresh-after-removal test must fail; compare only the resource URL instead of the identity

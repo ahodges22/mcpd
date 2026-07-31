@@ -111,21 +111,25 @@ than silently re-enabled.
 - **THEN** its session is closed, its child process is terminated, and its tools are
   absent from both endpoints
 
-An override entry SHALL persist the declaration identity it was written under, and an entry
-whose identity does not match the current declaration SHALL be ignored and deleted rather than
-honoured. An entry is keyed only by backend name, so without this a backend declared afresh
-under a reused name would come up disabled for a reason the user never chose. The
-`backend-management` capability covers what changes an identity.
+An override entry SHALL persist the declaration identity it was written under. An entry whose
+identity does not match, or which records no identity at all, SHALL be rebound to the current
+declaration and honoured while its backend is still declared, and SHALL be deleted once that name
+is no longer declared. An entry is keyed only by backend name, so the identity is what says which
+declaration a disable was aimed at; but a mismatch cannot distinguish a stale entry from a
+repointed declaration, so it resolves toward keeping the disable. Enabling a backend the user
+disabled can start a process they stopped, while keeping an unwanted disable costs one click. The
+`backend-management` capability covers what changes an identity, and why the OAuth store resolves
+the same ambiguity in the opposite direction.
 
 #### Scenario: The override outlives a restart
 
 - **WHEN** a backend is disabled and the daemon is restarted
 - **THEN** the backend remains disabled and is not connected on startup
 
-#### Scenario: An override written under a different declaration is not honoured
+#### Scenario: A disable recorded without an identity is still honoured
 
-- **WHEN** an override entry's declaration identity differs from the current declaration
-- **THEN** the backend starts enabled and the entry is deleted
+- **WHEN** the daemon starts against an override file written before identities were recorded
+- **THEN** every disable it lists is still in force, and no disabled stdio child is started
 
 #### Scenario: A dispatch cannot outrun a disable
 
