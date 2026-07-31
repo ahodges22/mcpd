@@ -52,6 +52,14 @@ completely, because the backends that do work make the daemon look healthy. Decl
 needed variable there is the durable fix, and binding to the session is what makes the daemon
 correct until that is done.
 
+Binding to the session SHALL NOT be documented as the mechanism that supplies an rc-declared
+variable, because it is not. Activating the session target sources nothing. Such a variable
+reaches the service only through a chain the daemon does not control: the session pushes its
+environment into the user manager at login, and the shell profile has to have sourced the rc file
+for it to be in that environment at all. Binding to the session only starts the daemon late
+enough to benefit from that chain, so where the chain is absent the variable is missing either
+way.
+
 Where a platform or installation has no session to bind to, the documentation SHALL state the
 consequence rather than leave the boot-time case looking supported.
 

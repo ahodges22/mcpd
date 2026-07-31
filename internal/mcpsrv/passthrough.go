@@ -34,9 +34,10 @@ type Passthrough struct {
 // current entries.
 func NewPassthrough(cat *catalog.Catalog, reg *backend.Registry) *Passthrough {
 	p := &Passthrough{
-		cat:   cat,
-		reg:   reg,
-		srv:   mcp.NewServer(&mcp.Implementation{Name: "mcpd-passthrough", Version: "dev"}, nil),
+		cat: cat,
+		reg: reg,
+		srv: mcp.NewServer(&mcp.Implementation{Name: "mcpd-passthrough", Version: "dev"},
+			&mcp.ServerOptions{Instructions: passthroughInstructions(reg)}),
 		known: make(map[string]catalog.Entry),
 	}
 	p.Sync()

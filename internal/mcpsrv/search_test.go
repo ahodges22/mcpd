@@ -360,3 +360,37 @@ func writeCatalogFile(t *testing.T, path string, entries ...catalog.Entry) {
 		t.Fatalf("write catalog fixture: %v", err)
 	}
 }
+
+// A client puts a server's instructions in front of the model, and that is the only place either
+// endpoint gets to say what it is for. Without them an agent can have every tool listed and still
+// not reach for one: the facade's three generic verbs do not hint that hundreds of tools sit
+// behind them, and pass-through's names do not say that these backends are reachable nowhere
+// else. Both shipped with no instructions at all, which is exactly how this failed in practice.
+func TestBothEndpointsTellTheModelWhatTheyAreFor(t *testing.T) {
+	reg := httpRegistry(t, testfake.New("github", tool("create_pull_request")))
+	cat := catalog.New(reg, filepath.Join(t.TempDir(), "catalog.json"))
+
+	for _, tc := range []struct {
+		name string
+		srv  *mcp.Server
+		want string
+	}{
+		{"search", NewSearch(cat, reg, rank.Thresholds{}, nil), "search_tools"},
+		{"passthrough", NewPassthrough(cat, reg).Server(), "mcp__"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := connectClient(t, tc.srv).InitializeResult().Instructions
+			if got == "" {
+				t.Fatal("no instructions, so a client has nothing to put in front of the model")
+			}
+			if !strings.Contains(got, tc.want) {
+				t.Errorf("instructions do not say how to reach a tool (want %q):\n%s", tc.want, got)
+			}
+			// The declared backends are the orientation that tells a model a domain is here at
+			// all, which is what it needs before it thinks to search.
+			if !strings.Contains(got, "github") {
+				t.Errorf("instructions do not name the declared backends:\n%s", got)
+			}
+		})
+	}
+}

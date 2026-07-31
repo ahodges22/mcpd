@@ -67,7 +67,8 @@ type Vectors interface {
 }
 
 func NewSearch(cat *catalog.Catalog, reg *backend.Registry, th rank.Thresholds, vecs Vectors) *mcp.Server {
-	s := mcp.NewServer(&mcp.Implementation{Name: "mcpd-search", Version: "dev"}, nil)
+	s := mcp.NewServer(&mcp.Implementation{Name: "mcpd-search", Version: "dev"},
+		&mcp.ServerOptions{Instructions: searchInstructions(reg)})
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "search_tools",

@@ -240,6 +240,36 @@
       against mcpd's own output, not across a client's rewrite. Revert tolerates that by
       design, comparing its entry canonically rather than by layout
 
+- [x] 12.10 **Defect found in live use: neither endpoint sent MCP `instructions`.** In Claude
+      Code the server appeared, all 611 tools were listed and every description was intact, and
+      the agent still did not use them, because nothing told it they were there to be used.
+      `mcp.NewServer` was passed a nil `ServerOptions` on both endpoints, and `Instructions` is
+      `omitempty`, so the field was absent from initialize entirely. The superseded prototype
+      carried this text, so this was a regression against it rather than a gap it also had.
+      Both endpoints now state how a tool is reached and name the declared backends, verified
+      through a real handshake in `internal/mcpsrv` and against the running daemon. Instructions
+      are delivered at initialize, so a client has to be restarted to receive them
+
+- [x] 12.11 **Defect: stashing under `_mcpd_stashed` inside the client's file broke OpenCode
+      outright.** It validates against a schema and refuses to start on an unrecognised
+      top-level key, so `opencode models` failed with "Configuration is invalid" and the client
+      was unusable, not merely missing its MCP servers. Live from 09:53 until found. Surfaced by
+      the Gemini reviewer failing to launch, which runs through OpenCode: the review tooling
+      found it by being broken by it, not by reviewing. Verified by execution both ways, with
+      the key present and removed. Reverted immediately; OpenCode is back on its 14 direct
+      servers. Claude, Codex and Cursor all tolerate the key, so OpenCode was the only casualty
+- [x] 12.12 Note what the parse check cannot do. The file remained valid JSON throughout, so
+      12.8's guard was never going to catch this. Parsing proves a file is readable, not that
+      the client accepts it, and no guard inside this daemon can establish the latter
+- [ ] 12.13 Move displaced declarations out of the client's file and into the receipt, so no
+      invented key is written anywhere. Chosen over a per-client allowance because the three
+      clients that tolerate the key today do so by their own choice, and a version bump can
+      withdraw it, which makes tolerance a latent instance of the same defect. Revert must still
+      carry over declarations added after installing, so it cannot become the plain textual
+      inverse. Applies to the TOML path too, which is not broken today but depends on the same
+      assumption. Sizeable: it rewrites the install and revert cores and the tests that pin the
+      current stash behaviour
+
 ## 13. Ranking eval and calibration
 
 - [x] 13.1 Port the prototype's queries verbatim as a regression baseline and convert

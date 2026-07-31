@@ -22,6 +22,14 @@
       vault already held this lesson under `references/gui-launch-env-datadog-mcp-auth`, where
       the same rc-versus-`environment.d` split broke Datadog header auth; consulting it before
       the analysis rather than after would have got this right first time
+- [x] 1.8 Adversarial review raised that `PassEnvironment` only copies what is already in the
+      user manager, and that entering `graphical-session.target` sources nothing by itself. Both
+      true. Verified the actual chain by execution: `~/.profile` sources `~/.bashrc`, so the
+      variable is in the session environment, and the session pushes that into the user manager
+      at login, which is ordered before the target activates. **The conclusion holds and the
+      documentation did not: it implied the session binding supplies the variable.** Corrected in
+      `dist/README.md` and the requirement. A fresh-login start is still unverified, only a
+      mid-session start and a kill-recovery were
 - [ ] 1.7 Durable fix, left to the user because it means writing a credential: declare
       `GITHUB_TOKEN` in `~/.config/environment.d/` at mode 600. It is a distinct secret, not a
       copy of the `GH_PAT` already declared there. Once it is there the unit can go back to

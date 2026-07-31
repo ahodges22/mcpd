@@ -1,5 +1,27 @@
 ## ADDED Requirements
 
+### Requirement: Both endpoints tell the model what they are for
+
+Each endpoint SHALL send MCP `instructions` at initialize, stating how a tool is reached and
+naming the backends that are declared.
+
+Instructions are the only channel by which a server states its own purpose, and a client puts
+them in front of the model directly. Their absence is not cosmetic and it is not recoverable
+from the tool list. On the facade the model sees three generic verbs that give no hint that
+several hundred tools sit behind them. On pass-through it sees prefixed names that do not say
+these backends are reachable through nothing else. Naming the declared backends is what tells
+the model a domain is present at all, which it needs before it thinks to search.
+
+This was observed rather than anticipated: with every tool listed and every description intact,
+an agent still did not use them, because nothing told it they were there to be used. The
+prototype this daemon superseded carried such text, so shipping without it was a regression.
+
+#### Scenario: A client receives usable orientation from either endpoint
+
+- **WHEN** a client completes initialize against either endpoint
+- **THEN** the instructions are non-empty, say how to reach a tool, and name the declared
+  backends
+
 ### Requirement: Two endpoints on distinct paths
 
 The daemon SHALL expose two MCP endpoints over streamable HTTP at distinct paths:

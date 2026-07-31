@@ -38,6 +38,30 @@ undifferentiated approval decision for every upstream tool.
 - **THEN** the requirement is present under the new server and tool name, and is active
   rather than commented out
 
+### Requirement: No key the client does not define is written into its configuration
+
+The tool SHALL NOT introduce a key of its own into a client's configuration file. Displaced
+declarations SHALL be kept in the tool's own state, beside the receipt.
+
+A client is entitled to reject a key it does not know, and one does: OpenCode validates its
+configuration against a schema and refuses to start on an unrecognised top-level key, so
+stashing servers under `_mcpd_stashed` inside its file took the whole client down rather than
+only its MCP servers. The file was still valid JSON, so this is a failure mode the parse check
+cannot see: parsing proves the file is readable, not that the client will accept it.
+
+Tolerance is not a property to depend on. The three clients that accept the key today do so by
+their own choice and a version bump can withdraw it, which makes any per-client allowance a
+latent instance of the same defect rather than a fix.
+
+Where displaced declarations live outside the client's file, revert SHALL still carry over
+declarations the user added after installing, and a timestamped backup SHALL remain the second
+recovery path.
+
+#### Scenario: A client that validates its configuration still starts after installing
+
+- **WHEN** a client that rejects unrecognised keys is rewired
+- **THEN** it starts, and its configuration contains no key the tool invented
+
 ### Requirement: A change that would leave a configuration unreadable is refused
 
 The tool SHALL parse the result of its own edits before writing, and SHALL refuse to write a

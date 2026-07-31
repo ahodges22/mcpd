@@ -31,6 +31,20 @@ and either leave lingering off or accept one `systemctl --user restart mcpd` aft
 variable a declaration references. A variable that is not set is simply not passed, so an
 incomplete list fails quietly.
 
+Note what binding to the session does and does not do. Activating `graphical-session.target`
+does **not** source a shell rc file or import anything by itself. A variable declared in
+`~/.bashrc` reaches the user manager only because the desktop session pushes its own
+environment in at login, with `dbus-update-activation-environment` or
+`systemctl --user import-environment`, and because `~/.profile` sources `~/.bashrc` so the
+variable is in the session environment to begin with. That import happens during session
+startup, before the target activates, which is what makes the ordering work.
+
+So the session binding is not itself the mechanism, it just starts the daemon late enough to
+benefit from one. On a machine whose session does not import its environment, or whose
+`~/.profile` does not chain to `~/.bashrc`, an rc-only variable is missing either way. Declaring
+it in `~/.config/environment.d/` is the only version of this that does not depend on a chain of
+session behaviour.
+
 Check what the manager can actually pass, without printing any values:
 
 ```sh
