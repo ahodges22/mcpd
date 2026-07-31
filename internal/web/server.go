@@ -12,6 +12,7 @@ import (
 
 	"github.com/ahodges/mcpd/internal/backend"
 	"github.com/ahodges/mcpd/internal/catalog"
+	"github.com/ahodges/mcpd/internal/config"
 	"github.com/ahodges/mcpd/internal/oauthstore"
 )
 
@@ -51,6 +52,24 @@ type Server struct {
 	cat   *catalog.Catalog
 	guard *Guard
 	oauth *oauthstore.Store
+	// manager owns adding, removing and reloading declarations. It is optional: the
+	// three routes it serves are absent without it, which is what keeps every existing
+	// test constructing a Server with four arguments.
+	manager Manager
+}
+
+// Manager is the part of the declaration-management layer this surface drives. Each
+// call returns warnings that did not fail the operation alongside a fatal error.
+type Manager interface {
+	Add(name string, spec config.Backend) ([]error, error)
+	Remove(name string) ([]error, error)
+	Reload() ([]error, error)
+}
+
+// WithManager enables the add, remove and reload routes.
+func (s *Server) WithManager(m Manager) *Server {
+	s.manager = m
+	return s
 }
 
 // route is one registered path. Patterns carry no method, because the method check
@@ -89,7 +108,7 @@ func (s *Server) Handler() http.Handler {
 }
 
 func (s *Server) routes() []route {
-	return []route{
+	base := []route{
 		// Exact match rather than a subtree: a catch-all root answers every unknown path
 		// with the status page, which hides anything registered outside this table.
 		{method: http.MethodGet, path: "/{$}", handler: s.statusPage},
@@ -109,6 +128,76 @@ func (s *Server) routes() []route {
 		{method: http.MethodPost, path: "/api/reconnect-all", mutates: true, handler: s.reconnectAll},
 		{method: http.MethodPost, path: "/api/reindex", mutates: true, handler: s.reindex},
 		{method: http.MethodPost, path: "/api/invoke", mutates: true, handler: s.invoke},
+	}
+	if s.manager == nil {
+		return base
+	}
+	// Declaring a stdio backend starts a process, so these are the highest-privilege
+	// operations on this surface. They are ordinary mutating routes, which is the point:
+	// they inherit the loopback-host, origin and POST-plus-JSON guards unchanged.
+	return append(base,
+		route{method: http.MethodPost, path: "/api/backends", mutates: true, handler: s.addBackend},
+		route{method: http.MethodPost, path: "/api/backends/{name}/remove", mutates: true, handler: s.removeBackend},
+		route{method: http.MethodPost, path: "/api/reload", mutates: true, handler: s.reload},
+	)
+}
+
+type addRequest struct {
+	Name string         `json:"name"`
+	Spec config.Backend `json:"spec"`
+}
+
+func (s *Server) addBackend(w http.ResponseWriter, r *http.Request) {
+	var in addRequest
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body: " + err.Error()})
+		return
+	}
+	runManaged(w, func() ([]error, error) { return s.manager.Add(in.Name, in.Spec) })
+}
+
+func (s *Server) removeBackend(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	runManaged(w, func() ([]error, error) { return s.manager.Remove(name) })
+}
+
+func (s *Server) reload(w http.ResponseWriter, _ *http.Request) {
+	runManaged(w, func() ([]error, error) { return s.manager.Reload() })
+}
+
+// runManaged answers a management operation. A warning is reported alongside success
+// rather than as a failure: everything that can only warn happens after the declaration
+// is already committed, so calling it a failure would tell the user nothing happened when
+// something did.
+func runManaged(w http.ResponseWriter, op func() ([]error, error)) {
+	warnings, err := op()
+	if err != nil {
+		writeJSON(w, manageStatus(err), map[string]string{"error": err.Error()})
+		return
+	}
+	out := map[string]any{"status": "ok"}
+	if len(warnings) > 0 {
+		notes := make([]string, 0, len(warnings))
+		for _, warning := range warnings {
+			notes = append(notes, warning.Error())
+		}
+		out["warnings"] = notes
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func manageStatus(err error) int {
+	switch {
+	case errors.Is(err, config.ErrStale), errors.Is(err, config.ErrDuplicate):
+		return http.StatusConflict
+	case errors.Is(err, config.ErrUnknown):
+		return http.StatusNotFound
+	case errors.Is(err, backend.ErrRegistryShutdown):
+		return http.StatusServiceUnavailable
+	default:
+		// Anything else is a rejected declaration: an invalid name, or one naming
+		// neither a command nor a URL.
+		return http.StatusBadRequest
 	}
 }
 

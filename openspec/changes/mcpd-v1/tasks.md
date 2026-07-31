@@ -504,13 +504,13 @@ across its own map mutation to keep a concurrent enable or disable out.
       one moment it matters most, the first start after the upgrade, when no entry carries an
       identity. Test that a declared backend's own matching state survives, and that a mismatched
       pair resolves in the two different directions
-- [ ] 15.15 Add three routes to `routes()`, which is the sole registration path: `POST
+- [x] 15.15 Add three routes to `routes()`, which is the sole registration path: `POST
       /api/backends`, `POST /api/backends/{name}/remove`, `POST /api/reload`. All three
       `mutates: true`, none nonce-guarded, so they inherit the origin, method and loopback-host
       guards. Reject an invalid name or declaration with 400, a duplicate name with 409, and a
       stale file with 409 carrying text the page can show. Surface a post-commit warning as a
       success with a note, not as a failure
-- [ ] 15.16 Extend the page and the assets: an add form covering both transports, and a remove
+- [x] 15.16 Extend the page and the assets: an add form covering both transports, and a remove
       action using the existing `data-confirm` second-confirming-action mechanism. Insert every
       value with `textContent`. The add form MUST NOT prefill or display any existing `env` or
       `headers` value, and the status snapshot must continue to omit both, because a declaration

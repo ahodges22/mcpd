@@ -11,7 +11,34 @@
 <p class="actions">
   <button class="act" data-post="/api/reconnect-all">Reconnect all</button>
   <button class="act" data-post="/api/reindex">Re-index catalog</button>
+  <button class="act" data-post="/api/reload">Reload declarations</button>
 </p>
+<details id="add">
+<summary>Add a backend</summary>
+<p>
+  <label>Name <input id="add-name" size="16"></label>
+  <label>Transport
+    <select id="add-transport">
+      <option value="stdio">stdio</option>
+      <option value="http">http</option>
+    </select>
+  </label>
+</p>
+<p class="stdio-only">
+  <label>Command <input id="add-command" size="28"></label>
+  <label>Arguments <input id="add-args" size="36" placeholder="one per space"></label>
+</p>
+<p class="http-only">
+  <label>URL <input id="add-url" size="40"></label>
+  <label>OAuth <input id="add-oauth" type="checkbox"></label>
+</p>
+<p>
+  <label>Timeout (seconds) <input id="add-timeout" size="5"></label>
+  <button id="add-submit">Declare backend</button>
+</p>
+<p class="note">Credentials are not entered here. Reference an environment variable the
+daemon already holds, using <code>${VAR}</code> in the configuration file.</p>
+</details>
 <p class="note" id="note"></p>
 <table>
 <thead>
@@ -34,6 +61,7 @@
 <button class="act" data-post="/api/backends/{{.Name}}/disable">Turn off</button>
 <button class="act" data-post="/api/backends/{{.Name}}/reconnect">Reconnect</button>
 {{if .OAuth}}<button class="act" data-post="/api/backends/{{.Name}}/authorize">Authenticate</button>{{end}}
+<button class="act" data-post="/api/backends/{{.Name}}/remove" data-confirm="remove the declaration for {{.Name}}">Remove</button>
 </td>
 </tr>
 {{end}}

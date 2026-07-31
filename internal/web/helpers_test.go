@@ -15,6 +15,7 @@ import (
 	"github.com/ahodges/mcpd/internal/backend"
 	"github.com/ahodges/mcpd/internal/catalog"
 	"github.com/ahodges/mcpd/internal/config"
+	"github.com/ahodges/mcpd/internal/manage"
 	"github.com/ahodges/mcpd/internal/mcpsrv"
 	"github.com/ahodges/mcpd/internal/oauthstore"
 	"github.com/ahodges/mcpd/internal/rank"
@@ -34,6 +35,9 @@ type harness struct {
 	web     *httptest.Server
 	cfgPath string
 	statDir string
+	mgr     *manage.Manager
+	writer  *config.Writer
+	ov      *backend.Overrides
 }
 
 func newHarness(t *testing.T, fakes ...*testfake.Fake) *harness {
@@ -97,7 +101,20 @@ func newHarness(t *testing.T, fakes ...*testfake.Fake) *harness {
 				}
 			},
 		})
-	h.server = New(h.reg, h.cat, h.guard, h.oauth)
+	// The management routes are wired the way cmd/mcpd wires them, including the three
+	// hooks without which the declared-set protection is inert.
+	h.ov = ov
+	h.writer, err = config.NewWriter(cfgPath)
+	if err != nil {
+		t.Fatalf("new writer: %v", err)
+	}
+	h.mgr = manage.New(h.writer, h.reg, h.cat, ov, h.oauth)
+	ov.Guard = func(name string, fn func()) bool { return h.writer.HoldDeclared(name, nil, fn) }
+	h.oauth.Declared = h.writer.Identity
+	h.oauth.Held = func(server string, want config.Identity, fn func()) bool {
+		return h.writer.HoldDeclared(server, &want, fn)
+	}
+	h.server = New(h.reg, h.cat, h.guard, h.oauth).WithManager(h.mgr)
 	h.web.Config.Handler = h.server.Handler()
 	h.web.Start()
 	t.Cleanup(h.web.Close)

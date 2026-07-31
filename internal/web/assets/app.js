@@ -55,6 +55,12 @@ function safeAuthorizeURL(raw) {
 for (const btn of document.querySelectorAll("button.act")) {
   btn.addEventListener("click", async () => {
     const note = document.getElementById("note");
+    const reason = btn.dataset.confirm;
+    // A misclick guard only, exactly as the inspector's is: the request is subject to
+    // the origin, method and host guards whether or not this ran.
+    if (reason && !window.confirm("This will " + reason + ". Continue?")) {
+      return;
+    }
     btn.disabled = true;
     if (note) {
       setText(note, "working...");
@@ -75,6 +81,63 @@ for (const btn of document.querySelectorAll("button.act")) {
       location.assign(target);
       return;
     }
+    if (res.ok) {
+      // A warning means the operation committed and something after it did not, so it
+      // is shown rather than reloaded past.
+      const warnings = res.body ? res.body.warnings : null;
+      if (warnings && warnings.length > 0 && note) {
+        setText(note, warnings.join("; "));
+        return;
+      }
+      location.reload();
+      return;
+    }
+    if (note) {
+      setText(note, pretty(res));
+    }
+  });
+}
+
+// The add form. Nothing here is prefilled from an existing declaration: a declaration can
+// carry an inline credential, so an edit form would have to send one back to the browser.
+// Remove and re-add is the supported path instead.
+const addSubmit = document.getElementById("add-submit");
+if (addSubmit) {
+  const value = (id) => document.getElementById(id).value.trim();
+  const applyTransport = () => {
+    const http = value("add-transport") === "http";
+    for (const el of document.querySelectorAll(".stdio-only")) {
+      el.hidden = http;
+    }
+    for (const el of document.querySelectorAll(".http-only")) {
+      el.hidden = !http;
+    }
+  };
+  document.getElementById("add-transport").addEventListener("change", applyTransport);
+  applyTransport();
+
+  addSubmit.addEventListener("click", async () => {
+    const note = document.getElementById("note");
+    const spec = {};
+    if (value("add-transport") === "http") {
+      spec.http_url = value("add-url");
+      if (document.getElementById("add-oauth").checked) {
+        spec.auth = "oauth";
+      }
+    } else {
+      spec.command = value("add-command");
+      const args = value("add-args");
+      if (args) {
+        spec.args = args.split(/\s+/);
+      }
+    }
+    const timeout = parseInt(value("add-timeout"), 10);
+    if (!isNaN(timeout)) {
+      spec.timeout = timeout;
+    }
+    addSubmit.disabled = true;
+    const res = await post("/api/backends", { name: value("add-name"), spec: spec });
+    addSubmit.disabled = false;
     if (res.ok) {
       location.reload();
       return;
