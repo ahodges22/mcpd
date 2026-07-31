@@ -274,11 +274,19 @@
 
 ## 14. Live provider acceptance
 
-- [ ] 14.1 Clear the stored token and confirm the backend reports needs-auth with a pending
+- [x] 14.1 Clear the stored token and confirm the backend reports needs-auth with a pending
       URL. The file is `oauth-notion.json` directly under the state directory: deleting
-      anything else clears nothing, and then 14.4's restart-reuse check proves nothing
+      anything else clears nothing, and then 14.4's restart-reuse check proves nothing.
+      **Done. There was no `oauth-notion.json` to clear, because notion has never completed a
+      consent; after a restart both notion and metabase report needs-auth carrying a pending
+      authorize URL. metabase reaches this state for the first time: it advertises RFC 9728
+      discovery with dynamic client registration, and the only reason it never authenticated
+      anywhere is that nothing had ever declared it as an OAuth backend**
 - [ ] 14.2 Complete authorization in the browser and confirm the backend connects with a
-      non-zero tool count
+      non-zero tool count. **Blocked on a human at a browser, which is this task's whole
+      point. Everything up to the consent screen is verified: open the panel, press Authorize
+      on notion or on metabase, and the tab navigates to the provider. 14.3 through 14.6 all
+      follow from this one**
 - [ ] 14.3 Make one real authenticated call through the inspector
 - [ ] 14.4 Restart the daemon and confirm the token is reused with no re-authorization
 - [ ] 14.5 Force access-token expiry and confirm a refresh rather than a return to needs-auth
