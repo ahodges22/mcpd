@@ -38,6 +38,32 @@ undifferentiated approval decision for every upstream tool.
 - **THEN** the requirement is present under the new server and tool name, and is active
   rather than commented out
 
+### Requirement: A change that would leave a configuration unreadable is refused
+
+The tool SHALL parse the result of its own edits before writing, and SHALL refuse to write a
+file the client could no longer read. On refusal the original SHALL be left untouched and no
+backup SHALL be left behind, because a backup beside an unchanged file only invites a needless
+restore.
+
+Every other guard in this capability re-reads the offsets that produced the bytes, so an
+arithmetic mistake validates itself. A parser is the only independent evidence available. This
+is not hypothetical: an append addressed against the original file length landed inside a
+key/value pair and the result was written out, which took every server in the file down rather
+than only the one being added.
+
+Where the file did not parse before the change either, the refusal SHALL report that rather
+than attribute the damage to the tool.
+
+#### Scenario: A corrupting change is refused
+
+- **WHEN** an edit would leave the configuration unparseable
+- **THEN** the tool refuses, the file is unchanged, and no backup is left behind
+
+#### Scenario: An already-broken file is not blamed on the tool
+
+- **WHEN** the configuration did not parse before the change either
+- **THEN** the refusal reports that the file was already unparseable
+
 ### Requirement: Revert removes only what was added
 
 Revert SHALL operate on the target file's current content and SHALL remove only entries

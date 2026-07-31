@@ -468,3 +468,158 @@ func keysOf(m map[string]any) []string {
 	}
 	return out
 }
+
+// A real ~/.claude.json carries one "mcpServers" key per project it has ever opened, so the
+// container name occurs many times over. Addressing an edit by unique text occurrence refused
+// the install outright on every such file: the ambiguity guard fired on nested keys that
+// findKey had already excluded by depth, and Claude Code is precisely the client that has
+// them. The plan already resolved which key it meant, so the offset settles it. The golden
+// fixture had no projects map, which is why this went unnoticed until a live run.
+func TestARepeatedNestedContainerKeyDoesNotBlockTheTopLevelEdit(t *testing.T) {
+	const body = `{
+  "numStartups": 412,
+  "mcpServers": {
+    "notion": {
+      "type": "http",
+      "url": "https://mcp.notion.com/mcp"
+    }
+  },
+  "projects": {
+    "/home/u/one": {
+      "mcpServers": {},
+      "disabledMcpjsonServers": []
+    },
+    "/home/u/two": {
+      "mcpServers": {}
+    }
+  }
+}
+`
+	f := newFixture(t, "claude", body)
+	f.install(t)
+
+	got := parse(t, f.read(t))
+	servers, ok := got["mcpServers"].(map[string]any)
+	if !ok {
+		t.Fatalf("no top-level mcpServers after install; keys are %v", keysOf(got))
+	}
+	if keys := keysOf(servers); len(keys) != 1 || keys[0] != ServerName {
+		t.Errorf("top-level mcpServers = %v, want only %q", keys, ServerName)
+	}
+	if _, ok := got[StashKey]; !ok {
+		t.Errorf("the original servers were not stashed under %q", StashKey)
+	}
+	// Every project keeps its own container. Those are the client's per-project records and
+	// renaming one would strand it under a key the client does not read.
+	projects, _ := got["projects"].(map[string]any)
+	if len(projects) != 2 {
+		t.Fatalf("projects = %v, want 2 entries", keysOf(projects))
+	}
+	for name, raw := range projects {
+		p, _ := raw.(map[string]any)
+		if _, ok := p["mcpServers"]; !ok {
+			t.Errorf("project %q lost its own mcpServers", name)
+		}
+	}
+
+	// Revert has to survive the same repetition, and carrying over a server declared after
+	// installing is the path that addresses the container by name a second time.
+	after := f.read(t)
+	const anchor = `"mcpServers": {`
+	after = strings.Replace(after, anchor, anchor+"\n    \"mine\": { \"type\": \"http\", \"url\": \"https://mine.test/mcp\" },", 1)
+	if err := os.WriteFile(f.client.Path, []byte(after), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	f.revert(t)
+
+	back := parse(t, f.read(t))
+	block, ok := back["mcpServers"].(map[string]any)
+	if !ok {
+		t.Fatalf("revert left no mcpServers; keys are %v", keysOf(back))
+	}
+	for _, want := range []string{"notion", "mine"} {
+		if _, ok := block[want]; !ok {
+			t.Errorf("revert lost %q", want)
+		}
+	}
+	if _, ok := block[ServerName]; ok {
+		t.Error("revert left mcpd behind")
+	}
+	if _, ok := back[StashKey]; ok {
+		t.Error("revert left the stash key behind")
+	}
+}
+
+// Renaming the server headers grows the file, so an append addressed by the original length
+// lands short of the true end. On a real config it spliced mcpd's table into the middle of an
+// args = [...] line, leaving a truncated key and a config Codex could not load at all: every
+// server in the file went away, which is the widest possible blast radius for this package.
+func TestTheAppendedTableLandsAtTheEndAfterTheRenamesGrewTheFile(t *testing.T) {
+	const body = `[mcp_servers.alpha]
+command = "alpha-server"
+
+[mcp_servers.omega]
+command = "npx"
+args = ["-y", "omega@latest"]
+`
+	f := newFixture(t, "codex", body)
+	f.install(t)
+	got := f.read(t)
+
+	const last = `args = ["-y", "omega@latest"]`
+	if !strings.Contains(got, last) {
+		t.Errorf("the final declaration was split by the appended table:\n%s", got)
+	}
+	if strings.Index(got, "[mcp_servers."+ServerName+"]") < strings.Index(got, last) {
+		t.Errorf("the appended table landed before the end of the existing content:\n%s", got)
+	}
+}
+
+// The one guard here that does not depend on this package's own arithmetic. Every other check
+// re-reads the offsets that produced the bytes, so a mistake in them validates itself: a real
+// append addressed against the wrong length spliced a table into the middle of a key, and the
+// result was written out, leaving Codex unable to load any server in the file. A refusal has to
+// leave nothing behind either, because a backup beside an untouched file only invites a
+// needless restore.
+func TestAChangeThatWouldLeaveTheFileUnparseableIsRefused(t *testing.T) {
+	f := newFixture(t, "codex", codexGolden)
+	p, err := f.client.PlanInstall("127.0.0.1:7420")
+	if err != nil {
+		t.Fatalf("PlanInstall: %v", err)
+	}
+	// Stands in for an offset mistake: text that lands somewhere it cannot be read.
+	p.edits = append(p.edits, edit{Address: "corruption", To: "oops not toml\n", At: 0})
+
+	if err := f.client.Apply(f.state, p); err == nil {
+		t.Fatal("Apply accepted a change that leaves the file unparseable")
+	}
+	if got := f.read(t); got != codexGolden {
+		t.Errorf("the file was written anyway:\n%s", got)
+	}
+	entries, err := os.ReadDir(filepath.Dir(f.client.Path))
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	for _, e := range entries {
+		if strings.Contains(e.Name(), ".mcpd-") || strings.Contains(e.Name(), ".bak") {
+			t.Errorf("a refusal left %s behind", e.Name())
+		}
+	}
+}
+
+// A file that was already unparseable is the user's to fix. Saying so is the difference between
+// a refusal they can act on and one that reads as mcpd having broken their config.
+func TestAnAlreadyUnparseableFileIsNotBlamedOnTheTool(t *testing.T) {
+	f := newFixture(t, "codex", "[mcp_servers.alpha]\ncommand = \n")
+	p, err := f.client.PlanInstall("127.0.0.1:7420")
+	if err != nil {
+		t.Fatalf("PlanInstall: %v", err)
+	}
+	err = f.client.Apply(f.state, p)
+	if err == nil {
+		t.Fatal("Apply accepted an already-unparseable file")
+	}
+	if !strings.Contains(err.Error(), "before this change either") {
+		t.Errorf("refusal does not say the file was already broken: %v", err)
+	}
+}

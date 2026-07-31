@@ -72,7 +72,36 @@ type editor interface {
 	// revert returns the edits that undo a receipt against the current bytes. It is
 	// format-specific because only one of the two formats can use the plain inverse.
 	revert(c Client, body string, rec Receipt) ([]edit, error)
+	// validate reports whether these bytes are still something the client can read.
+	validate(body string) error
 }
+
+// verify refuses to write a file the client could no longer read.
+//
+// This is the only check here that does not depend on this package's own arithmetic. Every
+// other guard re-reads the offsets that produced the bytes, so a mistake in them validates
+// itself: an append addressed against the wrong length spliced a table into the middle of a
+// key and the result was written out, leaving Codex unable to load any server in the file. A
+// parser is independent evidence.
+//
+// The original is parsed too, and only so the refusal can say which of the two happened. A
+// file that was already unparseable is the user's to fix, and mcpd must not claim it broke it.
+func (c Client) verify(before, after string) error {
+	err := c.edit.validate(after)
+	if err == nil {
+		return nil
+	}
+	if c.edit.validate(before) != nil {
+		return fmt.Errorf("%s could not be parsed before this change either, so it is not mcpd's to repair: %w", c.Path, err)
+	}
+	return fmt.Errorf("refusing to write %s because the result would not parse: %w", c.Path, err)
+}
+
+// atEnd asks for the end of the body as it stands when the edit is applied. An absolute
+// offset cannot express that: earlier edits change the length, so an append addressed by the
+// original length lands inside the file. That is not hypothetical. It spliced a table into
+// the middle of an args = [...] line and left Codex unable to load any server at all.
+const atEnd = -1
 
 // edit is one reversible text change. Every edit is either an insertion (from is empty) or
 // a one-for-one replacement, and both invert by construction.
@@ -191,12 +220,17 @@ func (c Client) Apply(state string, p Plan) error {
 	if string(raw) != p.body {
 		return fmt.Errorf("%s changed since it was inspected; run the plan again", c.Path)
 	}
-	if err := backup(c.Path, raw); err != nil {
-		return err
-	}
 	body, err := applyEdits(string(raw), p.edits)
 	if err != nil {
 		return fmt.Errorf("%s: %w", c.Path, err)
+	}
+	// Before the backup, so a refusal leaves no trace at all: nothing was changed, and a
+	// stray backup beside an untouched file only invites a needless restore.
+	if err := c.verify(string(raw), body); err != nil {
+		return err
+	}
+	if err := backup(c.Path, raw); err != nil {
+		return err
 	}
 	if err := write(c.Path, body); err != nil {
 		return err
@@ -259,12 +293,15 @@ func (c Client) Revert(state string, p Plan) error {
 	if string(raw) != p.body {
 		return fmt.Errorf("%s changed since it was inspected; run the plan again", c.Path)
 	}
-	if err := backup(c.Path, raw); err != nil {
-		return err
-	}
 	body, err := applyEdits(string(raw), p.edits)
 	if err != nil {
 		return fmt.Errorf("%s: %w", c.Path, err)
+	}
+	if err := c.verify(string(raw), body); err != nil {
+		return err
+	}
+	if err := backup(c.Path, raw); err != nil {
+		return err
 	}
 	if err := write(c.Path, body); err != nil {
 		return err
@@ -272,15 +309,28 @@ func (c Client) Revert(state string, p Plan) error {
 	return os.Remove(receiptPath(state, c.Name))
 }
 
-// applyEdits splices in order. A replacement must match exactly once: twice means the
-// address is ambiguous and either choice could be the wrong one.
+// applyEdits splices in order. A replacement with no offset must match exactly once: twice
+// means the address is ambiguous and either choice could be the wrong one. An offset says the
+// plan already resolved which occurrence it meant, so the text there is verified rather than
+// counted: a container name repeated elsewhere in the document is then not ambiguity at all.
 func applyEdits(body string, edits []edit) (string, error) {
 	for _, e := range edits {
 		if e.From == "" {
-			if e.At > len(body) {
-				return "", fmt.Errorf("%s: insertion point %d is past the end", e.Address, e.At)
+			at := e.At
+			if at == atEnd {
+				at = len(body)
 			}
-			body = body[:e.At] + e.To + body[e.At:]
+			if at < 0 || at > len(body) {
+				return "", fmt.Errorf("%s: insertion point %d is outside the file", e.Address, e.At)
+			}
+			body = body[:at] + e.To + body[at:]
+			continue
+		}
+		if e.At > 0 {
+			if e.At+len(e.From) > len(body) || body[e.At:e.At+len(e.From)] != e.From {
+				return "", fmt.Errorf("%s: the text at offset %d is no longer what the plan resolved", e.Address, e.At)
+			}
+			body = body[:e.At] + e.To + body[e.At+len(e.From):]
 			continue
 		}
 		if n := strings.Count(body, e.From); n != 1 {

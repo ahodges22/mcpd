@@ -219,6 +219,26 @@
       left behind, two declarations collapsing to one duplicate TOML key, and a backup
       overwriting a backup). Applying is left to the user: it rewires their live tooling**
 - [x] 12.5 Commit
+- [x] 12.6 Apply to all four real clients. **Done at the user's request. Two defects the dry
+      run could not reach, because both need the apply path: (a) the container rename was
+      readdressed by unique text occurrence when applied, so it refused every real
+      `.claude.json`, which carries one `mcpServers` key per project ever opened; (b) codex's
+      table was appended at the original file length, and the nineteen header renames grow the
+      file by two bytes each, so it landed 38 bytes short and spliced into the middle of an
+      `args = [...]` line. (b) wrote a `config.toml` Codex cannot load at all, taking every
+      server in the file down. Restored from mcpd's own backup**
+- [x] 12.7 Fix both by addressing an edit for what it is: a replacement carries the offset the
+      plan already resolved, and an append resolves against the body as it stands when applied.
+      Regression tests for both, each failing on the old code. The JSON revert no longer
+      anchors its carry-over on the container name, which is not unique either
+- [x] 12.8 Refuse to write a configuration that would not parse. **This is the only guard here
+      that is independent of this package's own arithmetic; every other one re-reads the
+      offsets that produced the bytes, which is why (b) validated itself all the way to disk**
+- [x] 12.9 Verified live: all four clients wired, 611 tools over pass-through, and an
+      install/revert/install round trip byte-for-byte on a file mcpd produced. Note that Claude
+      Code rewrites `.claude.json` and relocates keys, so the byte-for-byte property holds
+      against mcpd's own output, not across a client's rewrite. Revert tolerates that by
+      design, comparing its entry canonically rather than by layout
 
 ## 13. Ranking eval and calibration
 

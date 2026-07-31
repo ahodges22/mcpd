@@ -35,10 +35,14 @@ func (j jsonEditor) plan(c Client, body, endpoint string) ([]edit, []string, err
 		if _, stashed := findKey(body, StashKey); stashed {
 			return nil, nil, fmt.Errorf("%q is already present, so a previous install was not reverted", StashKey)
 		}
+		// Addressed by offset: findKey resolved the top-level key by depth, and the same
+		// container name legitimately recurs deeper in the document. Claude Code keeps one
+		// per project it has ever opened.
 		edits = append(edits, edit{
 			Address: j.container,
 			From:    body[at : at+len(j.container)+2],
 			To:      `"` + StashKey + `"`,
+			At:      at,
 			Note:    fmt.Sprintf("move the %d server(s) in %q aside to %q", len(existing), j.container, StashKey),
 		})
 		if len(existing) > 0 {
@@ -124,26 +128,23 @@ func (j jsonEditor) revert(c Client, body string, rec Receipt) ([]edit, error) {
 		To:      "",
 		Note:    "remove " + j.container + "." + ServerName,
 	}}
-	edits = append(edits, edit{
-		Address: StashKey,
-		From:    `"` + StashKey + `"`,
-		To:      `"` + j.container + `"`,
-		Note:    fmt.Sprintf("put the servers in %q back under %q", StashKey, j.container),
-	})
-	if len(theirs) > 0 {
-		restored, err := restore(body, j.container, theirs)
-		if err != nil {
-			return nil, err
-		}
-		edits = append(edits, restored)
+	unstashed, err := j.unstash(body, theirs)
+	if err != nil {
+		return nil, err
 	}
+	edits = append(edits, unstashed)
 	return edits, nil
 }
 
-// restore carries the servers the user declared after installing back into the container the
-// stash is about to become. A snapshot restore would silently destroy them, which is exactly
-// why revert works on current content.
-func restore(body, container string, theirs []string) (edit, error) {
+// unstash renames the stash back to the container and, in the same edit, carries over any
+// server the user declared after installing. A snapshot restore would silently destroy those,
+// which is why revert works on current content.
+//
+// It is one edit and not two because the stash key is the only text here that identifies this
+// spot unambiguously. Anchoring the carry-over on the container name instead is ambiguous in a
+// document that repeats it, and renaming first would consume the one unique anchor before the
+// carry-over could use it.
+func (j jsonEditor) unstash(body string, theirs []string) (edit, error) {
 	at, ok := findKey(body, StashKey)
 	if !ok {
 		return edit{}, fmt.Errorf("%w: %q is gone, so there is nothing to put back", ErrConflict, StashKey)
@@ -156,19 +157,24 @@ func restore(body, container string, theirs []string) (edit, error) {
 	if err != nil {
 		return edit{}, fmt.Errorf("%w: %q: %v", ErrConflict, StashKey, err)
 	}
-	// Anchored on the restored container's opening brace, which by this point in the edit
-	// sequence appears exactly once.
-	anchor := `"` + container + `": {`
-	added := "\n    " + strings.Join(theirs, ",\n    ")
-	if len(existing) > 0 {
-		added += ","
+	// Spans the key's opening quote through its opening brace, so whatever the user had
+	// between the two survives and the rename stays a rename.
+	note := fmt.Sprintf("put the servers in %q back under %q", StashKey, j.container)
+	to := `"` + j.container + `"` + body[at+len(StashKey)+2:objStart+1]
+	if len(theirs) > 0 {
+		added := "\n    " + strings.Join(theirs, ",\n    ")
+		if len(existing) > 0 {
+			added += ","
+		}
+		to += added
+		note += fmt.Sprintf(", carrying over the %d declared after installing", len(theirs))
 	}
-	return edit{
-		Address: container,
-		From:    anchor,
-		To:      anchor + added,
-		Note:    fmt.Sprintf("carry over the %d server(s) declared after installing", len(theirs)),
-	}, nil
+	return edit{Address: StashKey, From: body[at : objStart+1], To: to, Note: note}, nil
+}
+
+// validate reports whether the result is still JSON the client can read.
+func (jsonEditor) validate(body string) error {
+	return json.Unmarshal([]byte(body), new(any))
 }
 
 // canonical is mcpd's entry as the client will read it, with no layout, for comparing

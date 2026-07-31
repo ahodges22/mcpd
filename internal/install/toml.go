@@ -5,6 +5,8 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/BurntSushi/toml"
+
 	"github.com/ahodges/mcpd/internal/catalog"
 )
 
@@ -53,7 +55,7 @@ func (tomlEditor) plan(c Client, body, endpoint string) ([]edit, []string, error
 	edits = append(edits, edit{
 		Address: "mcp_servers." + ServerName,
 		To:      entry,
-		At:      len(body),
+		At:      atEnd,
 		Note:    "point [mcp_servers." + ServerName + "] at " + endpoint,
 	})
 	for _, note := range approvals.notes {
@@ -133,6 +135,14 @@ func approvalMode(rest []string, commented bool) (string, bool) {
 		return strings.Trim(strings.TrimSpace(value), `"`), true
 	}
 	return "", false
+}
+
+// validate reports whether the result is still TOML Codex can read. A duplicate key counts:
+// TOML forbids redefining a table, so a migration that emitted one would take the whole file
+// down rather than only its own table.
+func (tomlEditor) validate(body string) error {
+	_, err := toml.Decode(body, new(map[string]any))
+	return err
 }
 
 // revert is the plain textual inverse. It is enough here, unlike for JSON: mcpd appends its
