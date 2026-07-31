@@ -222,27 +222,55 @@
 
 ## 13. Ranking eval and calibration
 
-- [ ] 13.1 Port the prototype's queries verbatim as a regression baseline and convert
+- [x] 13.1 Port the prototype's queries verbatim as a regression baseline and convert
       answers to acceptable sets
-- [ ] 13.2 Expand to roughly 36 answerable queries across paraphrase, near-name, and
+- [x] 13.2 Expand to roughly 36 answerable queries across paraphrase, near-name, and
       cross-backend-ambiguous categories, marking roughly ten held out and written before
       any tuning
-- [ ] 13.3 Write the separate negative calibration and negative validation query sets
-- [ ] 13.4 Implement `cmd/evalrank`, exiting non-zero when any expected tool is absent
+- [x] 13.3 Write the separate negative calibration and negative validation query sets
+- [x] 13.4 Implement `cmd/evalrank`, exiting non-zero when any expected tool is absent
       rather than scoring a shrunken denominator, and asserting the catalog is fully
       vectorized before calibrating: a partially warm cache reports comparable cosine
       evidence over only a subset, biasing the answerable floor down and potentially
       erasing a real gap
-- [ ] 13.5 Include the embedding model and dimension in the cache key, and decide the
+- [x] 13.5 Include the embedding model and dimension in the cache key, and decide the
       on-disk format change and pruning that implies. A calibrated cosine threshold is only
       valid for the model that produced the vectors, so a model swap behind an unchanged key
       silently invalidates it. Complementary to Task 7's comparability check, which catches
       a gateway remap behind an unchanged model name but cannot catch a model change at
       unchanged dimension
-- [ ] 13.6 Record the baseline, then calibrate thresholds and score the validation set
+- [x] 13.6 Record the baseline, then calibrate thresholds and score the validation set
       exactly once
-- [ ] 13.7 Iterate on fusion only if the gate fails, watching the held-out versus tuned gap
-- [ ] 13.8 Commit
+- [ ] 13.7 Iterate on fusion only if the gate fails, watching the held-out versus tuned gap.
+      **Iterated twice and the gate still fails. Recorded result over 47 answerable queries:
+      top-1 31/47 (66.0%) against the 80% gate, top-3 37/47 (78.7%) against the 95% gate.**
+      What did improve, and is kept: reciprocal rank fusion was being handed two lists that
+      are not comparable, because the lexical ranker returns only documents sharing a term
+      while the cosine ranker scores all 583 tools. Uncapped, and with an unplaced entry
+      scored as nothing, any tool with one incidental term match outranked the single best
+      semantic match in the catalog: `merge_pull_request` was cosine rank 1 for "combine these
+      branches once review passes" and was not returned at all. Both lists are now capped at
+      one depth, an unplaced entry takes the rank just past the end of that ranker's own list,
+      and exact ties break on raw cosine. That took top-1 from 63.8% to 66.0% and lifted the
+      carried-forward prototype queries from the prototype's own 11/15 to 13/15 top-1 at
+      15/15 top-3. Held-out scored above tuned-on throughout (+5.1 top-1, +1.6 top-3), so
+      nothing here is overfitted.
+      **The remaining gap is not in fusion and cannot be closed there.** `evalrank -explain`
+      reports where each miss sat in each ranker separately: the expected tool is at cosine
+      rank 14 (`kubectl_logs` for "why did my container crash, show me what it printed"), 23
+      (`kubectl_top` for "how much cpu and memory are the pods using") and 376
+      (`list_oncalls` for "who do I wake up about a production problem"). Fusion can only
+      promote what one of its inputs already ranked, so the next lever is the text embedded
+      per tool, currently `tool: description` in `embedding.embedText`. Several backends give
+      terse one-line descriptions, and that is all the semantic ranker has to work with. Left
+      open deliberately rather than closed by widening the acceptable sets or lowering the
+      gate after seeing the scores
+- [x] 13.7a Abstention, by contrast, calibrated cleanly and is now live: answerable cosine
+      floor 0.3096 against a no-answer ceiling of 0.2215, separated, threshold 0.2649, and
+      **10 of 10 held-out no-answer queries correctly flagged**. The lexical bounds do not
+      separate (floor 3.39 below ceiling 10.55), which confirms by measurement the reason
+      `Calibrate` reads cosine only
+- [x] 13.8 Commit
 
 ## 14. Live provider acceptance
 
