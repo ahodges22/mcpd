@@ -387,7 +387,8 @@ func (w *Writer) rotate(prefix string) {
 // accept a document that a later start would reject.
 func parse(raw []byte) (*Config, error) {
 	var doc struct {
-		Backends *map[string]Backend `json:"backends"`
+		Backends   *map[string]Backend `json:"backends"`
+		Embeddings Embeddings          `json:"embeddings"`
 	}
 	if err := json.Unmarshal(raw, &doc); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
@@ -395,7 +396,7 @@ func parse(raw []byte) (*Config, error) {
 	if doc.Backends == nil {
 		return nil, fmt.Errorf("config declares no backends object")
 	}
-	c := Config{Backends: map[string]Backend{}}
+	c := Config{Backends: map[string]Backend{}, Embeddings: doc.Embeddings}
 	for name, b := range *doc.Backends {
 		if !ValidName(name) {
 			return nil, fmt.Errorf("backend name %q must match %s", name, nameRef)

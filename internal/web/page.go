@@ -34,6 +34,10 @@ type backendStatus struct {
 type statusView struct {
 	Backends  []backendStatus `json:"backends"`
 	ToolCount int             `json:"tool_count"`
+	// Unvectorized is how many catalog entries the embedding gateway has not embedded.
+	// A negative value means no gateway is configured, so the surface says nothing rather
+	// than reporting a zero that would read as "fully embedded".
+	Unvectorized int `json:"unvectorized"`
 }
 
 type toolView struct {
@@ -54,7 +58,10 @@ type inspectView struct {
 func (s *Server) snapshot() statusView {
 	health := s.reg.Health()
 	errs := s.cat.Errors()
-	out := statusView{Backends: make([]backendStatus, 0, len(health)), ToolCount: len(s.cat.Entries())}
+	out := statusView{Backends: make([]backendStatus, 0, len(health)), ToolCount: len(s.cat.Entries()), Unvectorized: -1}
+	if s.unvectorized != nil {
+		out.Unvectorized = s.unvectorized()
+	}
 	for _, name := range s.reg.Names() {
 		h := health[name]
 		out.Backends = append(out.Backends, backendStatus{

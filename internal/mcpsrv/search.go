@@ -55,13 +55,24 @@ type callInput struct {
 // NewSearch builds the three-tool search facade: search_tools ranks the
 // catalog, describe_tool serves a schema from the catalog with no upstream
 // call, and call_tool dispatches to the owning backend.
-func NewSearch(cat *catalog.Catalog, reg *backend.Registry, th rank.Thresholds) *mcp.Server {
+// Vectors supplies the embeddings ranking fuses with the lexical score. It is optional:
+// a nil source passes nil vectors to rank.Fuse, which degrades to lexical only, and
+// abstention then stays inert because there is no cosine evidence to compute it from.
+type Vectors interface {
+	// Entries returns the vector per canonical tool id, as of the last catalog refresh.
+	Entries() map[string][]float32
+	// Query embeds one search query. It must fail soft: a nil vector on error keeps the
+	// search answering, exactly as a failed catalog embed degrades to lexical only.
+	Query(ctx context.Context, query string) []float32
+}
+
+func NewSearch(cat *catalog.Catalog, reg *backend.Registry, th rank.Thresholds, vecs Vectors) *mcp.Server {
 	s := mcp.NewServer(&mcp.Implementation{Name: "mcpd-search", Version: "dev"}, nil)
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "search_tools",
 		Description: "Search the catalog of every tool every connected backend offers.",
-	}, searchHandler(cat, reg, th))
+	}, searchHandler(cat, reg, th, vecs))
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "describe_tool",
@@ -76,8 +87,8 @@ func NewSearch(cat *catalog.Catalog, reg *backend.Registry, th rank.Thresholds) 
 	return s
 }
 
-func searchHandler(cat *catalog.Catalog, reg *backend.Registry, th rank.Thresholds) mcp.ToolHandlerFor[searchInput, searchOutput] {
-	return func(_ context.Context, _ *mcp.CallToolRequest, in searchInput) (*mcp.CallToolResult, searchOutput, error) {
+func searchHandler(cat *catalog.Catalog, reg *backend.Registry, th rank.Thresholds, vecs Vectors) mcp.ToolHandlerFor[searchInput, searchOutput] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in searchInput) (*mcp.CallToolResult, searchOutput, error) {
 		entries := cat.Entries()
 		if len(entries) == 0 {
 			return nil, searchOutput{Message: explainEmptyCatalog(cat, reg)}, nil
@@ -87,7 +98,12 @@ func searchHandler(cat *catalog.Catalog, reg *backend.Registry, th rank.Threshol
 		if limit <= 0 {
 			limit = defaultSearchLimit
 		}
-		fused, evidence := rank.Fuse(in.Query, entries, nil, nil, limit)
+		var entryVecs map[string][]float32
+		var qvec []float32
+		if vecs != nil {
+			entryVecs, qvec = vecs.Entries(), vecs.Query(ctx, in.Query)
+		}
+		fused, evidence := rank.Fuse(in.Query, entries, entryVecs, qvec, limit)
 		if len(fused) == 0 {
 			return nil, searchOutput{Message: fmt.Sprintf("no tools match your query %q", in.Query)}, nil
 		}

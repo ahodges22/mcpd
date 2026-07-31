@@ -30,11 +30,16 @@ type Client struct {
 	httpClient *http.Client
 }
 
-func NewClient(baseURL, apiKey string) *Client {
+// NewClient builds a gateway client. An empty model falls back to the package default, so
+// a caller that has no opinion does not have to hold one.
+func NewClient(baseURL, apiKey, model string) *Client {
+	if model == "" {
+		model = defaultModel
+	}
 	return &Client{
 		baseURL:    strings.TrimRight(baseURL, "/"),
 		apiKey:     apiKey,
-		model:      defaultModel,
+		model:      model,
 		batchSize:  defaultBatchSize,
 		httpClient: &http.Client{Timeout: 30 * time.Second},
 	}

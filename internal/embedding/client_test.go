@@ -28,7 +28,7 @@ func TestEmbedPostsToTheConfiguredEndpointWithBearerAuthAndTheModel(t *testing.T
 	}))
 	defer srv.Close()
 
-	c := NewClient(srv.URL, "sk-test")
+	c := NewClient(srv.URL, "sk-test", "")
 	vecs, err := c.Embed(context.Background(), []string{"alpha tool", "beta tool"})
 	if err != nil {
 		t.Fatalf("Embed: %v", err)
@@ -64,7 +64,7 @@ func TestEmbedPreservesInputOrderAgainstAResponseIndex(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewClient(srv.URL, "sk-test")
+	c := NewClient(srv.URL, "sk-test", "")
 	vecs, err := c.Embed(context.Background(), []string{"first", "second"})
 	if err != nil {
 		t.Fatalf("Embed: %v", err)
@@ -86,7 +86,7 @@ func TestEmbedBatchesRatherThanSendingOneRequestPerText(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewClient(srv.URL, "sk-test")
+	c := NewClient(srv.URL, "sk-test", "")
 	c.batchSize = 2
 	texts := []string{"a", "b", "c", "d", "e"}
 	vecs, err := c.Embed(context.Background(), texts)
@@ -120,7 +120,7 @@ func TestEmbedKeepsAlreadyFetchedVectorsWhenALaterBatchFails(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewClient(srv.URL, "sk-test")
+	c := NewClient(srv.URL, "sk-test", "")
 	c.batchSize = 2
 	vecs, err := c.Embed(context.Background(), []string{"a", "b", "c", "d"})
 	if err == nil {
@@ -141,7 +141,7 @@ func TestEmbedFailureIsSoft(t *testing.T) {
 	// A client pointed at an address nothing listens on must return an error the
 	// caller can check, not panic, so a caller can fall back to lexical-only
 	// ranking rather than crash the refresh.
-	c := NewClient("http://127.0.0.1:1", "sk-test")
+	c := NewClient("http://127.0.0.1:1", "sk-test", "")
 	_, err := c.Embed(context.Background(), []string{"anything"})
 	if err == nil {
 		t.Fatal("Embed against an unreachable gateway returned no error")
@@ -155,7 +155,7 @@ func TestEmbedOnAnEmptyBatchMakesNoRequest(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewClient(srv.URL, "sk-test")
+	c := NewClient(srv.URL, "sk-test", "")
 	vecs, err := c.Embed(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("Embed: %v", err)
@@ -175,7 +175,7 @@ func TestEmbedReturnsAnErrorOnANonSuccessStatus(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewClient(srv.URL, "sk-bad")
+	c := NewClient(srv.URL, "sk-bad", "")
 	_, err := c.Embed(context.Background(), []string{"x"})
 	if err == nil {
 		t.Fatal("expected an error on a 401 response")

@@ -96,7 +96,7 @@ func TestOneCacheServesTheCatalogsPerBackendFanOut(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client := NewClient(srv.URL, "sk-test")
+	client := NewClient(srv.URL, "sk-test", "")
 	path := filepath.Join(t.TempDir(), "cache.json")
 	cache := NewCache(path)
 
@@ -149,7 +149,7 @@ func TestVectorizeCachesByContentHashSoAnUnchangedToolIsNeverReembedded(t *testi
 	}))
 	defer srv.Close()
 
-	client := NewClient(srv.URL, "sk-test")
+	client := NewClient(srv.URL, "sk-test", "")
 	cache := NewCache(filepath.Join(t.TempDir(), "cache.json"))
 	entries := []catalog.Entry{entry("weather", "get the weather")}
 
@@ -188,7 +188,7 @@ func TestVectorizeKeepsPartialProgressAndReportsAnAccurateCountAcrossBatches(t *
 	}))
 	defer srv.Close()
 
-	client := NewClient(srv.URL, "sk-test")
+	client := NewClient(srv.URL, "sk-test", "")
 	client.batchSize = 2
 	cache := NewCache(filepath.Join(t.TempDir(), "cache.json"))
 	entries := []catalog.Entry{
@@ -208,7 +208,7 @@ func TestVectorizeKeepsPartialProgressAndReportsAnAccurateCountAcrossBatches(t *
 }
 
 func TestVectorizeReportsUnvectorizedWhenTheGatewayIsUnreachable(t *testing.T) {
-	client := NewClient("http://127.0.0.1:1", "sk-test")
+	client := NewClient("http://127.0.0.1:1", "sk-test", "")
 	cache := NewCache(filepath.Join(t.TempDir(), "cache.json"))
 	entries := []catalog.Entry{
 		entry("weather", "get the weather"),
@@ -233,7 +233,7 @@ func TestVectorizeServesAlreadyCachedToolsWithAnUnreachableGateway(t *testing.T)
 	cache.Put(cache.Key(warm), []float32{1, 2, 3})
 
 	newTool := entry("logs", "get pod logs")
-	client := NewClient("http://127.0.0.1:1", "sk-test")
+	client := NewClient("http://127.0.0.1:1", "sk-test", "")
 
 	vecs, unvectorized := Vectorize(context.Background(), client, cache, []catalog.Entry{warm, newTool})
 	if got, ok := vecs[warm.ID]; !ok || len(got) != 3 {

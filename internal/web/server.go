@@ -56,6 +56,9 @@ type Server struct {
 	// three routes it serves are absent without it, which is what keeps every existing
 	// test constructing a Server with four arguments.
 	manager Manager
+	// unvectorized is optional: it is nil when no embedding gateway is configured, and
+	// the surface then reports nothing rather than a misleading zero.
+	unvectorized func() int
 }
 
 // Manager is the part of the declaration-management layer this surface drives. Each
@@ -467,4 +470,12 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.WriteHeader(status)
 	w.Write(body)
+}
+
+// WithUnvectorized lets the status surface report how many catalog entries the embedding
+// gateway has not embedded. A silently lexical-only ranking is otherwise indistinguishable
+// from a working one until the results are visibly bad.
+func (s *Server) WithUnvectorized(count func() int) *Server {
+	s.unvectorized = count
+	return s
 }

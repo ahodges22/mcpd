@@ -138,7 +138,7 @@
       and its tool eviction leaves that backend's tools in the persisted catalog, and a
       disabled backend is never re-listed, so this is the only thing that ever removes
       them. It is a step of its own because a paragraph is skippable and this is not
-- [ ] 11.3 Wire embeddings into ranking. This is a multi-package code change, not wiring:
+- [x] 11.3 Wire embeddings into ranking. This is a multi-package code change, not wiring:
       nothing outside `internal/embedding` imports it today, so every seam below has to be
       built. Until it lands, fusion degenerates to lexical-only and abstention is provably
       inert (`qvec` always nil, so `HasCosine` is always false), which makes Tasks 6 and 7

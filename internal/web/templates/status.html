@@ -7,7 +7,7 @@
 </head>
 <body>
 <h1>mcpd</h1>
-<p>Tools in the catalog: {{.ToolCount}}</p>
+<p>Tools in the catalog: {{.ToolCount}}{{if ge .Unvectorized 0}}, unvectorized: {{.Unvectorized}}{{end}}</p>
 <p class="actions">
   <button class="act" data-post="/api/reconnect-all">Reconnect all</button>
   <button class="act" data-post="/api/reindex">Re-index catalog</button>

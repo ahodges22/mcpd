@@ -125,7 +125,7 @@ func newHarness(t *testing.T, fakes ...*testfake.Fake) *harness {
 // exercises the MCP endpoint as cmd/mcpd will wire it.
 func (h *harness) mcpSurface(t *testing.T) *httptest.Server {
 	t.Helper()
-	srv := mcpsrv.NewSearch(h.cat, h.reg, rank.Thresholds{})
+	srv := mcpsrv.NewSearch(h.cat, h.reg, rank.Thresholds{}, nil)
 	handler := mcp.NewStreamableHTTPHandler(
 		func(*http.Request) *mcp.Server { return srv },
 		&mcp.StreamableHTTPOptions{Stateless: true},

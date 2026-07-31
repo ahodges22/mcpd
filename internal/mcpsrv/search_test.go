@@ -23,7 +23,7 @@ func TestSearchFacadeAdvertisesExactlyThreeTools(t *testing.T) {
 	reg := httpRegistry(t)
 	cat := catalog.New(reg, filepath.Join(t.TempDir(), "catalog.json"))
 
-	client := connectClient(t, NewSearch(cat, reg, rank.Thresholds{}))
+	client := connectClient(t, NewSearch(cat, reg, rank.Thresholds{}, nil))
 
 	got, err := client.ListTools(t.Context(), nil)
 	if err != nil {
@@ -40,7 +40,7 @@ func TestSearchToolsExplainsEmptyCatalogWhenNoBackends(t *testing.T) {
 	reg := httpRegistry(t)
 	cat := catalog.New(reg, filepath.Join(t.TempDir(), "catalog.json"))
 
-	client := connectClient(t, NewSearch(cat, reg, rank.Thresholds{}))
+	client := connectClient(t, NewSearch(cat, reg, rank.Thresholds{}, nil))
 
 	out := callSearch(t, client, "anything", 0)
 	if len(out.Results) != 0 {
@@ -69,7 +69,7 @@ func TestSearchToolsExplainsColdStartDistinctlyFromNoBackends(t *testing.T) {
 	reg := backend.NewRegistry(cfg, ov, backend.Hooks{})
 	cat := catalog.New(reg, filepath.Join(t.TempDir(), "catalog.json"))
 
-	client := connectClient(t, NewSearch(cat, reg, rank.Thresholds{}))
+	client := connectClient(t, NewSearch(cat, reg, rank.Thresholds{}, nil))
 
 	out := callSearch(t, client, "anything", 0)
 	if len(out.Results) != 0 {
@@ -95,7 +95,7 @@ func TestSearchToolsExplainsConnectedBackendReportingNoTools(t *testing.T) {
 	cat.RefreshAll(t.Context())
 	t.Cleanup(func() { cat.StopRefresh("empty") })
 
-	client := connectClient(t, NewSearch(cat, reg, rank.Thresholds{}))
+	client := connectClient(t, NewSearch(cat, reg, rank.Thresholds{}, nil))
 
 	out := callSearch(t, client, "anything", 0)
 	if len(out.Results) != 0 {
@@ -115,7 +115,7 @@ func TestSearchToolsExplainsNoMatchAgainstNonEmptyCatalog(t *testing.T) {
 	cat.RefreshAll(t.Context())
 	t.Cleanup(func() { cat.StopRefresh("github") })
 
-	client := connectClient(t, NewSearch(cat, reg, rank.Thresholds{}))
+	client := connectClient(t, NewSearch(cat, reg, rank.Thresholds{}, nil))
 
 	out := callSearch(t, client, "zzzznomatchzzzz", 0)
 	if len(out.Results) != 0 {
@@ -135,7 +135,7 @@ func TestSearchToolsReturnsFusedResultsForAMatchingQuery(t *testing.T) {
 	cat.RefreshAll(t.Context())
 	t.Cleanup(func() { cat.StopRefresh("github") })
 
-	client := connectClient(t, NewSearch(cat, reg, rank.Thresholds{}))
+	client := connectClient(t, NewSearch(cat, reg, rank.Thresholds{}, nil))
 
 	out := callSearch(t, client, "create pull request", 0)
 	if len(out.Results) != 1 || out.Results[0].ID != "mcp__github__create_pull_request" {
@@ -152,7 +152,7 @@ func TestDescribeToolServesSchemaWithNoUpstreamCall(t *testing.T) {
 
 	before := len(fake.Received())
 
-	client := connectClient(t, NewSearch(cat, reg, rank.Thresholds{}))
+	client := connectClient(t, NewSearch(cat, reg, rank.Thresholds{}, nil))
 	out := callDescribe(t, client, "mcp__github__create_pull_request")
 
 	if out.Description == "" {
@@ -179,7 +179,7 @@ func TestDescribeToolSurfacesDestructiveHint(t *testing.T) {
 	cat.RefreshAll(t.Context())
 	t.Cleanup(func() { cat.StopRefresh("github") })
 
-	client := connectClient(t, NewSearch(cat, reg, rank.Thresholds{}))
+	client := connectClient(t, NewSearch(cat, reg, rank.Thresholds{}, nil))
 	out := callDescribe(t, client, "mcp__github__delete_repo")
 
 	if out.Annotations == nil || out.Annotations.DestructiveHint == nil || !*out.Annotations.DestructiveHint {
@@ -190,7 +190,7 @@ func TestDescribeToolSurfacesDestructiveHint(t *testing.T) {
 func TestDescribeToolUnknownID(t *testing.T) {
 	reg := httpRegistry(t)
 	cat := catalog.New(reg, filepath.Join(t.TempDir(), "catalog.json"))
-	client := connectClient(t, NewSearch(cat, reg, rank.Thresholds{}))
+	client := connectClient(t, NewSearch(cat, reg, rank.Thresholds{}, nil))
 
 	res, err := client.CallTool(t.Context(), &mcp.CallToolParams{
 		Name:      "describe_tool",
@@ -213,7 +213,7 @@ func TestCallToolReachesTheOwningBackend(t *testing.T) {
 	cat.RefreshAll(t.Context())
 	t.Cleanup(func() { cat.StopRefresh("github"); cat.StopRefresh("infra") })
 
-	client := connectClient(t, NewSearch(cat, reg, rank.Thresholds{}))
+	client := connectClient(t, NewSearch(cat, reg, rank.Thresholds{}, nil))
 
 	res, err := client.CallTool(t.Context(), &mcp.CallToolParams{
 		Name:      "call_tool",
@@ -257,7 +257,7 @@ func TestCallToolSurfacesNotAttemptedDistinctlyFromOutcomeUnknown(t *testing.T) 
 		t.Fatalf("load catalog: %v", err)
 	}
 
-	client := connectClient(t, NewSearch(cat, reg, rank.Thresholds{}))
+	client := connectClient(t, NewSearch(cat, reg, rank.Thresholds{}, nil))
 
 	res, err := client.CallTool(t.Context(), &mcp.CallToolParams{
 		Name:      "call_tool",
@@ -318,7 +318,7 @@ func TestCallToolSurfacesOutcomeUnknownDistinctlyFromNotAttempted(t *testing.T) 
 	cat.RefreshAll(t.Context())
 	t.Cleanup(func() { cat.StopRefresh("slow") })
 
-	client := connectClient(t, NewSearch(cat, reg, rank.Thresholds{}))
+	client := connectClient(t, NewSearch(cat, reg, rank.Thresholds{}, nil))
 
 	res, err := client.CallTool(t.Context(), &mcp.CallToolParams{
 		Name:      "call_tool",

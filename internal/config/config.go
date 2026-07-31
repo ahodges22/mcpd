@@ -40,7 +40,31 @@ type Backend struct {
 }
 
 type Config struct {
-	Backends map[string]Backend `json:"backends"`
+	Backends   map[string]Backend `json:"backends"`
+	Embeddings Embeddings         `json:"embeddings,omitempty"`
+}
+
+// Embeddings configures the gateway that vectorizes the catalog. It is optional: with no
+// URL, ranking degrades to lexical only and abstention stays inert, which is a worse
+// search rather than a broken daemon.
+type Embeddings struct {
+	URL   string `json:"url,omitempty"`
+	Model string `json:"model,omitempty"`
+	// APIKeyEnv names the environment variable holding the key, rather than the key
+	// itself: the declaration file is not where a credential belongs, and every other
+	// secret in it is already a ${VAR} reference.
+	APIKeyEnv string `json:"api_key_env,omitempty"`
+}
+
+// Enabled reports whether a gateway is configured at all.
+func (e Embeddings) Enabled() bool { return e.URL != "" }
+
+// APIKey resolves the key from the environment the daemon itself holds.
+func (e Embeddings) APIKey() string {
+	if e.APIKeyEnv == "" {
+		return ""
+	}
+	return os.Getenv(e.APIKeyEnv)
 }
 
 func (b Backend) IsStdio() bool { return b.Command != "" }
@@ -114,7 +138,8 @@ func Load(path string) (*Config, error) {
 	// legal, because removing the last backend produces it; absent is a malformed file,
 	// and booting with every backend silently gone is worse than refusing.
 	var doc struct {
-		Backends *map[string]Backend `json:"backends"`
+		Backends   *map[string]Backend `json:"backends"`
+		Embeddings Embeddings          `json:"embeddings"`
 	}
 	if err := json.Unmarshal(raw, &doc); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
@@ -122,7 +147,7 @@ func Load(path string) (*Config, error) {
 	if doc.Backends == nil {
 		return nil, fmt.Errorf("config declares no backends object")
 	}
-	c := Config{Backends: *doc.Backends}
+	c := Config{Backends: *doc.Backends, Embeddings: doc.Embeddings}
 	if c.Backends == nil {
 		c.Backends = map[string]Backend{}
 	}

@@ -21,6 +21,7 @@ import (
 	"github.com/ahodges/mcpd/internal/backend"
 	"github.com/ahodges/mcpd/internal/catalog"
 	"github.com/ahodges/mcpd/internal/config"
+	"github.com/ahodges/mcpd/internal/embedding"
 	"github.com/ahodges/mcpd/internal/manage"
 	"github.com/ahodges/mcpd/internal/mcpsrv"
 	"github.com/ahodges/mcpd/internal/oauthstore"
@@ -35,6 +36,10 @@ import (
 // deliberate choice: a systemd restart that hangs is worse than a child that outlives one
 // exit, and the child is reaped by the unit's KillMode anyway.
 const shutdownBudget = 20 * time.Second
+
+// embedBudget bounds one catalog vectorization. It is generous because a cold cache embeds
+// every tool in the catalog, and it runs detached from the refresh that triggered it.
+const embedBudget = 2 * time.Minute
 
 func main() {
 	if err := run(); err != nil {
@@ -88,6 +93,7 @@ type daemon struct {
 	store     *oauthstore.Store
 	mgr       *manage.Manager
 	pass      *mcpsrv.Passthrough
+	vecs      *mcpsrv.VectorStore
 	handler   http.Handler
 }
 
@@ -147,6 +153,19 @@ func (d *daemon) wire(cfg *config.Config, addr string) error {
 		}
 	}
 
+	// Embeddings, when a gateway is configured. Without this every query reaches rank.Fuse
+	// with nil vectors, so fusion degrades to lexical only and abstention is inert: Tasks 6
+	// and 7 are dead code in production until it is wired.
+	if cfg.Embeddings.Enabled() {
+		cache := embedding.NewCache(filepath.Join(d.state, "embeddings.json"))
+		if err := cache.Load(); err != nil {
+			// A cold cache is a slower first refresh, not a failure.
+			slog.Warn("load embedding cache", "error", err)
+		}
+		client := embedding.NewClient(cfg.Embeddings.URL, cfg.Embeddings.APIKey(), cfg.Embeddings.Model)
+		d.vecs = mcpsrv.NewVectorStore(client, cache)
+	}
+
 	// Built after Load, because the constructor syncs and would otherwise serve an empty
 	// tool set until the first refresh commits.
 	d.pass = mcpsrv.NewPassthrough(d.cat, d.reg)
@@ -155,14 +174,34 @@ func (d *daemon) wire(cfg *config.Config, addr string) error {
 	// through Entries, which is what makes it safe on the Drop path: that one runs inside
 	// a lifecycle teardown with the backend's dispatch gate held closed, so a hook that
 	// waited on a tool call would deadlock the daemon permanently.
-	d.cat.OnCommit(d.pass.Sync)
+	d.cat.OnCommit(func() {
+		d.pass.Sync()
+		if d.vecs == nil {
+			return
+		}
+		// Bounded and detached: this hook also fires from Drop inside a lifecycle
+		// teardown, which holds that backend's dispatch gate closed until the hook
+		// returns, so a gateway call made inline would delay every disable by its own
+		// timeout.
+		entries := d.cat.Entries()
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), embedBudget)
+			defer cancel()
+			d.vecs.Refresh(ctx, entries)
+		}()
+	})
 
 	guard := web.NewGuard()
 	surface := web.New(d.reg, d.cat, guard, d.store).WithManager(d.mgr)
 	mux := http.NewServeMux()
 	// Both MCP handlers are wrapped in the same guard value the web surface uses, so the
 	// cross-origin policy cannot diverge between the two surfaces.
-	mux.Handle("/mcp/search", guard.Protect(streamable(mcpsrv.NewSearch(d.cat, d.reg, rank.Thresholds{}))))
+	var vectors mcpsrv.Vectors
+	if d.vecs != nil {
+		vectors = d.vecs
+		surface = surface.WithUnvectorized(d.vecs.Unvectorized)
+	}
+	mux.Handle("/mcp/search", guard.Protect(streamable(mcpsrv.NewSearch(d.cat, d.reg, rank.Thresholds{}, vectors))))
 	mux.Handle("/mcp/passthrough", guard.Protect(streamable(d.pass.Server())))
 	mux.Handle("/", surface.Handler())
 	d.handler = mux
