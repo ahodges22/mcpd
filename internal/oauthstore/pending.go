@@ -20,11 +20,87 @@ const pendingWindow = 5 * time.Minute
 // which is what a forged, stale or replayed one looks like.
 var ErrNoPending = errors.New("no outstanding authorization for this state")
 
+// ErrIssuerMismatch reports a callback claiming to come from an authorization server other
+// than the one the user was sent to, which is the mix-up RFC 9207's iss parameter exists to
+// detect. The code is refused rather than delivered.
+var ErrIssuerMismatch = errors.New("the authorization response names a different authorization server")
+
 // pending is one authorization waiting on the browser.
 type pending struct {
 	server string
 	url    string
-	result chan *auth.AuthorizationResult
+	// origin is the scheme and host the user was sent to, which is what a returned iss is
+	// checked against.
+	origin string
+	// issAdvertised is whether the authorization server's own metadata said it would return
+	// an iss parameter, and issKnown whether that metadata could be read at all. Both are
+	// resolved when the authorization is published, because the callback that needs them
+	// arrives on a route with no idea which provider it belongs to.
+	issAdvertised bool
+	issKnown      bool
+	result        chan outcome
+}
+
+// outcome is what the callback route hands the waiting handshake: a code, or the reason the
+// callback was refused. Carrying the refusal matters because the state has already been
+// consumed by then, so a fetch left waiting would sit there until its budget expired and
+// report a timeout instead of the reason.
+type outcome struct {
+	result *auth.AuthorizationResult
+	err    error
+}
+
+// forwardedIss decides what iss to hand the SDK, and refuses a callback that names the wrong
+// authorization server.
+//
+// The SDK requires iss to be present exactly when the authorization server advertised
+// support for it, which is what RFC 9207 says. One real provider sends iss without
+// advertising it, and the SDK then rejects a consent the user has already given: the code
+// arrives, the authorization is refused before any exchange, and the flow silently starts
+// over. Presenting no iss to the SDK in that case is sound because the check it would have
+// performed is done here first, against the origin the user was actually sent to, which is
+// the property RFC 9207 provides. A mismatch is refused outright, which is stricter than the
+// SDK is for a non-advertising server: it never sees the code at all.
+func (p *pending) forwardedIss(iss string) (string, error) {
+	if iss == "" {
+		return "", nil
+	}
+	if !sameOrigin(iss, p.origin) {
+		return "", fmt.Errorf("%w: %s claims %q but the user was sent to %s",
+			ErrIssuerMismatch, p.server, iss, p.origin)
+	}
+	if p.issKnown && !p.issAdvertised {
+		slog.Info("the provider returned an iss it never advertised; verified here and not forwarded",
+			"server", p.server, "iss", iss)
+		return "", nil
+	}
+	return iss, nil
+}
+
+// sameOrigin compares scheme and host, which is what identifies an authorization server. A
+// path difference is not a different server: the issuer is an origin and the authorization
+// endpoint lives under it.
+func sameOrigin(rawIssuer, origin string) bool {
+	parsed, err := url.Parse(rawIssuer)
+	if err != nil {
+		return false
+	}
+	return originOf(parsed) == origin
+}
+
+func originOf(u *url.URL) string { return u.Scheme + "://" + u.Host }
+
+// issSupport reads whether the authorization server behind an authorization URL says it
+// returns an iss parameter. Unreadable metadata leaves it unknown, and an unknown answer
+// forwards whatever the provider sent, which is the behaviour that predates this check.
+func (s *Store) issSupport(ctx context.Context, authURL *url.URL) (known, advertised bool) {
+	issuer := originOf(authURL)
+	asm, err := auth.GetAuthServerMetadata(ctx, issuer, s.client)
+	if err != nil || asm == nil {
+		slog.Debug("could not read authorization server metadata", "issuer", issuer, "error", err)
+		return false, false
+	}
+	return true, asm.AuthorizationResponseIssParameterSupported
 }
 
 // fetchCode publishes the authorization URL, then blocks until the browser comes
@@ -44,7 +120,14 @@ func (s *Store) fetchCode(server string) auth.AuthorizationCodeFetcher {
 		if state == "" {
 			return nil, fmt.Errorf("authorization URL for %s carries no state", server)
 		}
-		p := &pending{server: server, url: args.URL, result: make(chan *auth.AuthorizationResult, 1)}
+		p := &pending{
+			server: server, url: args.URL, origin: originOf(parsed),
+			result: make(chan outcome, 1),
+		}
+		// Resolved before the authorization is published, because the callback route that
+		// needs the answer knows only a state nonce and cannot work out which provider it
+		// belongs to. It is one request to the host the user is about to be sent to anyway.
+		p.issKnown, p.issAdvertised = s.issSupport(ctx, parsed)
 		// Recorded before the authorization is published, not after: publishing is what
 		// releases anyone waiting for the URL, so a health record written afterwards can
 		// be read stale by the very page the URL was published for.
@@ -61,9 +144,13 @@ func (s *Store) fetchCode(server string) auth.AuthorizationCodeFetcher {
 		timer := time.NewTimer(pendingWindow)
 		defer timer.Stop()
 		select {
-		case res := <-p.result:
+		case out := <-p.result:
+			if out.err != nil {
+				s.withdraw(state)
+				return nil, out.err
+			}
 			slog.Info("authorization code received", "server", server)
-			return res, nil
+			return out.result, nil
 		case <-ctx.Done():
 			s.withdraw(state)
 			// Logged as a warning because it is nearly always something the user can act
@@ -98,8 +185,17 @@ func (s *Store) Deliver(state, code, iss string) error {
 		slog.Warn("callback matched no outstanding authorization; the request it belongs to is gone")
 		return ErrNoPending
 	}
+	forwarded, err := p.forwardedIss(iss)
+	if err != nil {
+		slog.Warn("callback refused", "server", p.server, "error", err)
+		// Handed to the waiting handshake as well as returned here, so it fails with this
+		// reason now rather than with a timeout once its budget runs out. The state is
+		// already consumed either way, so there is nothing left to retry against.
+		p.result <- outcome{err: err}
+		return err
+	}
 	slog.Info("callback matched an outstanding authorization", "server", p.server)
-	p.result <- &auth.AuthorizationResult{Code: code, State: state, Iss: iss}
+	p.result <- outcome{result: &auth.AuthorizationResult{Code: code, State: state, Iss: forwarded}}
 	return nil
 }
 

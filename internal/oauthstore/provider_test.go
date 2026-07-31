@@ -40,6 +40,13 @@ type provider struct {
 	// of them, but swallows invalid_grant and sends the request unauthenticated.
 	refusal      atomic.Pointer[string]
 	refreshDelay atomic.Int64
+	// returnIss and advertiseIss reproduce what a real provider does with RFC 9207. One
+	// production server returns iss without advertising it, which is the combination the SDK
+	// refuses, so both halves have to be settable independently.
+	returnIss    atomic.Bool
+	advertiseIss atomic.Bool
+	// issOverride replaces the iss value, so a mix-up can be staged.
+	issOverride atomic.Pointer[string]
 
 	registrations  atomic.Int64
 	authorizations atomic.Int64
@@ -184,15 +191,30 @@ func (p *provider) serveResourceMeta(w http.ResponseWriter, _ *http.Request) {
 
 func (p *provider) serveAuthServerMeta(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
-		"issuer":                                p.ts.URL,
-		"authorization_endpoint":                p.ts.URL + "/authorize",
-		"token_endpoint":                        p.ts.URL + "/token",
-		"registration_endpoint":                 p.ts.URL + "/register",
-		"response_types_supported":              []string{"code"},
-		"grant_types_supported":                 []string{"authorization_code", "refresh_token"},
-		"code_challenge_methods_supported":      []string{"S256"},
-		"token_endpoint_auth_methods_supported": []string{"none"},
+		"issuer":                                         p.ts.URL,
+		"authorization_endpoint":                         p.ts.URL + "/authorize",
+		"token_endpoint":                                 p.ts.URL + "/token",
+		"registration_endpoint":                          p.ts.URL + "/register",
+		"response_types_supported":                       []string{"code"},
+		"grant_types_supported":                          []string{"authorization_code", "refresh_token"},
+		"code_challenge_methods_supported":               []string{"S256"},
+		"token_endpoint_auth_methods_supported":          []string{"none"},
+		"authorization_response_iss_parameter_supported": p.advertiseIss.Load(),
 	})
+}
+
+// returnsIss makes the authorization response carry an iss parameter. advertised controls
+// whether the metadata says so, and the two differ on at least one real provider.
+func (p *provider) returnsIss(advertised bool) {
+	p.returnIss.Store(true)
+	p.advertiseIss.Store(advertised)
+}
+
+// claimsIssuer stages a mix-up: the authorization response names an authorization server
+// other than the one the user was sent to.
+func (p *provider) claimsIssuer(iss string) {
+	p.returnIss.Store(true)
+	p.issOverride.Store(&iss)
 }
 
 func (p *provider) serveRegister(w http.ResponseWriter, r *http.Request) {
@@ -264,6 +286,13 @@ func (p *provider) serveAuthorize(w http.ResponseWriter, r *http.Request) {
 	v := back.Query()
 	v.Set("code", code)
 	v.Set("state", q.Get("state"))
+	if p.returnIss.Load() {
+		iss := p.ts.URL
+		if override := p.issOverride.Load(); override != nil {
+			iss = *override
+		}
+		v.Set("iss", iss)
+	}
 	back.RawQuery = v.Encode()
 	http.Redirect(w, r, back.String(), http.StatusFound)
 }

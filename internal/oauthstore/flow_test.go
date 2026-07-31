@@ -241,6 +241,21 @@ func (d *daemon) authorize(inspect func(authURL string)) {
 	}
 }
 
+// authorizeExpectingFailure drives the flow as far as the callback and tolerates the read
+// failing, which is what a refused authorization looks like from the client's side.
+func (d *daemon) authorizeExpectingFailure(consent func(authURL string)) {
+	d.t.Helper()
+	done := make(chan error, 1)
+	go func() {
+		_, err := d.list()
+		done <- err
+	}()
+	consent(d.awaitPending())
+	if err := <-done; err == nil {
+		d.t.Fatal("the read succeeded, so the authorization was not refused")
+	}
+}
+
 // consentInBrowser visits the provider's authorization endpoint and then follows
 // its redirect to the daemon, as the user's browser would.
 func (d *daemon) consentInBrowser(authURL string) response {
@@ -1145,5 +1160,67 @@ func TestAChangedAuthModeInvalidatesTheGrant(t *testing.T) {
 	}
 	if !d.noTokenFile() {
 		t.Error("a grant survived its declaration's auth mode changing, with the URL unchanged")
+	}
+}
+
+// A provider that returns an iss parameter it never advertised must still be able to
+// authorize.
+//
+// This is what kept a real backend from ever authenticating. RFC 9207 makes iss conditional
+// on the authorization server advertising support for it, and the SDK enforces that both
+// ways, so an unadvertised iss makes it reject a consent the user has already given: the code
+// arrives, the authorization fails before any exchange, and the flow silently starts over with
+// nothing to show for it but "abandoned: context canceled" from the next attempt. The iss is
+// checked here against the origin the user was sent to, and then not forwarded.
+func TestAProviderReturningAnIssItNeverAdvertisedCanStillAuthorize(t *testing.T) {
+	d := newDaemon(t, tool("search"))
+	d.prov.returnsIss(false)
+
+	d.authorize(nil)
+
+	if got := d.health().State; got != backend.StateUp {
+		t.Fatalf("state = %q, want %q: %s", got, backend.StateUp, d.health().LastErr)
+	}
+	if rec := d.stored(); rec.AccessToken == "" {
+		t.Error("no token was stored, so the exchange never happened")
+	}
+	if n := d.prov.exchanges.Load(); n != 1 {
+		t.Errorf("code exchanges = %d, want 1", n)
+	}
+}
+
+// And a provider that advertises iss support still has its iss forwarded, so the check the
+// SDK performs for a compliant server is not quietly disabled for everyone.
+func TestAnAdvertisedIssIsStillForwardedToTheSDK(t *testing.T) {
+	d := newDaemon(t, tool("search"))
+	d.prov.returnsIss(true)
+
+	d.authorize(nil)
+
+	if got := d.health().State; got != backend.StateUp {
+		t.Fatalf("state = %q, want %q: %s", got, backend.StateUp, d.health().LastErr)
+	}
+}
+
+// A callback naming a different authorization server is refused, and the code is never
+// delivered. This is the mix-up RFC 9207 exists to detect, and refusing at the callback is
+// stricter than the SDK is for a server that advertises nothing.
+func TestACallbackNamingADifferentIssuerIsRefused(t *testing.T) {
+	d := newDaemon(t, tool("search"))
+	d.prov.claimsIssuer("https://attacker.example")
+
+	var callback response
+	d.authorizeExpectingFailure(func(authURL string) {
+		callback = d.consentInBrowser(authURL)
+	})
+
+	if callback.status == http.StatusOK {
+		t.Errorf("the callback was accepted (%d %q), want a refusal", callback.status, callback.body)
+	}
+	if n := d.prov.exchanges.Load(); n != 0 {
+		t.Errorf("code exchanges = %d, want 0: the code was delivered despite the mismatch", n)
+	}
+	if got := d.health().State; got == backend.StateUp {
+		t.Error("the backend came up on an authorization response from another issuer")
 	}
 }
