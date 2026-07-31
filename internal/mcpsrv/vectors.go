@@ -52,6 +52,14 @@ func (v *VectorStore) Refresh(ctx context.Context, entries []catalog.Entry) {
 	v.mu.Lock()
 	v.vecs, v.unvectorized = vecs, missing
 	v.mu.Unlock()
+	// Pruned only when everything was vectorized. A refresh that reached a gateway only
+	// partly holds vectors for tools it could not confirm, and pruning against that would
+	// throw away good work the next refresh then has to pay for again.
+	if missing == 0 {
+		if dropped := v.cache.Prune(entries); dropped > 0 {
+			slog.Info("pruned embeddings for tools no longer in the catalog", "count", dropped)
+		}
+	}
 	if err := v.cache.Save(); err != nil {
 		slog.Warn("save embedding cache", "error", err)
 	}

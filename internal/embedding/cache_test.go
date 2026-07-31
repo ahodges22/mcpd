@@ -6,12 +6,17 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"sync"
 	"testing"
 
 	"github.com/ahodges/mcpd/internal/catalog"
 )
+
+// testModel is the model every cache in this file records, so a reload in one test is not
+// discarded for having been written by a different model.
+const testModel = "text-embedding-3-small"
 
 func entry(tool, description string) catalog.Entry {
 	return catalog.Entry{
@@ -31,7 +36,7 @@ func TestCacheKeyChangesWhenNameDescriptionOrSchemaChanges(t *testing.T) {
 	reschema := base
 	reschema.Schema = json.RawMessage(`{"type":"object"}`)
 
-	c := NewCache(filepath.Join(t.TempDir(), "cache.json"))
+	c := NewCache(filepath.Join(t.TempDir(), "cache.json"), testModel)
 	baseKey := c.Key(base)
 	for _, tc := range []struct {
 		name string
@@ -51,7 +56,7 @@ func TestCacheKeyChangesWhenNameDescriptionOrSchemaChanges(t *testing.T) {
 }
 
 func TestCacheGetPutRoundTrips(t *testing.T) {
-	c := NewCache(filepath.Join(t.TempDir(), "cache.json"))
+	c := NewCache(filepath.Join(t.TempDir(), "cache.json"), testModel)
 	e := entry("weather", "get the weather")
 	key := c.Key(e)
 
@@ -67,7 +72,7 @@ func TestCacheGetPutRoundTrips(t *testing.T) {
 
 func TestCacheSaveThenLoadRoundTripsToDisk(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "cache.json")
-	c := NewCache(path)
+	c := NewCache(path, testModel)
 	e := entry("weather", "get the weather")
 	key := c.Key(e)
 	c.Put(key, []float32{0.5, -0.25})
@@ -75,7 +80,7 @@ func TestCacheSaveThenLoadRoundTripsToDisk(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 
-	reloaded := NewCache(path)
+	reloaded := NewCache(path, testModel)
 	if err := reloaded.Load(); err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -98,7 +103,7 @@ func TestOneCacheServesTheCatalogsPerBackendFanOut(t *testing.T) {
 
 	client := NewClient(srv.URL, "sk-test", "")
 	path := filepath.Join(t.TempDir(), "cache.json")
-	cache := NewCache(path)
+	cache := NewCache(path, testModel)
 
 	const backends = 8
 	var wg sync.WaitGroup
@@ -120,7 +125,7 @@ func TestOneCacheServesTheCatalogsPerBackendFanOut(t *testing.T) {
 	if err := cache.Save(); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
-	reloaded := NewCache(path)
+	reloaded := NewCache(path, testModel)
 	if err := reloaded.Load(); err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -133,7 +138,7 @@ func TestOneCacheServesTheCatalogsPerBackendFanOut(t *testing.T) {
 }
 
 func TestCacheLoadOfAnAbsentFileIsNotAnError(t *testing.T) {
-	c := NewCache(filepath.Join(t.TempDir(), "does-not-exist.json"))
+	c := NewCache(filepath.Join(t.TempDir(), "does-not-exist.json"), testModel)
 	if err := c.Load(); err != nil {
 		t.Fatalf("Load of an absent cache: %v", err)
 	}
@@ -150,7 +155,7 @@ func TestVectorizeCachesByContentHashSoAnUnchangedToolIsNeverReembedded(t *testi
 	defer srv.Close()
 
 	client := NewClient(srv.URL, "sk-test", "")
-	cache := NewCache(filepath.Join(t.TempDir(), "cache.json"))
+	cache := NewCache(filepath.Join(t.TempDir(), "cache.json"), testModel)
 	entries := []catalog.Entry{entry("weather", "get the weather")}
 
 	vecs, unvectorized := Vectorize(context.Background(), client, cache, entries)
@@ -190,7 +195,7 @@ func TestVectorizeKeepsPartialProgressAndReportsAnAccurateCountAcrossBatches(t *
 
 	client := NewClient(srv.URL, "sk-test", "")
 	client.batchSize = 2
-	cache := NewCache(filepath.Join(t.TempDir(), "cache.json"))
+	cache := NewCache(filepath.Join(t.TempDir(), "cache.json"), testModel)
 	entries := []catalog.Entry{
 		entry("t0", "d0"), entry("t1", "d1"), entry("t2", "d2"), entry("t3", "d3"), entry("t4", "d4"),
 	}
@@ -209,7 +214,7 @@ func TestVectorizeKeepsPartialProgressAndReportsAnAccurateCountAcrossBatches(t *
 
 func TestVectorizeReportsUnvectorizedWhenTheGatewayIsUnreachable(t *testing.T) {
 	client := NewClient("http://127.0.0.1:1", "sk-test", "")
-	cache := NewCache(filepath.Join(t.TempDir(), "cache.json"))
+	cache := NewCache(filepath.Join(t.TempDir(), "cache.json"), testModel)
 	entries := []catalog.Entry{
 		entry("weather", "get the weather"),
 		entry("logs", "get pod logs"),
@@ -228,7 +233,7 @@ func TestVectorizeServesAlreadyCachedToolsWithAnUnreachableGateway(t *testing.T)
 	// A warm cache works offline: an already-embedded tool ranks with full
 	// fidelity even when the gateway that produced its vector is now down;
 	// only a genuinely new tool is counted unvectorized.
-	cache := NewCache(filepath.Join(t.TempDir(), "cache.json"))
+	cache := NewCache(filepath.Join(t.TempDir(), "cache.json"), testModel)
 	warm := entry("weather", "get the weather")
 	cache.Put(cache.Key(warm), []float32{1, 2, 3})
 
@@ -241,5 +246,81 @@ func TestVectorizeServesAlreadyCachedToolsWithAnUnreachableGateway(t *testing.T)
 	}
 	if unvectorized != 1 {
 		t.Errorf("unvectorized = %d, want 1 (only the new tool)", unvectorized)
+	}
+}
+
+// A cache written by one model must never be read back for another. A calibrated cosine
+// threshold is only valid for the vectors it was calibrated against, and a model swap at an
+// unchanged dimension changes nothing the content hash can see, so nothing else would notice.
+func TestACacheFromADifferentModelIsDiscarded(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "cache.json")
+	entry := catalog.Entry{ID: "mcp__a__b", Tool: "b", Description: "does b"}
+
+	first := NewCache(path, "text-embedding-3-small")
+	first.Put(first.Key(entry), []float32{1, 0, 0})
+	if err := first.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	swapped := NewCache(path, "text-embedding-3-large")
+	if err := swapped.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if _, ok := swapped.Get(swapped.Key(entry)); ok {
+		t.Error("a vector from the previous model survived a model swap")
+	}
+	// And the same model still reuses its own work, or the check would have cost the cache
+	// its entire purpose.
+	same := NewCache(path, "text-embedding-3-small")
+	if err := same.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if _, ok := same.Get(same.Key(entry)); !ok {
+		t.Error("the cache was discarded for the model that wrote it")
+	}
+}
+
+// A vector of the wrong width is dropped rather than kept to fail every comparison it takes
+// part in, and the dimension is recorded so a reader can tell which width is current.
+func TestALoadDropsVectorsOfTheWrongWidth(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "cache.json")
+	body := `{"model":"m","dimension":3,"vectors":{"good":[1,0,0],"stale":[1,0]}}`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	c := NewCache(path, "m")
+	if err := c.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if _, ok := c.Get("stale"); ok {
+		t.Error("a vector of the wrong width was loaded")
+	}
+	if _, ok := c.Get("good"); !ok {
+		t.Error("a vector of the right width was dropped")
+	}
+	if got := c.Dimension(); got != 3 {
+		t.Errorf("Dimension() = %d, want 3", got)
+	}
+}
+
+// Pruning is what stops the file growing by one dead vector for every tool description an
+// upstream ever edits, because the key is a content hash and an edited tool never reads its
+// old entry again.
+func TestPruneDropsVectorsForContentNoLongerInTheCatalog(t *testing.T) {
+	c := NewCache(filepath.Join(t.TempDir(), "cache.json"), testModel)
+	live := catalog.Entry{ID: "mcp__a__b", Tool: "b", Description: "current wording"}
+	gone := catalog.Entry{ID: "mcp__a__b", Tool: "b", Description: "wording from before"}
+	c.Put(c.Key(live), []float32{1, 0})
+	c.Put(c.Key(gone), []float32{0, 1})
+
+	if dropped := c.Prune([]catalog.Entry{live}); dropped != 1 {
+		t.Errorf("Prune dropped %d, want 1", dropped)
+	}
+	if _, ok := c.Get(c.Key(live)); !ok {
+		t.Error("Prune dropped a vector still in the catalog")
+	}
+	if _, ok := c.Get(c.Key(gone)); ok {
+		t.Error("Prune kept a vector for content that is gone")
 	}
 }

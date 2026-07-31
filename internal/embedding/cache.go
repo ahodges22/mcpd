@@ -24,6 +24,12 @@ import (
 // there are backends.
 type Cache struct {
 	path string
+	// model is the gateway model these vectors came from. It is recorded on disk and
+	// checked on load, because a calibrated cosine threshold is only valid for the model
+	// that produced the vectors it was calibrated against. A swap to a different model at
+	// the same dimension changes nothing the content hash can see, so without this the
+	// daemon would keep serving a threshold that no longer means anything.
+	model string
 
 	saveMu sync.Mutex // serializes marshal-through-rename, so no save lands out of order
 
@@ -31,8 +37,48 @@ type Cache struct {
 	vectors map[string][]float32
 }
 
-func NewCache(path string) *Cache {
-	return &Cache{path: path, vectors: make(map[string][]float32)}
+func NewCache(path, model string) *Cache {
+	return &Cache{path: path, model: model, vectors: make(map[string][]float32)}
+}
+
+// document is the on-disk shape. The vectors used to be the whole file, with no record of
+// what produced them; the header is what lets a load tell a reusable cache from one that
+// belongs to a different model.
+type document struct {
+	Model     string               `json:"model"`
+	Dimension int                  `json:"dimension"`
+	Vectors   map[string][]float32 `json:"vectors"`
+}
+
+// Dimension reports the width of the vectors held, or zero when the cache is empty. Every
+// vector in a cache has the same width, because a load discards any that do not match.
+func (c *Cache) Dimension() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, v := range c.vectors {
+		return len(v)
+	}
+	return 0
+}
+
+// Prune drops vectors for content no longer in the catalog. The key is a content hash, so a
+// reworded tool misses its old entry and never reads it again; without this the file grows
+// by one dead vector per edit for the life of the machine.
+func (c *Cache) Prune(entries []catalog.Entry) int {
+	live := make(map[string]struct{}, len(entries))
+	for _, e := range entries {
+		live[c.Key(e)] = struct{}{}
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	dropped := 0
+	for key := range c.vectors {
+		if _, ok := live[key]; !ok {
+			delete(c.vectors, key)
+			dropped++
+		}
+	}
+	return dropped
 }
 
 func (c *Cache) Key(e catalog.Entry) string {
@@ -60,6 +106,13 @@ func (c *Cache) Put(key string, vec []float32) {
 
 // Load reads the persisted cache; an absent file is a cold start, not an
 // error.
+//
+// A cache written by a different model is discarded rather than merged. Discarding is
+// deliberately whole-file: the alternative, folding the model into each key, would leave the
+// superseded model's vectors on disk forever, and the point of the check is that a threshold
+// calibrated against one model must never be applied to another's vectors. A vector whose
+// width does not match the rest is dropped for the same reason. Both are a slower first
+// refresh, which is the cheapest possible price for the guarantee.
 func (c *Cache) Load() error {
 	raw, err := os.ReadFile(c.path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -68,9 +121,31 @@ func (c *Cache) Load() error {
 	if err != nil {
 		return fmt.Errorf("read embedding cache: %w", err)
 	}
-	vectors := make(map[string][]float32)
-	if err := json.Unmarshal(raw, &vectors); err != nil {
+	var doc document
+	if err := json.Unmarshal(raw, &doc); err != nil {
 		return fmt.Errorf("parse embedding cache: %w", err)
+	}
+	if doc.Vectors == nil {
+		// A file from before the header existed, so what produced it is unknowable.
+		slog.Info("embedding cache predates the model header; starting cold", "path", c.path)
+		return nil
+	}
+	if doc.Model != c.model {
+		slog.Warn("embedding cache was written by a different model; discarding it",
+			"cached", doc.Model, "configured", c.model)
+		return nil
+	}
+	vectors := make(map[string][]float32, len(doc.Vectors))
+	dropped := 0
+	for key, vec := range doc.Vectors {
+		if doc.Dimension > 0 && len(vec) != doc.Dimension {
+			dropped++
+			continue
+		}
+		vectors[key] = vec
+	}
+	if dropped > 0 {
+		slog.Warn("dropped cached vectors of the wrong width", "count", dropped, "dimension", doc.Dimension)
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -86,7 +161,12 @@ func (c *Cache) Save() error {
 	defer c.saveMu.Unlock()
 
 	c.mu.Lock()
-	raw, err := json.Marshal(c.vectors)
+	doc := document{Model: c.model, Vectors: c.vectors}
+	for _, v := range c.vectors {
+		doc.Dimension = len(v)
+		break
+	}
+	raw, err := json.Marshal(doc)
 	c.mu.Unlock()
 	if err != nil {
 		return fmt.Errorf("marshal embedding cache: %w", err)

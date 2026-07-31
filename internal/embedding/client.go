@@ -32,6 +32,12 @@ type Client struct {
 
 // NewClient builds a gateway client. An empty model falls back to the package default, so
 // a caller that has no opinion does not have to hold one.
+// Model reports the model this client actually sends, which is not always the model it was
+// given: an empty configuration resolves to the default. The cache header has to record the
+// resolved value, because recording the configured one would claim the vectors came from a
+// model named "" and a later config change to that same default would discard them.
+func (c *Client) Model() string { return c.model }
+
 func NewClient(baseURL, apiKey, model string) *Client {
 	if model == "" {
 		model = defaultModel

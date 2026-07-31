@@ -162,12 +162,15 @@ func (d *daemon) wire(cfg *config.Config, addr string) error {
 	// with nil vectors, so fusion degrades to lexical only and abstention is inert: Tasks 6
 	// and 7 are dead code in production until it is wired.
 	if cfg.Embeddings.Enabled() {
-		cache := embedding.NewCache(filepath.Join(d.state, "embeddings.json"))
+		// The client first, so the cache records the model actually sent rather than the one
+		// configured: an empty configuration resolves to a default, and a header saying "" would
+		// be a claim about a model that does not exist.
+		client := embedding.NewClient(cfg.Embeddings.URL, cfg.Embeddings.APIKey(), cfg.Embeddings.Model)
+		cache := embedding.NewCache(filepath.Join(d.state, "embeddings.json"), client.Model())
 		if err := cache.Load(); err != nil {
 			// A cold cache is a slower first refresh, not a failure.
 			slog.Warn("load embedding cache", "error", err)
 		}
-		client := embedding.NewClient(cfg.Embeddings.URL, cfg.Embeddings.APIKey(), cfg.Embeddings.Model)
 		d.vecs = mcpsrv.NewVectorStore(client, cache)
 	}
 

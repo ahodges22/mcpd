@@ -172,3 +172,39 @@ func TestFuseRespectsLimit(t *testing.T) {
 		t.Errorf("Fuse returned %d results, want at most 1", len(got))
 	}
 }
+
+// The best semantic match in the catalog must be able to reach the results even when it
+// shares no vocabulary with the query. Scoring an entry a ranker did not place as nothing
+// rather than as a poor rank made presence in both lists worth more than being first in
+// either, so any tool with one incidental term match outranked the top semantic hit: over the
+// eval set, "combine these branches once review passes" ranked merge_pull_request first by
+// cosine and did not return it at all.
+func TestTheTopSemanticMatchOutranksAToolWithOnlyAnIncidentalTermMatch(t *testing.T) {
+	entries := []catalog.Entry{
+		// Shares no query term, and is what the query means.
+		{ID: "mcp__github__merge_pull_request", Server: "github", Tool: "merge_pull_request",
+			Description: "Merge a pull request in a repository"},
+		// Shares a term, and is not what the query means.
+		{ID: "mcp__other__combine_csv_columns", Server: "other", Tool: "combine_csv_columns",
+			Description: "Combine two columns of a spreadsheet"},
+	}
+	// The query's vector points at the first entry and away from the second.
+	vecs := map[string][]float32{
+		"mcp__github__merge_pull_request": {1, 0},
+		"mcp__other__combine_csv_columns": {0, 1},
+	}
+	qvec := []float32{0.98, 0.2}
+
+	results, _ := Fuse("combine these branches once review passes", entries, vecs, qvec, 2)
+
+	if len(results) == 0 {
+		t.Fatal("no results")
+	}
+	if results[0].ID != "mcp__github__merge_pull_request" {
+		got := make([]string, 0, len(results))
+		for _, r := range results {
+			got = append(got, r.ID)
+		}
+		t.Errorf("ranked %v; the best semantic match lost to an incidental term match", got)
+	}
+}
