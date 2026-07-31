@@ -298,8 +298,19 @@
       needs-auth. **Done: the stored expiry was rewritten to a past instant, leaving the
       refresh token intact. On restart the backend refreshed silently, moving its expiry from
       16:04 to 16:31, stayed up with 20 tools, and a real call succeeded on the new token**
-- [ ] 14.6 Append the outcome to `PHASE0.md` and commit. **Waiting on metabase, which is the
-      one remaining browser step**
+- [x] 14.6 Append the outcome to `PHASE0.md` and commit. **Done. Both backends authorize and
+      serve: 14 of 14 up, 611 tools. `metabase` was listed under out-of-scope in the proposal
+      because it had never authenticated anywhere; it is in scope now, because the two upstream
+      defects that kept it out were found and fixed**
+- [x] 14.7e A provider returning an `iss` it never advertised. RFC 9207 makes `iss` conditional
+      on `authorization_response_iss_parameter_supported`, and the SDK enforces that both ways,
+      so metabase's unadvertised `iss` made it discard a consent the user had already given,
+      before any token exchange, and the flow silently restarted. mcpd now reads the same flag
+      when it publishes an authorization: an unadvertised `iss` is checked here against the
+      origin the user was sent to and then not forwarded, a mismatched one is refused at the
+      callback with the code never delivered, and an advertised one is forwarded untouched.
+      This was the actual cause; 14.7a and 14.7b were real bugs but not this one, and 14.7d is
+      what finally made the difference
 
 ### 14.7 Two defects this section found in the interactive flow, both fixed
 
