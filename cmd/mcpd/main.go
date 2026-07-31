@@ -49,6 +49,11 @@ func main() {
 }
 
 func run() error {
+	// One subcommand, and it is not the default: mcpd with no arguments serves, which is
+	// what the systemd unit invokes.
+	if len(os.Args) > 1 && os.Args[1] == "install" {
+		return runInstall(os.Args[2:])
+	}
 	var (
 		addr      = flag.String("addr", "127.0.0.1:7420", "loopback address to serve on")
 		cfgPath   = flag.String("config", defaultPath("XDG_CONFIG_HOME", ".config", "config.json"), "declaration file")

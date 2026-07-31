@@ -208,14 +208,17 @@
 
 ## 12. Client wiring
 
-- [ ] 12.1 Write the failing tests, with golden inputs for all four clients: an exact round
+- [x] 12.1 Write the failing tests, with golden inputs for all four clients: an exact round
       trip with no intervening edits; approval blocks migrated and still active; an
       unrelated later edit surviving revert; revert refusing on a hand-modified owned region
-- [ ] 12.2 Implement the four per-client writers and endpoint selection
-- [ ] 12.3 Implement surgical revert against current file content, refusing on conflict
-- [ ] 12.4 Tests green, then dry-run against the real configurations before applying, one
-      client at a time, confirming each still starts
-- [ ] 12.5 Commit
+- [x] 12.2 Implement the four per-client writers and endpoint selection
+- [x] 12.3 Implement surgical revert against current file content, refusing on conflict
+- [x] 12.4 Tests green, then dry-run against the real configurations before applying, one
+      client at a time, confirming each still starts. **Dry run done against all four real
+      files; it caught three defects the golden inputs had not (a stashed server's sub-table
+      left behind, two declarations collapsing to one duplicate TOML key, and a backup
+      overwriting a backup). Applying is left to the user: it rewires their live tooling**
+- [x] 12.5 Commit
 
 ## 13. Ranking eval and calibration
 
