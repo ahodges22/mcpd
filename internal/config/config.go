@@ -19,6 +19,14 @@ var baseEnvKeys = []string{
 
 var envRef = regexp.MustCompile(`\$\{([A-Za-z0-9_]+)\}`)
 
+// nameRef bounds a backend name because the name becomes a URL path segment, a file
+// name under the state directory, and the prefix of every canonical tool id. A name
+// arriving over HTTP is not trusted, and the file path shares this validator so the
+// two cannot drift.
+var nameRef = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
+
+func ValidName(name string) bool { return nameRef.MatchString(name) }
+
 type Backend struct {
 	Name           string            `json:"-"`
 	Command        string            `json:"command,omitempty"`
@@ -102,14 +110,26 @@ func Load(path string) (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read config: %w", err)
 	}
-	var c Config
-	if err := json.Unmarshal(raw, &c); err != nil {
+	// A pointer distinguishes an absent or null "backends" from an empty one. Empty is
+	// legal, because removing the last backend produces it; absent is a malformed file,
+	// and booting with every backend silently gone is worse than refusing.
+	var doc struct {
+		Backends *map[string]Backend `json:"backends"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
-	if len(c.Backends) == 0 {
-		return nil, fmt.Errorf("config declares no backends")
+	if doc.Backends == nil {
+		return nil, fmt.Errorf("config declares no backends object")
+	}
+	c := Config{Backends: *doc.Backends}
+	if c.Backends == nil {
+		c.Backends = map[string]Backend{}
 	}
 	for name, b := range c.Backends {
+		if !ValidName(name) {
+			return nil, fmt.Errorf("backend name %q must match %s", name, nameRef)
+		}
 		if b.IsStdio() == (b.HTTPURL != "") {
 			return nil, fmt.Errorf("backend %q must declare exactly one of command or http_url", name)
 		}

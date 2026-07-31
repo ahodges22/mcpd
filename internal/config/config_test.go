@@ -113,6 +113,73 @@ func TestLoad_ExampleConfigHasNoInternalHostnames(t *testing.T) {
 	}
 }
 
+func writeConfig(t *testing.T, body string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	return path
+}
+
+// Scenario (backend-management spec, "A backend name is validated on every path that can
+// supply one"): a name becomes a URL path segment, a state file name and a tool-id
+// prefix, so Load rejects one that could escape any of them. Until backends could be
+// declared over HTTP a name was trusted because only a hand-edited file supplied it.
+func TestLoad_ValidatesBackendName(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		ok   bool
+	}{
+		{"art", true},
+		{"datadog-mcp", true},
+		{"articulate_knowledge", true},
+		{"a", true},
+		{"x/../../etc/passwd", false},
+		{"..", false},
+		{"a/b", false},
+		{"Art", false},
+		{"-art", false},
+		{"_art", false},
+		{"", false},
+		{strings.Repeat("a", 65), false},
+	} {
+		body := `{"backends": {"` + tc.name + `": {"command": "x"}}}`
+		_, err := Load(writeConfig(t, body))
+		if tc.ok && err != nil {
+			t.Errorf("Load rejected valid name %q: %v", tc.name, err)
+		}
+		if !tc.ok && err == nil {
+			t.Errorf("Load accepted invalid name %q", tc.name)
+		}
+	}
+}
+
+// Scenario (backend-management spec, "Removing the last backend leaves a loadable file"):
+// an empty set is legal now that removal can produce one, but a missing or null object
+// still is not, because those are what a malformed hand edit looks like and booting with
+// every backend silently absent is worse than refusing.
+func TestLoad_BackendsMustBePresentButMayBeEmpty(t *testing.T) {
+	for _, tc := range []struct {
+		body string
+		ok   bool
+	}{
+		{`{"backends": {}}`, true},
+		{`{"backends": {"art": {"command": "x"}}}`, true},
+		{`{}`, false},
+		{`{"backends": null}`, false},
+		{`null`, false},
+	} {
+		_, err := Load(writeConfig(t, tc.body))
+		if tc.ok && err != nil {
+			t.Errorf("Load rejected %s: %v", tc.body, err)
+		}
+		if !tc.ok && err == nil {
+			t.Errorf("Load accepted %s, which declares no backends object", tc.body)
+		}
+	}
+}
+
 // A bare "*" strips to an empty prefix, which strings.HasPrefix matches against every
 // key: that pattern would hand the child the daemon's entire environment. Load must
 // reject it rather than silently honouring a blanket grant.

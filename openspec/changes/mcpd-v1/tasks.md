@@ -275,7 +275,7 @@ acquired, so no path holds it and then reaches for a backend lock. That is what 
 safe, and a reload replacement needs the reverse, because it holds one backend's transition lock
 across its own map mutation to keep a concurrent enable or disable out.
 
-- [ ] 15.1 Add one shared backend-name validator, `^[a-z0-9][a-z0-9_-]{0,63}$`. The name
+- [x] 15.1 Add one shared backend-name validator, `^[a-z0-9][a-z0-9_-]{0,63}$`. The name
       becomes a URL path segment, the `oauth-<name>.json` file name under the state directory,
       and the prefix of every `mcp__<server>__<tool>` id, so it has three injection surfaces and
       until now was trusted because only a hand-edited file could supply it. Call it from
@@ -422,7 +422,7 @@ across its own map mutation to keep a concurrent enable or disable out.
       being deleted. None of the three is conditional on the writer's warnings, and a deletion
       failure is reported without stopping the other two. The refresh is a trigger, not a gate: a
       backend that cannot be reached stays declared and shows as down
-- [ ] 15.9a Replace the empty-set rejection at `internal/config/config.go:110`, which currently
+- [x] 15.9a Replace the empty-set rejection at `internal/config/config.go:110`, which currently
       fails `Load` when a file declares no backends, with a presence check. Removing the last
       backend otherwise commits an empty set that the next start cannot load, so a supported
       operation would leave a daemon that will not boot; no spec scenario depends on the set being
