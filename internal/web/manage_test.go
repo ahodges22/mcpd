@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ahodges/mcpd/internal/config"
 	"github.com/ahodges/mcpd/internal/testfake"
@@ -203,6 +204,60 @@ func TestTheRemoveActionRequiresASecondConfirmingAction(t *testing.T) {
 	}
 	if !strings.Contains(page.body, `id="add-submit"`) {
 		t.Error("the status page offers no add form")
+	}
+}
+
+// The page offers the authorize action for exactly the backends the authorize route will
+// accept. Both sides now read the declaration, so this fails if either is rewritten to
+// infer it from something else, which is the only way the page can come to offer a button
+// that answers "this backend does not authorize with oauth".
+func TestTheAuthorizeActionIsOfferedForExactlyTheBackendsTheRouteAccepts(t *testing.T) {
+	h := newHarness(t, testfake.New("plain", tool("kubectl_logs")))
+	if _, err := h.mgr.Add("secured", config.Backend{
+		HTTPURL: "https://mcp.example.test/mcp",
+		Auth:    "oauth",
+	}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	// The wait, not the work: the endpoint does not resolve, so the reconnect fails
+	// immediately and this only stops the route sitting on a budget it cannot use.
+	AuthorizeWaitTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { AuthorizeWaitTimeout = 30 * time.Second })
+
+	page := h.get(t, "/")
+	if page.status != http.StatusOK {
+		t.Fatalf("GET / = %d", page.status)
+	}
+	const refusal = "does not authorize with oauth"
+	for name, offered := range map[string]bool{"secured": true, "plain": false} {
+		action := `data-post="/api/backends/` + name + `/authorize"`
+		if got := strings.Contains(page.body, action); got != offered {
+			t.Errorf("page offers authorize for %s = %v, want %v", name, got, offered)
+		}
+		res := h.post(t, "/api/backends/"+name+"/authorize")
+		if accepted := !strings.Contains(res.body, refusal); accepted != offered {
+			t.Errorf("route accepts authorize for %s = %v, want %v (%d %s)",
+				name, accepted, offered, res.status, res.body)
+		}
+	}
+}
+
+// The provider's authorization URL never reaches the page. It is several hundred
+// characters of provider-controlled text whose only use is to be followed, and the button
+// follows it, so rendering it only gave the user something to copy by hand.
+func TestTheStatusPageDoesNotRenderTheProviderAuthorizationURL(t *testing.T) {
+	h := newHarness(t, testfake.New("alpha", tool("kubectl_logs")))
+	if b, ok := h.reg.Get("alpha"); ok {
+		b.NoteNeedsAuth("authorize at https://evil.example/authorize?client_id=secret-looking-value")
+	}
+
+	page := h.get(t, "/")
+	if strings.Contains(page.body, "evil.example") {
+		t.Errorf("the page renders the provider's authorization URL: %s", page.body)
+	}
+	// The condition it reports is still there, and so is the action that clears it.
+	if !strings.Contains(page.body, "waiting for you to authorize it") {
+		t.Errorf("the page does not say the backend needs authorizing: %s", page.body)
 	}
 }
 

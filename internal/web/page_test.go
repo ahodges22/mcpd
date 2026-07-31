@@ -161,13 +161,19 @@ func TestADisabledBackendRendersAsDisabledRatherThanFailing(t *testing.T) {
 	if res.status != http.StatusOK {
 		t.Fatalf("status page = %d (%s), want %d", res.status, res.body, http.StatusOK)
 	}
-	if !strings.Contains(res.body, `<td class="state">Disabled</td>`) {
+	if !strings.Contains(res.body, `data-state="disabled"`) {
 		t.Errorf("the page does not render alpha as disabled: %s", res.body)
 	}
-	for _, failing := range []string{`<td class="state">Down</td>`, `<td class="state">Not yet connected</td>`} {
+	// The lamp colour as well as the state, because the two are rendered from separate
+	// fields and a backend shown as off in one and as broken in the other is still wrong.
+	for _, failing := range []string{`data-tone="fault"`, `data-tone="cold"`} {
 		if strings.Contains(res.body, failing) {
-			t.Errorf("the page renders a backend the user turned off as %s", failing)
+			t.Errorf("the page renders a backend the user turned off with %s", failing)
 		}
+	}
+	// And it asks nothing of the user: a backend the user turned off is not an alarm.
+	if !strings.Contains(res.body, "Nothing needs you") {
+		t.Errorf("a backend the user turned off was raised as something needing attention: %s", res.body)
 	}
 }
 
