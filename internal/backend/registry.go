@@ -2,8 +2,10 @@ package backend
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
+	"sync"
 
 	"github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -42,10 +44,22 @@ type Hooks struct {
 	AuthHandler func(server string) (auth.OAuthHandler, error)
 }
 
+// ErrRegistryShutdown reports that the daemon is shutting down, so nothing new may
+// be published. Callers check it before mutating anything, because a refusal after a
+// declaration was committed would leave the file and the registry disagreeing.
+var ErrRegistryShutdown = errors.New("registry shut down")
+
 // Registry owns one Backend per configured backend and routes calls by name.
+//
+// The map and the name list are mutable at run time, so both are guarded by mu. mu is
+// never held while any backend lock is acquired, which is what lets a reload
+// replacement hold one backend's transition lock across its own map mutation.
 type Registry struct {
+	mu        sync.RWMutex
 	backends  map[string]*Backend
 	names     []string
+	shutdown  bool
+	hooks     Hooks
 	overrides *Overrides
 }
 
@@ -55,6 +69,7 @@ func NewRegistry(cfg *config.Config, ov *Overrides, hooks Hooks) *Registry {
 	r := &Registry{
 		backends:  make(map[string]*Backend, len(cfg.Backends)),
 		names:     make([]string, 0, len(cfg.Backends)),
+		hooks:     hooks,
 		overrides: ov,
 	}
 	for name, spec := range cfg.Backends {
@@ -69,16 +84,95 @@ func NewRegistry(cfg *config.Config, ov *Overrides, hooks Hooks) *Registry {
 	return r
 }
 
+// Add publishes a backend at run time. It takes the initial enabled state from its
+// caller and never consults the override store, unlike construction above: the status
+// surface supplies enabled, so a stale disabled entry cannot affect a freshly declared
+// backend, and a reload replacement supplies the state it captured, so a declaration
+// edit cannot silently enable a backend the user stopped. Reading the store here would
+// satisfy the second case and break the first.
+//
+// It cannot fail, which is what keeps the declaration write the only commit point.
+func (r *Registry) Add(name string, spec config.Backend, enabled bool) {
+	b := newBackend(name, spec, r.hooks)
+	if !enabled {
+		b.health.State = StateDisabled
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	// A backend published after shutdown is born latched rather than refused, which
+	// keeps Add infallible while still making it impossible to spawn a child that would
+	// outlive the daemon. Callers check ShuttingDown before their commit point; this is
+	// what covers one that lost the race. No lock is taken on b: it is unpublished, so
+	// nothing else can hold a reference to it yet.
+	if r.shutdown {
+		b.shutdown = true
+	}
+	if _, exists := r.backends[name]; !exists {
+		r.names = append(r.names, name)
+		slices.Sort(r.names)
+	}
+	r.backends[name] = b
+}
+
+// Remove unpublishes a backend and then tears it down. The map entry goes first and mu
+// is released before the teardown, because a teardown blocks on in-flight work and mu
+// must never be held across one.
+//
+// The teardown is terminal, so nothing can respawn a child for a backend that is no
+// longer declared. The latch lives on the object rather than the name, so a later Add
+// of the same name builds a fresh backend and is unaffected.
+func (r *Registry) Remove(name string) {
+	b, ok := r.unpublish(name)
+	if !ok {
+		return
+	}
+	b.transition.Lock()
+	defer b.transition.Unlock()
+	b.teardown(forShutdown)
+}
+
+// RemoveHeld is Remove for a caller already holding b's transition lock, which a reload
+// replacement does so no enable or disable can land mid-swap.
+func (r *Registry) RemoveHeld(b *Backend) {
+	r.unpublish(b.name)
+	b.teardown(forShutdown)
+}
+
+func (r *Registry) unpublish(name string) (*Backend, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	b, ok := r.backends[name]
+	if !ok {
+		return nil, false
+	}
+	delete(r.backends, name)
+	r.names = slices.DeleteFunc(r.names, func(n string) bool { return n == name })
+	return b, true
+}
+
+// ShuttingDown reports whether shutdown has latched.
+func (r *Registry) ShuttingDown() bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.shutdown
+}
+
 func (r *Registry) Get(name string) (*Backend, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	b, ok := r.backends[name]
 	return b, ok
 }
 
-func (r *Registry) Names() []string { return slices.Clone(r.names) }
+func (r *Registry) Names() []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return slices.Clone(r.names)
+}
 
 func (r *Registry) Health() map[string]Health {
-	out := make(map[string]Health, len(r.backends))
-	for name, b := range r.backends {
+	out := make(map[string]Health)
+	for name, b := range r.snapshot() {
 		out[name] = b.Health()
 	}
 	return out
@@ -156,12 +250,33 @@ func (r *Registry) Disable(name string) error {
 // It takes no context and cannot: draining the gate has no cancellable variant, so a
 // tools/call with no configured timeout blocks exit until the client gives up.
 func (r *Registry) Shutdown() {
+	// The latch and the snapshot are taken together, so a backend published after this
+	// point cannot slip past the walk below and leave a stdio child alive after exit.
+	// The per-backend latch does not cover that case: the dangerous backend is one that
+	// was never in the map when shutdown read it.
+	r.mu.Lock()
+	r.shutdown = true
+	backends := make([]*Backend, 0, len(r.names))
 	for _, name := range r.names {
-		b := r.backends[name]
+		backends = append(backends, r.backends[name])
+	}
+	r.mu.Unlock()
+
+	for _, b := range backends {
 		b.transition.Lock()
 		b.teardown(forShutdown)
 		b.transition.Unlock()
 	}
+}
+
+func (r *Registry) snapshot() map[string]*Backend {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make(map[string]*Backend, len(r.backends))
+	for name, b := range r.backends {
+		out[name] = b
+	}
+	return out
 }
 
 // beginTransition takes name's transition lock, and refuses once a shutdown has

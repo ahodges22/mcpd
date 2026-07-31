@@ -512,3 +512,133 @@ func overridesAt(t *testing.T, path string) *Overrides {
 	}
 	return ov
 }
+
+// Scenario (backend-management spec, "An added backend serves tools without a restart"):
+// Add publishes a backend that routes and lists immediately.
+func TestAnAddedBackendServesWithoutARestart(t *testing.T) {
+	existing := testfake.New("alpha", tool("kubectl_logs"))
+	added := testfake.New("beta", tool("open_pull_request"))
+	r := wire(t, Hooks{}, existing)
+
+	if _, ok := r.Get("beta"); ok {
+		t.Fatal("beta was already registered")
+	}
+	r.Add("beta", config.Backend{Name: "beta", Command: "unused"}, true)
+	b, ok := r.Get("beta")
+	if !ok {
+		t.Fatal("beta not registered after Add")
+	}
+	b.dial = added.Transport
+	t.Cleanup(func() { b.closeSession(); added.Close() })
+
+	tools, err := b.ListTools(context.Background())
+	if err != nil {
+		t.Fatalf("ListTools on an added backend: %v", err)
+	}
+	if len(tools) != 1 || tools[0].Name != "open_pull_request" {
+		t.Errorf("tools = %v, want the added backend's own tool", tools)
+	}
+	if !slices.Contains(r.Names(), "beta") {
+		t.Errorf("Names() = %v, want beta included", r.Names())
+	}
+	if got := r.Health()["alpha"].State; got == StateDisabled {
+		t.Error("adding a backend disturbed an existing one")
+	}
+}
+
+// Scenario: "A removed backend stops serving". The teardown is terminal, so nothing can
+// respawn a child for a name that is no longer declared.
+func TestARemovedBackendStopsServing(t *testing.T) {
+	fake := testfake.New("alpha", tool("kubectl_logs"))
+	r := wire(t, Hooks{}, fake)
+	b, _ := r.Get("alpha")
+	if _, err := b.ListTools(context.Background()); err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+
+	r.Remove("alpha")
+
+	if _, ok := r.Get("alpha"); ok {
+		t.Error("a removed backend is still routable")
+	}
+	if slices.Contains(r.Names(), "alpha") {
+		t.Errorf("Names() = %v, want alpha gone", r.Names())
+	}
+	if _, err := b.ListTools(context.Background()); !errors.Is(err, ErrShutdown) {
+		t.Errorf("ListTools after Remove = %v, want ErrShutdown: the teardown must be terminal", err)
+	}
+}
+
+// Scenario: "A backend added over a stale disabled flag starts enabled". Add takes the
+// state from its caller and never reads the override store, which is what stops a stale
+// entry from disabling a freshly declared backend.
+func TestAddTakesItsEnabledStateFromItsCaller(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "overrides.json")
+	ov := overridesAt(t, statePath)
+	if err := ov.set("beta", true); err != nil {
+		t.Fatalf("seed override: %v", err)
+	}
+	r := NewRegistry(stdioConfig("alpha"), ov, Hooks{})
+
+	r.Add("beta", config.Backend{Name: "beta", Command: "unused"}, true)
+	if got := r.Health()["beta"].State; got == StateDisabled {
+		t.Errorf("beta state = %q, want enabled: Add must not consult the override store", got)
+	}
+
+	r.Add("gamma", config.Backend{Name: "gamma", Command: "unused"}, false)
+	if got := r.Health()["gamma"].State; got != StateDisabled {
+		t.Errorf("gamma state = %q, want %q: a replacement's captured state was dropped", got, StateDisabled)
+	}
+}
+
+// Scenario: "An add during shutdown leaves no surviving child". Shutdown latches the
+// registry and snapshots under the same lock, so a backend published afterwards cannot
+// slip past the walk. The per-backend latch cannot cover this: the dangerous backend is
+// one that was never in the map when shutdown read it.
+func TestShutdownLatchesTheRegistryAgainstALaterAdd(t *testing.T) {
+	fake := testfake.New("alpha", tool("kubectl_logs"))
+	r := wire(t, Hooks{}, fake)
+
+	r.Shutdown()
+
+	if !r.ShuttingDown() {
+		t.Fatal("ShuttingDown() is false after Shutdown()")
+	}
+	// A caller that ignores the latch must still not end up with a live child: the
+	// backend it publishes is born latched and refuses to dial.
+	r.Add("beta", config.Backend{Name: "beta", Command: "unused"}, true)
+	b, ok := r.Get("beta")
+	if !ok {
+		t.Fatal("beta not registered")
+	}
+	if _, err := b.ListTools(context.Background()); !errors.Is(err, ErrShutdown) {
+		t.Errorf("dial of a backend added after shutdown = %v, want ErrShutdown", err)
+	}
+}
+
+// Shutdown and a concurrent add must not race the backend map. Run under -race.
+func TestShutdownDoesNotRaceAnAdd(t *testing.T) {
+	fake := testfake.New("alpha", tool("kubectl_logs"))
+	r := wire(t, Hooks{}, fake)
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { defer wg.Done(); r.Shutdown() }()
+	go func() {
+		defer wg.Done()
+		for i := range 20 {
+			name := "b" + string(rune('a'+i))
+			if r.ShuttingDown() {
+				return
+			}
+			r.Add(name, config.Backend{Name: name, Command: "unused"}, true)
+		}
+	}()
+	wg.Wait()
+
+	for name, h := range r.Health() {
+		if h.State == StateUp {
+			t.Errorf("backend %q is up after shutdown", name)
+		}
+	}
+}

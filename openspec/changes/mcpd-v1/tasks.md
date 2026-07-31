@@ -346,12 +346,12 @@ across its own map mutation to keep a concurrent enable or disable out.
       read lock across its own file replacement. Refresh it inside the writer mutex on every
       successful write and on reload adoption, and expose the write-lock drop that a removal or
       reload calls before cleanup. Also expose a read-validate-adopt entry point for 15.12
-- [ ] 15.4 Write the failing tests for runtime registration: an added backend serves a tool with
+- [x] 15.4 Write the failing tests for runtime registration: an added backend serves a tool with
       no restart; a removed backend's session closes, its stdio child exits and its tools leave
       the catalog; a reload adopts a hand-added declaration and tears down a hand-removed one; a
       reload that changes one backend leaves every other backend's session, child and
       authorization intact
-- [ ] 15.5 Implement `Registry.Add` and `Registry.Remove`. Add an RWMutex and take it for reading
+- [x] 15.5 Implement `Registry.Add` and `Registry.Remove`. Add an RWMutex and take it for reading
       in `Get`, `Names` and `Health`, which read the map and slice with no lock today because
       nothing ever mutated them after construction. Never hold it across a teardown: `Remove`
       takes it, deletes the entry, releases it, and only then tears the backend down, because
@@ -360,12 +360,12 @@ across its own map mutation to keep a concurrent enable or disable out.
       object, so a later `Add` of the same name is unaffected. Neither method returns an error,
       which is what keeps the config write as the only commit point. `NewRegistry` must retain
       the `Hooks` value it was given, because `Add` needs it
-- [ ] 15.5a `Add` takes the initial enabled state as a parameter and never consults the override
+- [x] 15.5a `Add` takes the initial enabled state as a parameter and never consults the override
       store, unlike `NewRegistry`. This needs a one-line comment, because the asymmetry with
       construction is otherwise indistinguishable from a bug. Reading the store inside `Add`
       would keep a reload replacement's disabled state and break a fresh add over a stale flag;
       taking it from the caller satisfies both
-- [ ] 15.5b Bring `Registry.Shutdown` under the same lock and latch the registry against later
+- [x] 15.5b Bring `Registry.Shutdown` under the same lock and latch the registry against later
       publication. `Shutdown` walks `r.names` and `r.backends` with no lock today, which was safe
       only because nothing mutated them after construction; 15.5 makes them mutable. Take the
       registry lock to snapshot the set, set a registry-level shutdown latch, and hold the
