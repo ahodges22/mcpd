@@ -327,16 +327,15 @@
       carried-forward prototype queries from the prototype's own 11/15 to 13/15 top-1 at
       15/15 top-3. Held-out scored above tuned-on throughout (+5.1 top-1, +1.6 top-3), so
       nothing here is overfitted.
-      **The remaining gap is not in fusion and cannot be closed there.** `evalrank -explain`
-      reports where each miss sat in each ranker separately: the expected tool is at cosine
-      rank 14 (`kubectl_logs` for "why did my container crash, show me what it printed"), 23
-      (`kubectl_top` for "how much cpu and memory are the pods using") and 376
-      (`list_oncalls` for "who do I wake up about a production problem"). Fusion can only
-      promote what one of its inputs already ranked, so the next lever is the text embedded
-      per tool, currently `tool: description` in `embedding.embedText`. Several backends give
-      terse one-line descriptions, and that is all the semantic ranker has to work with. Left
-      open deliberately rather than closed by widening the acceptable sets or lowering the
-      gate after seeing the scores
+      **The earlier conclusion that the remaining gap was not in fusion is superseded.**
+      `evalrank -explain`
+      reports where each miss sat in each ranker separately. Those earlier ranks were measured
+      with `text-embedding-3-small`. On `text-embedding-3-large`, `kubectl_logs` moved to cosine
+      #10, `kubectl_top` to #3, `aws_sts` to #1, `kubectl_auth_can_i` to #5, and
+      `merge_pull_request` to #6; `list_oncalls` remains a retrieval failure at #331. The tools
+      now near the top and still missing show that fusion is part of the remaining gap, while
+      `list_oncalls` shows that fusion cannot close all of it. Left open deliberately rather than
+      closed by widening the acceptable sets or lowering the gate after seeing the scores
 - [x] 13.7b **The embedded-text lever was tried and it does not work.** Widening `embedText` was
       the stated next step and measurement refused it. Over the 47 answerable queries: name and
       description alone give top-1 66.0% / top-3 78.7%; adding parameter names gives 66.0% / 76.6%;
@@ -368,13 +367,32 @@
       model header exists to catch
 - [ ] 13.7f **The gate still fails: top-1 68.1% against 80%, top-3 80.9% against 95%.** Net
       movement this pass is +2.1 top-1 and +2.2 top-3, both held-out validated. The remaining
-      misses are semantic retrieval failures on descriptions mcpd does not own: `list_oncalls` sits
-      at cosine 376 for "who do I wake up about a production problem", and `kubectl_top`'s entire
+      misses include semantic retrieval failures on descriptions mcpd does not own: `list_oncalls`
+      sits at cosine 331 for "who do I wake up about a production problem", and `kubectl_top`'s entire
       description is "Run `art kubectl -- top <kind>`. Read-only metrics." **The honest reading is
       that this gate may not be reachable from inside mcpd**, because the input is one line of prose
       per tool written by someone else. Levers left, in order of expected value: a reranking pass
       over the fused top-N, query expansion, or persuading the noisiest backends to describe their
-      tools in terms of what they are for. Still not closed by lowering the gate
+      tools in terms of what they are for. Still not closed by lowering the gate.
+      **Follow-up after `text-embedding-3-large`: fusion contains the suspected absence defect,
+      but the measured fusion levers do not close the gate.** With both lists capped at 50,
+      cosine #1 plus lexical absence scores `1/61 + 1/111 = 0.025402`, while lexical #1 plus
+      cosine #20 scores `1/61 + 1/80 = 0.028893`. The existing two-entry regression fixture did
+      not expose this because its absent floor was rank 2, producing a tie broken by cosine.
+      Against all 47 queries: dropping absent terms remained 32/47 top-1 and 38/47 top-3;
+      averaging contributors was 32/47 and 36/47; max was 33/47 and 38/47; pure lexical was
+      29/47 and 34/47; pure cosine was 33/47 and 38/47; cosine weights 1.5, 2, 3 and 5 produced
+      respectively 33/39, 33/40, 32/41 and 33/40. Raw-cosine reranking of the fused top 4, 5,
+      6 and 7+ peaked at 33/47 and 40/47 with N=5. Blending raw cosine with normalized lexical
+      score peaked at 34/47 and 40/47; it also violates the requirement not to blend
+      incommensurable raw scores and still misses both gates. Several cosine-led variants put
+      held-out top-1 below tuned-on by 0.3 points, so they are rejected as tuned to this set. The
+      per-server cap separately hides `list_chart_types`, which is fused #3 at lexical #3 and cosine #2,
+      but removing the cap was already measured worse overall. No ranking-only variant reaches
+      the required 38/47 top-1 and 45/47 top-3, so none is kept. The gateway advertises
+      `cohere.rerank-v3-5:0`, which is the next credible existing-system lever, but both `/rerank`
+      and `/v1/rerank` currently fail because the gateway roles lack `bedrock:Rerank`. That
+      external authorization must be fixed before a rerank pass can be evaluated or shipped
 - [x] 13.7a Abstention, by contrast, calibrated cleanly and is now live: answerable cosine
       floor 0.3096 against a no-answer ceiling of 0.2215, separated, threshold 0.2649, and
       **10 of 10 held-out no-answer queries correctly flagged**. The lexical bounds do not
