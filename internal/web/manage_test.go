@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ahodges/mcpd/internal/config"
-	"github.com/ahodges/mcpd/internal/testfake"
+	"github.com/ahodges22/mcpd/internal/config"
+	"github.com/ahodges22/mcpd/internal/testfake"
 )
 
 func (h *harness) declared(t *testing.T) map[string]config.Backend {

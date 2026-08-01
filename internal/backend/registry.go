@@ -10,7 +10,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/ahodges/mcpd/internal/config"
+	"github.com/ahodges22/mcpd/internal/config"
 )
 
 const clientVersion = "0.1.0"

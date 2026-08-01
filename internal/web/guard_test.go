@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ahodges/mcpd/internal/backend"
-	"github.com/ahodges/mcpd/internal/testfake"
+	"github.com/ahodges22/mcpd/internal/backend"
+	"github.com/ahodges22/mcpd/internal/testfake"
 )
 
 func TestACrossSiteOriginIsRejectedOnAnMCPEndpoint(t *testing.T) {

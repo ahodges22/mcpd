@@ -3,7 +3,7 @@ package oauthstore
 import (
 	"testing"
 
-	"github.com/ahodges/mcpd/internal/testfake"
+	"github.com/ahodges22/mcpd/internal/testfake"
 )
 
 // White-box because this is the store's own bookkeeping: the ordering below is

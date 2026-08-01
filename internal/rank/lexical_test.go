@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ahodges/mcpd/internal/catalog"
+	"github.com/ahodges22/mcpd/internal/catalog"
 )
 
 // referenceCatalog mirrors CATALOG in testdata/lexical_reference.py, a

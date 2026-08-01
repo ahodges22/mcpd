@@ -4,7 +4,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/ahodges/mcpd/internal/backend"
+	"github.com/ahodges22/mcpd/internal/backend"
 )
 
 // Instructions are what a client puts in front of the model to say what a server is for. Without

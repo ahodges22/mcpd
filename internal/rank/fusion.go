@@ -6,7 +6,7 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/ahodges/mcpd/internal/catalog"
+	"github.com/ahodges22/mcpd/internal/catalog"
 )
 
 // rrfK is the reciprocal rank fusion constant: each ranker contributes

@@ -11,7 +11,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/ahodges/mcpd/internal/catalog"
+	"github.com/ahodges22/mcpd/internal/catalog"
 )
 
 // testModel is the model every cache in this file records, so a reload in one test is not

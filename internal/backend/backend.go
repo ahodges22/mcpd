@@ -19,7 +19,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/ahodges/mcpd/internal/config"
+	"github.com/ahodges22/mcpd/internal/config"
 )
 
 // ErrNotAttempted reports that no send was attempted, so the caller may retry.

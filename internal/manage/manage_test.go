@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ahodges/mcpd/internal/backend"
-	"github.com/ahodges/mcpd/internal/config"
+	"github.com/ahodges22/mcpd/internal/backend"
+	"github.com/ahodges22/mcpd/internal/config"
 )
 
 type fakeCatalog struct {

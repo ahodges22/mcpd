@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ahodges/mcpd/internal/testfake"
+	"github.com/ahodges22/mcpd/internal/testfake"
 )
 
 // Only one of the two ways a wait can end says anything about the stored grant, and telling

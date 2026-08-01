@@ -11,8 +11,8 @@ import (
 	"path/filepath"
 	"sync"
 
-	"github.com/ahodges/mcpd/internal/catalog"
-	"github.com/ahodges/mcpd/internal/embedding"
+	"github.com/ahodges22/mcpd/internal/catalog"
+	"github.com/ahodges22/mcpd/internal/embedding"
 )
 
 const (

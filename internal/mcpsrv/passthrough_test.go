@@ -9,10 +9,10 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/ahodges/mcpd/internal/backend"
-	"github.com/ahodges/mcpd/internal/catalog"
-	"github.com/ahodges/mcpd/internal/config"
-	"github.com/ahodges/mcpd/internal/testfake"
+	"github.com/ahodges22/mcpd/internal/backend"
+	"github.com/ahodges22/mcpd/internal/catalog"
+	"github.com/ahodges22/mcpd/internal/config"
+	"github.com/ahodges22/mcpd/internal/testfake"
 )
 
 func TestPassthroughAdvertisesCanonicalNames(t *testing.T) {

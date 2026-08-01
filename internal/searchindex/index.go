@@ -9,9 +9,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ahodges/mcpd/internal/catalog"
-	"github.com/ahodges/mcpd/internal/embedding"
-	"github.com/ahodges/mcpd/internal/rank"
+	"github.com/ahodges22/mcpd/internal/catalog"
+	"github.com/ahodges22/mcpd/internal/embedding"
+	"github.com/ahodges22/mcpd/internal/rank"
 )
 
 type Index struct {

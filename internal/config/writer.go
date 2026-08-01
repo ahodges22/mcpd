@@ -11,8 +11,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-
-	"golang.org/x/sys/unix"
 )
 
 var (
@@ -104,10 +102,6 @@ func NewWriter(path string) (*Writer, *Config, error) {
 	}
 	w.publish(cfg)
 	return w, cfg, nil
-}
-
-func exchangeFiles(displaced, incoming string) error {
-	return unix.Renameat2(unix.AT_FDCWD, displaced, unix.AT_FDCWD, incoming, unix.RENAME_EXCHANGE)
 }
 
 // Path is the resolved declaration path, which is what everything else must read.

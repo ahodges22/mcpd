@@ -6,7 +6,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 
-	"github.com/ahodges/mcpd/internal/catalog"
+	"github.com/ahodges22/mcpd/internal/catalog"
 )
 
 // tomlEditor rewires Codex.

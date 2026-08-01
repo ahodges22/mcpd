@@ -9,7 +9,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/ahodges/mcpd/internal/catalog"
+	"github.com/ahodges22/mcpd/internal/catalog"
 )
 
 // Result is one scored catalog entry, returned by both Lexical and Fuse.

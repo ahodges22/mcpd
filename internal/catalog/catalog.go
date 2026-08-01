@@ -18,7 +18,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/ahodges/mcpd/internal/backend"
+	"github.com/ahodges22/mcpd/internal/backend"
 )
 
 const (

@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"sync"
 
-	"github.com/ahodges/mcpd/internal/config"
+	"github.com/ahodges22/mcpd/internal/config"
 )
 
 // Overrides records which backends the user has disabled, and which declaration each

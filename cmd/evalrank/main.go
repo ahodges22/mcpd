@@ -21,10 +21,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ahodges/mcpd/internal/catalog"
-	"github.com/ahodges/mcpd/internal/config"
-	"github.com/ahodges/mcpd/internal/rank"
-	"github.com/ahodges/mcpd/internal/searchindex"
+	"github.com/ahodges22/mcpd/internal/catalog"
+	"github.com/ahodges22/mcpd/internal/config"
+	"github.com/ahodges22/mcpd/internal/rank"
+	"github.com/ahodges22/mcpd/internal/searchindex"
 )
 
 // The acceptance gate, set over the expanded query set rather than over the fifteen the

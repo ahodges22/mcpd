@@ -1,6 +1,6 @@
 package testfake
 
-import "github.com/ahodges/mcpd/internal/config"
+import "github.com/ahodges22/mcpd/internal/config"
 
 type PermissiveDeclarations struct{}
 

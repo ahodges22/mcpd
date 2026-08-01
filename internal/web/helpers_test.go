@@ -12,14 +12,14 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/ahodges/mcpd/internal/backend"
-	"github.com/ahodges/mcpd/internal/catalog"
-	"github.com/ahodges/mcpd/internal/config"
-	"github.com/ahodges/mcpd/internal/manage"
-	"github.com/ahodges/mcpd/internal/mcpsrv"
-	"github.com/ahodges/mcpd/internal/oauthstore"
-	"github.com/ahodges/mcpd/internal/rank"
-	"github.com/ahodges/mcpd/internal/testfake"
+	"github.com/ahodges22/mcpd/internal/backend"
+	"github.com/ahodges22/mcpd/internal/catalog"
+	"github.com/ahodges22/mcpd/internal/config"
+	"github.com/ahodges22/mcpd/internal/manage"
+	"github.com/ahodges22/mcpd/internal/mcpsrv"
+	"github.com/ahodges22/mcpd/internal/oauthstore"
+	"github.com/ahodges22/mcpd/internal/rank"
+	"github.com/ahodges22/mcpd/internal/testfake"
 )
 
 // harness stands a real Registry, Catalog and web Server over in-process fake

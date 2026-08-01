@@ -17,7 +17,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/ahodges/mcpd/internal/testfake"
+	"github.com/ahodges22/mcpd/internal/testfake"
 )
 
 // provider is a fake OAuth-protected MCP server. It imitates what real Notion did,

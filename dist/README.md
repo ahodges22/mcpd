@@ -27,9 +27,9 @@ Binding to the session sidesteps it entirely.
 On a headless machine there is no graphical session, so use `WantedBy=default.target` there
 and either leave lingering off or accept one `systemctl --user restart mcpd` after boot.
 
-`PassEnvironment` carries variables from the user manager's environment. It must name every
-variable a declaration references. A variable that is not set is simply not passed, so an
-incomplete list fails quietly.
+`PassEnvironment` carries variables from the user manager's environment. Edit the unit before
+you install it and name every variable that a declaration references. A variable that is not
+set is simply not passed, so an incomplete list fails quietly.
 
 Note what binding to the session does and does not do. Activating `graphical-session.target`
 does **not** source a shell rc file or import anything by itself. A variable declared in
@@ -45,12 +45,11 @@ benefit from one. On a machine whose session does not import its environment, or
 it in `~/.config/environment.d/` is the only version of this that does not depend on a chain of
 session behaviour.
 
-Check what the manager can actually pass, without printing any values:
+Check what the manager can actually pass, without printing its value:
 
 ```sh
-for v in DD_ACCESS_TOKEN GITHUB_TOKEN LITELLM_KEY N8N_STAGE_MCP_TOKEN; do
-  systemctl --user show-environment | grep -q "^$v=" && echo "$v ok" || echo "$v MISSING"
-done
+systemctl --user show-environment | grep -q '^YOUR_TOKEN_VARIABLE=' \
+  && echo 'token available' || echo 'token MISSING'
 ```
 
 ## macOS, launchd user agent
@@ -69,9 +68,8 @@ exports. Put them where a **non-interactive** login shell reads them, which on z
 exports are then skipped with no error. Check the same way:
 
 ```sh
-for v in DD_ACCESS_TOKEN GITHUB_TOKEN LITELLM_KEY N8N_STAGE_MCP_TOKEN; do
-  sh -lc "[ -n \"\${$v:-}\" ]" && echo "$v ok" || echo "$v MISSING"
-done
+sh -lc '[ -n "${YOUR_TOKEN_VARIABLE:-}" ]' \
+  && echo 'token available' || echo 'token MISSING'
 ```
 
 Logs go to `~/Library/Logs/mcpd.log` and nothing rotates them.

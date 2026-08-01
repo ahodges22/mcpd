@@ -23,7 +23,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/oauthex"
 	"golang.org/x/oauth2"
 
-	"github.com/ahodges/mcpd/internal/config"
+	"github.com/ahodges22/mcpd/internal/config"
 )
 
 const (

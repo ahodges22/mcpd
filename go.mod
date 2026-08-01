@@ -1,4 +1,4 @@
-module github.com/ahodges/mcpd
+module github.com/ahodges22/mcpd
 
 go 1.26.5
 

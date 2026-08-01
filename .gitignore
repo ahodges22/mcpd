@@ -1,6 +1,7 @@
 # build artifacts
 /oauthprobe
 /mcpd
+/.release/
 
 # openspec-generated agent commands/skills: regenerate with
 #   openspec init --tools claude,codex,cursor,opencode

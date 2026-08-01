@@ -11,10 +11,10 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/ahodges/mcpd/internal/backend"
-	"github.com/ahodges/mcpd/internal/config"
-	"github.com/ahodges/mcpd/internal/searchindex"
-	"github.com/ahodges/mcpd/internal/testfake"
+	"github.com/ahodges22/mcpd/internal/backend"
+	"github.com/ahodges22/mcpd/internal/config"
+	"github.com/ahodges22/mcpd/internal/searchindex"
+	"github.com/ahodges22/mcpd/internal/testfake"
 )
 
 // wireDaemon stands the daemon up exactly as run does, minus the listener, over one fake

@@ -21,12 +21,11 @@ RestartSec=2
 # default PATH for a service, which wins. The directories are named rather than inherited,
 # which is the same principle the least-privilege child environment applies.
 Environment=PATH=%h/.local/bin:%h/.bin:/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:/usr/local/bin:/usr/bin:/bin
-# The credential variables the declarations reference through ${VAR} have to be named here
-# too. Omitting them starts the daemon with no tokens at all, and every backend behind a
-# bearer header then fails its handshake while the daemon itself looks healthy. Add whatever
-# else a declaration references; a variable that is not set is simply not passed.
+# The credential variables the declarations reference through ${VAR} have to be named here.
+# Add one or more PassEnvironment lines before installing this unit. A variable that is not
+# set is simply not passed.
 PassEnvironment=HOME USER LOGNAME SHELL LANG TZ TERM TMPDIR
-PassEnvironment=DD_ACCESS_TOKEN GITHUB_TOKEN LITELLM_KEY N8N_STAGE_MCP_TOKEN
+# PassEnvironment=YOUR_TOKEN_VARIABLE
 # A stdio backend is a child of this unit. control-group is what reaps one that outlives a
 # shutdown whose teardown budget expired, which the daemon deliberately allows rather than
 # blocking exit on an unbounded tool call.

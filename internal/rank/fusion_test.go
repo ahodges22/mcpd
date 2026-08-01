@@ -4,7 +4,7 @@ import (
 	"math"
 	"testing"
 
-	"github.com/ahodges/mcpd/internal/catalog"
+	"github.com/ahodges22/mcpd/internal/catalog"
 )
 
 func TestFuseDegradesToLexicalWithoutVectors(t *testing.T) {

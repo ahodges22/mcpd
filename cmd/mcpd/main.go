@@ -18,15 +18,15 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/ahodges/mcpd/internal/backend"
-	"github.com/ahodges/mcpd/internal/catalog"
-	"github.com/ahodges/mcpd/internal/config"
-	"github.com/ahodges/mcpd/internal/manage"
-	"github.com/ahodges/mcpd/internal/mcpsrv"
-	"github.com/ahodges/mcpd/internal/oauthstore"
-	"github.com/ahodges/mcpd/internal/rank"
-	"github.com/ahodges/mcpd/internal/searchindex"
-	"github.com/ahodges/mcpd/internal/web"
+	"github.com/ahodges22/mcpd/internal/backend"
+	"github.com/ahodges22/mcpd/internal/catalog"
+	"github.com/ahodges22/mcpd/internal/config"
+	"github.com/ahodges22/mcpd/internal/manage"
+	"github.com/ahodges22/mcpd/internal/mcpsrv"
+	"github.com/ahodges22/mcpd/internal/oauthstore"
+	"github.com/ahodges22/mcpd/internal/rank"
+	"github.com/ahodges22/mcpd/internal/searchindex"
+	"github.com/ahodges22/mcpd/internal/web"
 )
 
 // shutdownBudget bounds how long exit waits on the registry teardown. Registry.Shutdown

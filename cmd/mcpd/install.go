@@ -7,7 +7,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/ahodges/mcpd/internal/install"
+	"github.com/ahodges22/mcpd/internal/install"
 )
 
 // runInstall points clients at mcpd, or takes them back off it.

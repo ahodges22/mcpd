@@ -14,12 +14,12 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/ahodges/mcpd/internal/backend"
-	"github.com/ahodges/mcpd/internal/catalog"
-	"github.com/ahodges/mcpd/internal/config"
-	"github.com/ahodges/mcpd/internal/oauthstore"
-	"github.com/ahodges/mcpd/internal/testfake"
-	"github.com/ahodges/mcpd/internal/web"
+	"github.com/ahodges22/mcpd/internal/backend"
+	"github.com/ahodges22/mcpd/internal/catalog"
+	"github.com/ahodges22/mcpd/internal/config"
+	"github.com/ahodges22/mcpd/internal/oauthstore"
+	"github.com/ahodges22/mcpd/internal/testfake"
+	"github.com/ahodges22/mcpd/internal/web"
 )
 
 // server is the name of the one OAuth-gated backend these tests declare.
