@@ -208,3 +208,53 @@ func TestTheTopSemanticMatchOutranksAToolWithOnlyAnIncidentalTermMatch(t *testin
 		t.Errorf("ranked %v; the best semantic match lost to an incidental term match", got)
 	}
 }
+
+func TestHybridRankingKeepsAnExactToolNameAheadAndPreservesBackendDiversity(t *testing.T) {
+	entries := []catalog.Entry{
+		{ID: "mcp__github__list_pull_requests", Server: "github", Tool: "list_pull_requests", Description: "List pull requests"},
+		{ID: "mcp__github__search_pull_requests", Server: "github", Tool: "search_pull_requests", Description: "Search pull requests"},
+		{ID: "mcp__github__pull_request_read", Server: "github", Tool: "pull_request_read", Description: "Read one pull request"},
+		{ID: "mcp__datadog__ci_visibility", Server: "datadog", Tool: "ci_visibility", Description: "Inspect CI activity"},
+	}
+	base := map[string][]float32{
+		"mcp__github__list_pull_requests":   {1, 0},
+		"mcp__github__search_pull_requests": {0.9, 0.1},
+		"mcp__github__pull_request_read":    {0.8, 0.2},
+		"mcp__datadog__ci_visibility":       {0.7, 0.3},
+	}
+	centroids := map[string][]float32{
+		"mcp__github__list_pull_requests":   {1, 0},
+		"mcp__github__search_pull_requests": {0.9, 0.1},
+		"mcp__github__pull_request_read":    {0.8, 0.2},
+		"mcp__datadog__ci_visibility":       {0.7, 0.3},
+	}
+	reranked := []string{
+		"mcp__github__search_pull_requests",
+		"mcp__missing__hallucinated",
+		"mcp__github__search_pull_requests",
+		"mcp__github__pull_request_read",
+	}
+
+	got, _ := Hybrid(
+		"list the pull requests waiting on me",
+		entries,
+		base,
+		centroids,
+		[]float32{1, 0},
+		reranked,
+		3,
+	)
+	want := []string{
+		"mcp__github__list_pull_requests",
+		"mcp__github__search_pull_requests",
+		"mcp__datadog__ci_visibility",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("Hybrid returned %d results, want %d: %+v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i].ID != want[i] {
+			t.Fatalf("Hybrid result %d = %q, want %q; all results: %+v", i, got[i].ID, want[i], got)
+		}
+	}
+}

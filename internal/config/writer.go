@@ -389,6 +389,7 @@ func parse(raw []byte) (*Config, error) {
 	var doc struct {
 		Backends   *map[string]Backend `json:"backends"`
 		Embeddings Embeddings          `json:"embeddings"`
+		Ranking    Ranking             `json:"ranking"`
 	}
 	if err := json.Unmarshal(raw, &doc); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
@@ -396,7 +397,10 @@ func parse(raw []byte) (*Config, error) {
 	if doc.Backends == nil {
 		return nil, fmt.Errorf("config declares no backends object")
 	}
-	c := Config{Backends: map[string]Backend{}, Embeddings: doc.Embeddings}
+	c := Config{Backends: map[string]Backend{}, Embeddings: doc.Embeddings, Ranking: doc.Ranking}
+	if err := validateRanking(c); err != nil {
+		return nil, err
+	}
 	for name, b := range *doc.Backends {
 		if !ValidName(name) {
 			return nil, fmt.Errorf("backend name %q must match %s", name, nameRef)

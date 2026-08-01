@@ -313,7 +313,7 @@
       unchanged dimension
 - [x] 13.6 Record the baseline, then calibrate thresholds and score the validation set
       exactly once
-- [ ] 13.7 Iterate on fusion only if the gate fails, watching the held-out versus tuned gap.
+- [x] 13.7 Iterate on fusion only if the gate fails, watching the held-out versus tuned gap.
       **Iterated twice and the gate still fails. Recorded result over 47 answerable queries:
       top-1 31/47 (66.0%) against the 80% gate, top-3 37/47 (78.7%) against the 95% gate.**
       What did improve, and is kept: reciprocal rank fusion was being handed two lists that
@@ -335,7 +335,12 @@
       `merge_pull_request` to #6; `list_oncalls` remains a retrieval failure at #331. The tools
       now near the top and still missing show that fusion is part of the remaining gap, while
       `list_oncalls` shows that fusion cannot close all of it. Left open deliberately rather than
-      closed by widening the acceptable sets or lowering the gate after seeing the scores
+      closed by widening the acceptable sets or lowering the gate after seeing the scores.
+      Fusion is now exhausted: exact-name precedence over the existing fusion scored 33/47
+      top-1 and 38/47 top-3; adding the generated-query centroid as a third equal, neutral-absence
+      RRF input scored 34/47 and 38/47 and regressed the carried-forward set to 14/15 top-3.
+      Neither can reach 38/47 and 45/47, so the remaining work moved to 13.7f's measured
+      candidate expansion and reranking rather than another fusion coefficient
 - [x] 13.7b **The embedded-text lever was tried and it does not work.** Widening `embedText` was
       the stated next step and measurement refused it. Over the 47 answerable queries: name and
       description alone give top-1 66.0% / top-3 78.7%; adding parameter names gives 66.0% / 76.6%;
@@ -365,7 +370,7 @@
       no-answer queries flagged. `abstainCosine` moved with it. Leaving that constant at the
       small-model 0.2649 would have left abstention quietly wrong, which is the failure the cache's
       model header exists to catch
-- [ ] 13.7f **The gate still fails: top-1 68.1% against 80%, top-3 80.9% against 95%.** Net
+- [x] 13.7f **Before reranking, the gate failed: top-1 68.1% against 80%, top-3 80.9% against 95%.** Net
       movement this pass is +2.1 top-1 and +2.2 top-3, both held-out validated. The remaining
       misses include semantic retrieval failures on descriptions mcpd does not own: `list_oncalls`
       sits at cosine 331 for "who do I wake up about a production problem", and `kubectl_top`'s entire
@@ -392,7 +397,43 @@
       the required 38/47 top-1 and 45/47 top-3, so none is kept. The gateway advertises
       `cohere.rerank-v3-5:0`, which is the next credible existing-system lever, but both `/rerank`
       and `/v1/rerank` currently fail because the gateway roles lack `bedrock:Rerank`. That
-      external authorization must be fixed before a rerank pass can be evaluated or shipped
+      external authorization must be fixed before a native rerank pass can be evaluated or shipped.
+      **Resolved with the existing chat gateway rather than that unavailable endpoint.** The
+      shipped candidate pool is the union of lexical top 50, base-cosine top 50, and
+      generated-query-centroid cosine top 50. Six Gemini 2.5 Flash queries per tool are generated
+      only on content-hash misses and embedded with `text-embedding-3-large`; the cache records
+      the generated text and centroid under a header carrying the generator model, prompt hash,
+      embedding model, and vector dimension. Refreshes coalesce to the newest catalog snapshot,
+      so concurrent backend commits do not duplicate generation calls or publish an older index.
+      Fable 5 reranks the structured pool at temperature zero, 1,024 output tokens, one hard
+      10-second attempt, and allowlisted deduplicated IDs. A unique exact tool-name match of at
+      least two tokens takes precedence, with a named backend restricting that promotion; the
+      existing two-per-backend cap then applies and fills in fused order. Any generation,
+      embedding, or rerank failure falls back to the existing fusion, and abstention still reads
+      only the original-query/base-tool cosine.
+
+      Rejected retrieval/rerank variants, retained so they are not repeated: six generated
+      vectors with max cosine scored 29/47 top-1 and 35/47 top-3; generated centroid alone 31/47
+      and 38/47; base plus centroid max 32/47 and 40/47; query-side normalization 31/47 and
+      40/47. Gemini over the full pool reached 39/47 and 46/47 but put held-out below tuned-on
+      with roughly seven-second median latency. Fable without centroid retrieval reached 44/47
+      and 46/47 but also put held-out top-1 below tuned-on. The frozen Fable-plus-centroid
+      prototype reached 46/47 for both, with 5.9-second median, 7.3-second p90, and 9.3-second
+      maximum rerank latency; the sole miss was the container-crash query after the preserved
+      backend cap displaced `kubectl_logs`.
+
+      The unchanged final eval exits zero on the live 612-tool catalog at 43/47 top-1 (91.5%)
+      and 46/47 top-3 (97.9%), with the carried-forward fifteen at 15/15 for both. A preceding
+      run reached 45/47 and 46/47; the variation is from the designed fusion fallback when a
+      one-shot rerank reaches its deadline or returns no JSON. The original held-out labels were
+      consumed while choosing this design and are no longer independent evidence. Claude wrote
+      a fresh ten-query set blind to rankings and it was scored once after freezing: 9/10 for
+      both. Its only miss exposed that production decoded the entire model response while the
+      measured prototype extracted the first JSON object: the rejected response itself placed
+      the expected `run_secret_scanning` first, then appended prose. The parser was restored to
+      the measured behavior and the blind set was not rescored. Structured framing and ID
+      allowlisting reduce malicious-description influence, but do not eliminate the residual
+      risk that a tool description manipulates relevance ordering
 - [x] 13.7a Abstention, by contrast, calibrated cleanly and is now live: answerable cosine
       floor 0.3096 against a no-answer ceiling of 0.2215, separated, threshold 0.2649, and
       **10 of 10 held-out no-answer queries correctly flagged**. The lexical bounds do not

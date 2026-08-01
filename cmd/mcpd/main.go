@@ -21,11 +21,11 @@ import (
 	"github.com/ahodges/mcpd/internal/backend"
 	"github.com/ahodges/mcpd/internal/catalog"
 	"github.com/ahodges/mcpd/internal/config"
-	"github.com/ahodges/mcpd/internal/embedding"
 	"github.com/ahodges/mcpd/internal/manage"
 	"github.com/ahodges/mcpd/internal/mcpsrv"
 	"github.com/ahodges/mcpd/internal/oauthstore"
 	"github.com/ahodges/mcpd/internal/rank"
+	"github.com/ahodges/mcpd/internal/searchindex"
 	"github.com/ahodges/mcpd/internal/web"
 )
 
@@ -52,9 +52,8 @@ const shutdownBudget = 20 * time.Second
 // nobody has calibrated against.
 const abstainCosine = 0.2091
 
-// embedBudget bounds one catalog vectorization. It is generous because a cold cache embeds
-// every tool in the catalog, and it runs detached from the refresh that triggered it.
-const embedBudget = 2 * time.Minute
+// indexBudget bounds one detached catalog indexing pass, including cold query expansion.
+const indexBudget = 10 * time.Minute
 
 func main() {
 	if err := run(); err != nil {
@@ -113,7 +112,7 @@ type daemon struct {
 	store     *oauthstore.Store
 	mgr       *manage.Manager
 	pass      *mcpsrv.Passthrough
-	vecs      *mcpsrv.VectorStore
+	index     *searchindex.Index
 	handler   http.Handler
 }
 
@@ -180,13 +179,19 @@ func (d *daemon) wire(cfg *config.Config, addr string) error {
 		// The client first, so the cache records the model actually sent rather than the one
 		// configured: an empty configuration resolves to a default, and a header saying "" would
 		// be a claim about a model that does not exist.
-		client := embedding.NewClient(cfg.Embeddings.URL, cfg.Embeddings.APIKey(), cfg.Embeddings.Model)
-		cache := embedding.NewCache(filepath.Join(d.state, "embeddings.json"), client.Model())
-		if err := cache.Load(); err != nil {
+		d.index = searchindex.New(
+			d.state,
+			cfg.Embeddings.URL,
+			cfg.Embeddings.APIKey(),
+			cfg.Embeddings.Model,
+			cfg.Ranking.ExpansionModel,
+			cfg.Ranking.RerankModel,
+			cfg.Ranking.RerankTimeout(),
+		)
+		if err := d.index.Load(); err != nil {
 			// A cold cache is a slower first refresh, not a failure.
-			slog.Warn("load embedding cache", "error", err)
+			slog.Warn("load search index", "error", err)
 		}
-		d.vecs = mcpsrv.NewVectorStore(client, cache)
 	}
 
 	// Built after Load, because the constructor syncs and would otherwise serve an empty
@@ -199,19 +204,14 @@ func (d *daemon) wire(cfg *config.Config, addr string) error {
 	// waited on a tool call would deadlock the daemon permanently.
 	d.cat.OnCommit(func() {
 		d.pass.Sync()
-		if d.vecs == nil {
+		if d.index == nil {
 			return
 		}
 		// Bounded and detached: this hook also fires from Drop inside a lifecycle
 		// teardown, which holds that backend's dispatch gate closed until the hook
 		// returns, so a gateway call made inline would delay every disable by its own
 		// timeout.
-		entries := d.cat.Entries()
-		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), embedBudget)
-			defer cancel()
-			d.vecs.Refresh(ctx, entries)
-		}()
+		d.index.QueueRefresh(d.cat.Entries(), indexBudget)
 	})
 
 	guard := web.NewGuard()
@@ -219,12 +219,12 @@ func (d *daemon) wire(cfg *config.Config, addr string) error {
 	mux := http.NewServeMux()
 	// Both MCP handlers are wrapped in the same guard value the web surface uses, so the
 	// cross-origin policy cannot diverge between the two surfaces.
-	var vectors mcpsrv.Vectors
-	if d.vecs != nil {
-		vectors = d.vecs
-		surface = surface.WithUnvectorized(d.vecs.Unvectorized)
+	var index mcpsrv.SearchIndex
+	if d.index != nil {
+		index = d.index
+		surface = surface.WithUnvectorized(d.index.Unvectorized)
 	}
-	mux.Handle("/mcp/search", guard.Protect(streamable(mcpsrv.NewSearch(d.cat, d.reg, d.thresholds(), vectors))))
+	mux.Handle("/mcp/search", guard.Protect(streamable(mcpsrv.NewSearch(d.cat, d.reg, d.thresholds(), index))))
 	mux.Handle("/mcp/passthrough", guard.Protect(streamable(d.pass.Server())))
 	mux.Handle("/", surface.Handler())
 	d.handler = mux
@@ -235,7 +235,7 @@ func (d *daemon) wire(cfg *config.Config, addr string) error {
 // meaningful with a gateway: with no vectors there is no cosine to judge against, and
 // LowConfidence goes quiet rather than flagging every query.
 func (d *daemon) thresholds() rank.Thresholds {
-	if d.vecs == nil || abstainCosine <= 0 {
+	if d.index == nil || abstainCosine <= 0 {
 		return rank.Thresholds{}
 	}
 	return rank.Thresholds{Cosine: abstainCosine, Enabled: true}

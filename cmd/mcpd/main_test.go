@@ -13,8 +13,7 @@ import (
 
 	"github.com/ahodges/mcpd/internal/backend"
 	"github.com/ahodges/mcpd/internal/config"
-	"github.com/ahodges/mcpd/internal/embedding"
-	"github.com/ahodges/mcpd/internal/mcpsrv"
+	"github.com/ahodges/mcpd/internal/searchindex"
 	"github.com/ahodges/mcpd/internal/testfake"
 )
 
@@ -300,7 +299,7 @@ func TestAbstentionIsWiredOnlyWhenAGatewayCanProduceACosine(t *testing.T) {
 		t.Skip("no threshold is calibrated, so there is nothing to wire")
 	}
 	d, _ := wireDaemon(t, tool("kubectl_logs"))
-	if d.vecs != nil {
+	if d.index != nil {
 		t.Fatal("this harness configures no embeddings gateway, so the case below is not the one being tested")
 	}
 	if got := d.thresholds(); got.Enabled {
@@ -308,8 +307,7 @@ func TestAbstentionIsWiredOnlyWhenAGatewayCanProduceACosine(t *testing.T) {
 	}
 
 	// And with a gateway, the calibrated number reaches the facade.
-	d.vecs = mcpsrv.NewVectorStore(embedding.NewClient("https://gateway.test", "", ""),
-		embedding.NewCache(filepath.Join(t.TempDir(), "embeddings.json"), "m"))
+	d.index = searchindex.New(t.TempDir(), "https://gateway.test", "", "", "", "", 0)
 	got := d.thresholds()
 	if !got.Enabled || got.Cosine != abstainCosine {
 		t.Errorf("thresholds = %+v, want the calibrated %v enabled", got, abstainCosine)

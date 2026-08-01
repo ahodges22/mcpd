@@ -8,6 +8,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"time"
 )
 
 // baseEnvKeys are forwarded to every stdio child because a process needs them to
@@ -42,6 +43,7 @@ type Backend struct {
 type Config struct {
 	Backends   map[string]Backend `json:"backends"`
 	Embeddings Embeddings         `json:"embeddings,omitempty"`
+	Ranking    Ranking            `json:"ranking,omitempty"`
 }
 
 // Embeddings configures the gateway that vectorizes the catalog. It is optional: with no
@@ -65,6 +67,18 @@ func (e Embeddings) APIKey() string {
 		return ""
 	}
 	return os.Getenv(e.APIKeyEnv)
+}
+
+type Ranking struct {
+	ExpansionModel  string `json:"expansion_model,omitempty"`
+	RerankModel     string `json:"rerank_model,omitempty"`
+	RerankTimeoutMS int    `json:"rerank_timeout_ms,omitempty"`
+}
+
+func (r Ranking) Enabled() bool { return r.ExpansionModel != "" && r.RerankModel != "" }
+
+func (r Ranking) RerankTimeout() time.Duration {
+	return time.Duration(r.RerankTimeoutMS) * time.Millisecond
 }
 
 func (b Backend) IsStdio() bool { return b.Command != "" }
@@ -140,6 +154,7 @@ func Load(path string) (*Config, error) {
 	var doc struct {
 		Backends   *map[string]Backend `json:"backends"`
 		Embeddings Embeddings          `json:"embeddings"`
+		Ranking    Ranking             `json:"ranking"`
 	}
 	if err := json.Unmarshal(raw, &doc); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
@@ -147,7 +162,10 @@ func Load(path string) (*Config, error) {
 	if doc.Backends == nil {
 		return nil, fmt.Errorf("config declares no backends object")
 	}
-	c := Config{Backends: *doc.Backends, Embeddings: doc.Embeddings}
+	c := Config{Backends: *doc.Backends, Embeddings: doc.Embeddings, Ranking: doc.Ranking}
+	if err := validateRanking(c); err != nil {
+		return nil, err
+	}
 	if c.Backends == nil {
 		c.Backends = map[string]Backend{}
 	}
@@ -167,4 +185,21 @@ func Load(path string) (*Config, error) {
 		c.Backends[name] = b
 	}
 	return &c, nil
+}
+
+func validateRanking(c Config) error {
+	configured := c.Ranking.ExpansionModel != "" || c.Ranking.RerankModel != "" || c.Ranking.RerankTimeoutMS != 0
+	if !configured {
+		return nil
+	}
+	if !c.Embeddings.Enabled() {
+		return fmt.Errorf("ranking requires an embeddings gateway")
+	}
+	if !c.Ranking.Enabled() {
+		return fmt.Errorf("ranking requires both expansion_model and rerank_model")
+	}
+	if c.Ranking.RerankTimeoutMS <= 0 {
+		return fmt.Errorf("ranking rerank_timeout_ms must be positive")
+	}
+	return nil
 }

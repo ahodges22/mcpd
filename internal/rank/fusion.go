@@ -3,6 +3,8 @@ package rank
 import (
 	"math"
 	"sort"
+	"strings"
+	"unicode"
 
 	"github.com/ahodges/mcpd/internal/catalog"
 )
@@ -120,6 +122,155 @@ func Fuse(query string, entries []catalog.Entry, vecs map[string][]float32, qvec
 		fused = capPerServer(fused, limit)
 	}
 	return fused, Evidence{BestCosine: bestCosine, BestLexical: bestLexical, HasCosine: len(semantic) > 0}
+}
+
+// Candidates returns the union of the lexical, base-cosine, and expanded-cosine top lists.
+func Candidates(query string, entries []catalog.Entry, vecs, expanded map[string][]float32, qvec []float32) []catalog.Entry {
+	byID := make(map[string]catalog.Entry, len(entries))
+	for _, e := range entries {
+		byID[e.ID] = e
+	}
+
+	seen := make(map[string]bool, fuseDepth*3)
+	out := make([]catalog.Entry, 0, fuseDepth*3)
+	add := func(results []Result) {
+		if len(results) > fuseDepth {
+			results = results[:fuseDepth]
+		}
+		for _, result := range results {
+			if seen[result.ID] {
+				continue
+			}
+			seen[result.ID] = true
+			out = append(out, byID[result.ID])
+		}
+	}
+	add(Lexical(query, entries))
+	add(Cosine(entries, vecs, qvec))
+	add(Cosine(entries, expanded, qvec))
+	return out
+}
+
+// Hybrid applies a validated rerank ordering to the candidate union, then fills from the
+// existing fused order and preserves the backend diversity cap. Empty or wholly invalid
+// rerank output returns the existing fused result unchanged.
+func Hybrid(
+	query string,
+	entries []catalog.Entry,
+	vecs, expanded map[string][]float32,
+	qvec []float32,
+	reranked []string,
+	limit int,
+) ([]Result, Evidence) {
+	fallback, evidence := Fuse(query, entries, vecs, qvec, 0)
+	candidates := Candidates(query, entries, vecs, expanded, qvec)
+	allowed := make(map[string]catalog.Entry, len(candidates))
+	for _, candidate := range candidates {
+		allowed[candidate.ID] = candidate
+	}
+
+	seen := make(map[string]bool, len(reranked))
+	ordered := make([]string, 0, len(reranked))
+	for _, id := range reranked {
+		if _, ok := allowed[id]; !ok || seen[id] {
+			continue
+		}
+		seen[id] = true
+		ordered = append(ordered, id)
+	}
+	if len(ordered) == 0 {
+		return Fuse(query, entries, vecs, qvec, limit)
+	}
+	ordered = promoteUniqueExactName(query, candidates, ordered)
+	seen = make(map[string]bool, len(ordered))
+	for _, id := range ordered {
+		seen[id] = true
+	}
+
+	byID := make(map[string]catalog.Entry, len(entries))
+	byResult := make(map[string]Result, len(fallback))
+	for _, entry := range entries {
+		byID[entry.ID] = entry
+	}
+	for _, result := range fallback {
+		byResult[result.ID] = result
+		if !seen[result.ID] {
+			seen[result.ID] = true
+			ordered = append(ordered, result.ID)
+		}
+	}
+
+	results := make([]Result, 0, len(ordered))
+	for _, id := range ordered {
+		if result, ok := byResult[id]; ok {
+			results = append(results, result)
+			continue
+		}
+		entry := byID[id]
+		results = append(results, Result{ID: entry.ID, Server: entry.Server, Description: entry.Description})
+	}
+	if limit > 0 && len(results) > limit {
+		results = capPerServer(results, limit)
+	}
+	return results, evidence
+}
+
+func promoteUniqueExactName(query string, candidates []catalog.Entry, ranked []string) []string {
+	queryTerms := terms(query)
+	namedServers := make(map[string]bool)
+	for _, candidate := range candidates {
+		serverTerms := terms(candidate.Server)
+		delete(serverTerms, "mcp")
+		if len(serverTerms) > 0 && containsAll(queryTerms, serverTerms) {
+			namedServers[candidate.Server] = true
+		}
+	}
+
+	exact := ""
+	for _, candidate := range candidates {
+		if len(namedServers) > 0 && !namedServers[candidate.Server] {
+			continue
+		}
+		toolTerms := terms(candidate.Tool)
+		if len(toolTerms) < 2 || !containsAll(queryTerms, toolTerms) {
+			continue
+		}
+		if exact != "" {
+			return ranked
+		}
+		exact = candidate.ID
+	}
+	if exact == "" || ranked[0] == exact {
+		return ranked
+	}
+
+	out := make([]string, 1, len(ranked))
+	out[0] = exact
+	for _, id := range ranked {
+		if id != exact {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+func terms(text string) map[string]bool {
+	out := make(map[string]bool)
+	for _, term := range strings.FieldsFunc(strings.ToLower(text), func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	}) {
+		out[term] = true
+	}
+	return out
+}
+
+func containsAll(haystack, needles map[string]bool) bool {
+	for needle := range needles {
+		if !haystack[needle] {
+			return false
+		}
+	}
+	return true
 }
 
 // capPerServer fills the result set in fused order, but lets no single backend take more than

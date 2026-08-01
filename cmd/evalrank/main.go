@@ -23,8 +23,8 @@ import (
 
 	"github.com/ahodges/mcpd/internal/catalog"
 	"github.com/ahodges/mcpd/internal/config"
-	"github.com/ahodges/mcpd/internal/embedding"
 	"github.com/ahodges/mcpd/internal/rank"
+	"github.com/ahodges/mcpd/internal/searchindex"
 )
 
 // The acceptance gate, set over the expanded query set rather than over the fifteen the
@@ -34,8 +34,8 @@ const (
 	gateTop3 = 0.95
 	// limit is how many candidates the facade returns, so top-3 here is the real top-3.
 	limit = 3
-	// embedBudget covers embedding every query in the set on a cold run.
-	embedBudget = 3 * time.Minute
+	// indexBudget covers a cold expansion and embedding pass.
+	indexBudget = 10 * time.Minute
 )
 
 //go:embed queries.json
@@ -87,24 +87,27 @@ func run() error {
 			len(missing), strings.Join(missing, "\n  "))
 	}
 
-	vecs, qvecs, err := vectors(*cfgPath, *statePath, set, entries)
+	index, qvecs, err := vectors(*cfgPath, *statePath, set, entries)
 	if err != nil {
 		return err
 	}
+	fmt.Printf("reranking: %d answerable queries through the production pipeline\n", len(set.Answerable))
+	evaluated := evaluate(set.Answerable, entries, index, qvecs)
 
 	base, held := split(set.Answerable)
 	fmt.Printf("queries: %d answerable (%d held out), %d no-answer for calibration, %d for validation\n\n",
 		len(set.Answerable), len(held), len(set.NoAnswerCalibration), len(set.NoAnswerValidation))
 
 	if *explain {
-		explainMisses(set.Answerable, entries, vecs, qvecs)
+		explainMisses(set.Answerable, entries, index, qvecs, evaluated)
 	}
 
 	// The baseline, over the tuned-on set, reported before anything is calibrated.
-	tuned := score("tuned-on", base, entries, vecs, qvecs)
+	tuned := score("tuned-on", base, evaluated)
 	report(tuned)
-	regression := score("prototype baseline (the 15 carried forward verbatim)", byCategory(set.Answerable, "baseline"), entries, vecs, qvecs)
+	regression := score("prototype baseline (the 15 carried forward verbatim)", byCategory(set.Answerable, "baseline"), evaluated)
 	report(regression)
+	vecs, _ := index.Vectors()
 
 	cal, calErr := calibrate(set, base, entries, vecs, qvecs)
 	fmt.Printf("\ncalibration\n")
@@ -122,7 +125,7 @@ func run() error {
 	// this line is what the threshold was chosen from; everything below is the only evidence
 	// about whether the choice generalises.
 	fmt.Printf("\nheld out, scored once\n")
-	out := score("held-out", held, entries, vecs, qvecs)
+	out := score("held-out", held, evaluated)
 	report(out)
 	falsePositives := flagged(cal.Thresholds, set.NoAnswerValidation, entries, vecs, qvecs)
 	fmt.Printf("  no-answer validation: %d of %d correctly flagged as low confidence\n",
@@ -171,6 +174,7 @@ type result struct {
 	top1, top3 int
 	total      int
 	misses     []string
+	errors     []string
 }
 
 func (r result) top1Rate() float64 {
@@ -187,10 +191,28 @@ func (r result) top3Rate() float64 {
 	return float64(r.top3) / float64(r.total)
 }
 
-func score(name string, cases []answerable, entries []catalog.Entry, vecs, qvecs map[string][]float32) result {
+type evaluation struct {
+	results []rank.Result
+	error   error
+}
+
+func evaluate(cases []answerable, entries []catalog.Entry, index *searchindex.Index, qvecs map[string][]float32) map[string]evaluation {
+	out := make(map[string]evaluation, len(cases))
+	for _, c := range cases {
+		results, _, err := index.SearchVector(context.Background(), c.Query, entries, qvecs[c.Query], limit)
+		out[c.Query] = evaluation{results: results, error: err}
+	}
+	return out
+}
+
+func score(name string, cases []answerable, evaluated map[string]evaluation) result {
 	out := result{name: name, total: len(cases)}
 	for _, c := range cases {
-		results, _ := rank.Fuse(c.Query, entries, vecs, qvecs[c.Query], limit)
+		evaluation := evaluated[c.Query]
+		results := evaluation.results
+		if evaluation.error != nil {
+			out.errors = append(out.errors, fmt.Sprintf("%q: %v", c.Query, evaluation.error))
+		}
 		accept := make(map[string]struct{}, len(c.Accept))
 		for _, id := range c.Accept {
 			accept[id] = struct{}{}
@@ -226,6 +248,9 @@ func report(r result) {
 		r.name, r.top1, r.total, 100*r.top1Rate(), r.top3, r.total, 100*r.top3Rate())
 	for _, m := range r.misses {
 		fmt.Println("  miss " + m)
+	}
+	for _, err := range r.errors {
+		fmt.Println("  fusion fallback " + err)
 	}
 }
 
@@ -333,7 +358,7 @@ func absent(set querySet, entries []catalog.Entry) []string {
 // tools have no vector is calibrated over a subset: the answerable floor is measured against
 // whichever tools happened to be embedded, which biases it down and can erase a real gap
 // entirely, and the resulting number would look like a finding rather than an artefact.
-func vectors(cfgPath, statePath string, set querySet, entries []catalog.Entry) (vecs, qvecs map[string][]float32, err error) {
+func vectors(cfgPath, statePath string, set querySet, entries []catalog.Entry) (index *searchindex.Index, qvecs map[string][]float32, err error) {
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
 		return nil, nil, err
@@ -341,21 +366,34 @@ func vectors(cfgPath, statePath string, set querySet, entries []catalog.Entry) (
 	if !cfg.Embeddings.Enabled() {
 		return nil, nil, fmt.Errorf("no embeddings gateway is configured, so there is nothing to calibrate")
 	}
-	client := embedding.NewClient(cfg.Embeddings.URL, cfg.Embeddings.APIKey(), cfg.Embeddings.Model)
-	cache := embedding.NewCache(filepath.Join(statePath, "embeddings.json"), client.Model())
-	if err := cache.Load(); err != nil {
+	if !cfg.Ranking.Enabled() {
+		return nil, nil, fmt.Errorf("no expansion and rerank models are configured, so the production ranking pipeline is incomplete")
+	}
+	index = searchindex.New(
+		statePath,
+		cfg.Embeddings.URL,
+		cfg.Embeddings.APIKey(),
+		cfg.Embeddings.Model,
+		cfg.Ranking.ExpansionModel,
+		cfg.Ranking.RerankModel,
+		cfg.Ranking.RerankTimeout(),
+	)
+	if err := index.Load(); err != nil {
 		return nil, nil, err
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), embedBudget)
+	ctx, cancel := context.WithTimeout(context.Background(), indexBudget)
 	defer cancel()
 
-	vecs, missing := embedding.Vectorize(ctx, client, cache, entries)
+	index.Refresh(ctx, entries)
+	missing := index.Unvectorized()
 	if missing > 0 {
 		return nil, nil, fmt.Errorf("%d of %d tools have no vector; calibrating over a subset biases the answerable floor down and can erase a real gap",
 			missing, len(entries))
 	}
-	fmt.Printf("embeddings: %d vectors at %d dimensions, model %s\n", len(vecs), cache.Dimension(), client.Model())
+	vecs, expanded := index.Vectors()
+	fmt.Printf("embeddings: %d vectors at %d dimensions, model %s; %d expansion centroids\n",
+		len(vecs), index.Dimension(), index.Model(), len(expanded))
 
 	queries := make([]string, 0, len(set.Answerable)+len(set.NoAnswerCalibration)+len(set.NoAnswerValidation))
 	for _, c := range set.Answerable {
@@ -364,7 +402,7 @@ func vectors(cfgPath, statePath string, set querySet, entries []catalog.Entry) (
 	queries = append(queries, set.NoAnswerCalibration...)
 	queries = append(queries, set.NoAnswerValidation...)
 
-	embedded, err := client.Embed(ctx, queries)
+	embedded, err := index.Embed(ctx, queries)
 	if err != nil {
 		return nil, nil, fmt.Errorf("embed queries: %w", err)
 	}
@@ -375,7 +413,7 @@ func vectors(cfgPath, statePath string, set querySet, entries []catalog.Entry) (
 	for i, q := range queries {
 		qvecs[q] = embedded[i]
 	}
-	return vecs, qvecs, nil
+	return index, qvecs, nil
 }
 
 func xdg(env, fallback, file string) string {
@@ -398,10 +436,11 @@ func xdg(env, fallback, file string) string {
 // lexical ranking and in the cosine ranking separately. Fusion can only promote what one of
 // its inputs already ranked, so which input failed is the only thing worth knowing before
 // changing anything: a tool the semantic ranker put 300th is not a fusion problem.
-func explainMisses(cases []answerable, entries []catalog.Entry, vecs, qvecs map[string][]float32) {
+func explainMisses(cases []answerable, entries []catalog.Entry, index *searchindex.Index, qvecs map[string][]float32, evaluated map[string]evaluation) {
 	fmt.Println("explain")
+	vecs, expanded := index.Vectors()
 	for _, c := range cases {
-		results, _ := rank.Fuse(c.Query, entries, vecs, qvecs[c.Query], limit)
+		results := evaluated[c.Query].results
 		accept := map[string]struct{}{}
 		for _, id := range c.Accept {
 			accept[id] = struct{}{}
@@ -417,9 +456,10 @@ func explainMisses(cases []answerable, entries []catalog.Entry, vecs, qvecs map[
 		}
 		lex := rank.Lexical(c.Query, entries)
 		cos := rank.Cosine(entries, vecs, qvecs[c.Query])
+		expandedCos := rank.Cosine(entries, expanded, qvecs[c.Query])
 		fmt.Printf("  %q\n", c.Query)
 		for _, id := range c.Accept {
-			fmt.Printf("    %-70s lexical #%s  cosine #%s\n", id, place(lex, id), place(cos, id))
+			fmt.Printf("    %-70s lexical #%s  cosine #%s  expanded #%s\n", id, place(lex, id), place(cos, id), place(expandedCos, id))
 		}
 	}
 }
