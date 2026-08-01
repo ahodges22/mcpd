@@ -91,9 +91,10 @@ None. This is the first change in this repo; `openspec/specs/` is empty.
 - **Name-keyed state is bound to its declaration:** a stored OAuth token or a disable override
   now records the declaration it was written under, and is inert under any other. Without it a
   repointed backend would present a token to an endpoint it was never issued for.
-- **External dependency:** the LiteLLM gateway for embeddings at catalog-refresh time.
-  Verified reachable, 1536 dimensions. Off-VPN with a warm cache stays fully
-  functional.
+- **External dependency:** the LiteLLM gateway for embeddings and generated-query expansion at
+  catalog-refresh time, plus one bounded chat rerank per search. Verified reachable with
+  3072-dimension embeddings. A warm cache avoids refresh-time calls; an unavailable reranker
+  returns reciprocal-rank fusion.
 - **Single point of failure introduced:** four independent partial failures become one
   total one. If the daemon is down, every client loses every backend. Accepted
   deliberately, mitigated with `Restart=always`.

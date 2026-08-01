@@ -103,7 +103,7 @@ func searchHandler(cat *catalog.Catalog, reg *backend.Registry, th rank.Threshol
 			var err error
 			fused, evidence, err = index.Search(ctx, in.Query, entries, limit)
 			if err != nil {
-				slog.Debug("hybrid ranking degraded to fusion", "error", err)
+				slog.Warn("hybrid ranking degraded to fusion", "error", err)
 			}
 		}
 		if len(fused) == 0 {

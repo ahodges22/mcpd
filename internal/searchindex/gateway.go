@@ -80,8 +80,11 @@ func (g *gateway) complete(ctx context.Context, timeout time.Duration, body comp
 
 func (g *gateway) generate(ctx context.Context, model, prompt string) ([]string, error) {
 	content, err := g.complete(ctx, 90*time.Second, completionRequest{
-		Model:    model,
-		Messages: []message{{Role: "user", Content: prompt}},
+		Model: model,
+		Messages: []message{
+			{Role: "system", Content: expansionInstructions()},
+			{Role: "user", Content: prompt},
+		},
 	})
 	if err != nil {
 		return nil, err
@@ -89,7 +92,7 @@ func (g *gateway) generate(ctx context.Context, model, prompt string) ([]string,
 	var queries []string
 	for _, line := range strings.Split(content, "\n") {
 		line = strings.TrimSpace(strings.TrimLeft(strings.TrimSpace(line), "-*0123456789. "))
-		line = strings.Trim(line, `"`)
+		line = truncate(strings.Trim(line, `"`), 300)
 		if line != "" {
 			queries = append(queries, line)
 		}

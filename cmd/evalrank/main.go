@@ -391,6 +391,9 @@ func vectors(cfgPath, statePath string, set querySet, entries []catalog.Entry) (
 		return nil, nil, fmt.Errorf("%d of %d tools have no vector; calibrating over a subset biases the answerable floor down and can erase a real gap",
 			missing, len(entries))
 	}
+	if missing := index.Unexpanded(); missing > 0 {
+		return nil, nil, fmt.Errorf("%d of %d tools have no query-expansion centroid; the production ranking pipeline is incomplete", missing, len(entries))
+	}
 	vecs, expanded := index.Vectors()
 	fmt.Printf("embeddings: %d vectors at %d dimensions, model %s; %d expansion centroids\n",
 		len(vecs), index.Dimension(), index.Model(), len(expanded))

@@ -433,7 +433,30 @@
       the expected `run_secret_scanning` first, then appended prose. The parser was restored to
       the measured behavior and the blind set was not rescored. Structured framing and ID
       allowlisting reduce malicious-description influence, but do not eliminate the residual
-      risk that a tool description manipulates relevance ordering
+      risk that a tool description manipulates relevance ordering.
+
+      Native-client comparison explains the remaining advantage. Across the same 47 queries,
+      isolated Claude Fable 5 sessions selected 44/47 expected tools first and 47/47 within the
+      first three. ToolSearch itself retrieved 43/47 first and 46/47 within eight; Claude reached
+      47/47 because Claude Code initially exposes all 611 tool names, so the model could recover
+      `kubectl_logs` even though ToolSearch omitted it. A safety-qualified Codex fixture canary
+      selected `aws_sts`, but the required Slack canary selected Flint's `list_chart_types` from
+      the phrase "encoding channels" and hung before fixture dispatch. The full Codex run was
+      refused because that failed the no-backend-execution safety gate. Raw events showed this
+      Codex build selecting from `ALL_TOOLS` with generated JavaScript rather than emitting a
+      native `tool_search_call`; the long Slack tools were exposed under hashed names, which made
+      that selection less reliable.
+
+      Blind Claude Fable 5 and Codex reviews agreed that expansion generation still interpolated
+      untrusted tool descriptions as instructions and that eval accepted an incomplete centroid
+      index. Generation now puts serialized metadata in a user message under an explicit
+      untrusted-data system instruction, bounds each generated line, and invalidates the old
+      expansion cache through the prompt hash. Eval now refuses any missing centroid. Package
+      tests pin prompt framing, cache invalidation, JSON extraction, rerank fallback, and
+      newest-snapshot publication; the fallback warning is visible at the default log level.
+      The hardened pipeline rebuilt all 612 centroids and then passed at 45/47 top-1 (95.7%)
+      and 46/47 top-3 (97.9%). Three reranker timeouts used the designed fusion fallback; one
+      caused the sole top-3 miss. Held-out remained above tuned-on by +5.4 top-1 and +2.7 top-3
 - [x] 13.7a Abstention, by contrast, calibrated cleanly and is now live: answerable cosine
       floor 0.3096 against a no-answer ceiling of 0.2215, separated, threshold 0.2649, and
       **10 of 10 held-out no-answer queries correctly flagged**. The lexical bounds do not

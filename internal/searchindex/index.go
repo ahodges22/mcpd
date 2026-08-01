@@ -22,11 +22,12 @@ type Index struct {
 	reranker  string
 	timeout   time.Duration
 
-	refreshMu sync.Mutex
-	stateMu   sync.RWMutex
-	base      map[string][]float32
-	expanded  map[string][]float32
-	missing   int
+	refreshMu  sync.Mutex
+	stateMu    sync.RWMutex
+	base       map[string][]float32
+	expanded   map[string][]float32
+	missing    int
+	unexpanded int
 
 	queueMu sync.Mutex
 	queued  []catalog.Entry
@@ -64,7 +65,9 @@ func (i *Index) Load() error {
 		errs = append(errs, err)
 	}
 	if i.expansion != nil {
+		i.expansion.mu.Lock()
 		i.expansion.dimension = i.baseCache.Dimension()
+		i.expansion.mu.Unlock()
 		if err := i.expansion.load(); err != nil {
 			errs = append(errs, err)
 		}
@@ -170,7 +173,7 @@ func (i *Index) refresh(ctx context.Context, entries []catalog.Entry, sequence u
 		}
 	}
 	i.stateMu.Lock()
-	i.base, i.expanded, i.missing = base, expanded, missing
+	i.base, i.expanded, i.missing, i.unexpanded = base, expanded, missing, expansionMissing
 	i.stateMu.Unlock()
 }
 
@@ -184,6 +187,12 @@ func (i *Index) Unvectorized() int {
 	i.stateMu.RLock()
 	defer i.stateMu.RUnlock()
 	return i.missing
+}
+
+func (i *Index) Unexpanded() int {
+	i.stateMu.RLock()
+	defer i.stateMu.RUnlock()
+	return i.unexpanded
 }
 
 func (i *Index) Vectors() (base, expanded map[string][]float32) {

@@ -32,6 +32,7 @@ routes, sharing one cross-origin protection value.
 | `internal/catalog` | canonical ids, persistence, coalescing refresh |
 | `internal/embedding` | embeddings client, batching, content-hash cache |
 | `internal/rank` | lexical scorer, fusion, abstention and calibration |
+| `internal/searchindex` | cached query expansion, candidate assembly, bounded chat reranking |
 | `internal/oauthstore` | token persistence, pending-auth registry, code fetcher |
 | `internal/mcpsrv` | the two MCP servers |
 | `internal/web` | guard, status API, status page, inspector, OAuth routes |
@@ -83,6 +84,13 @@ acceptance gate (80% top-1, 95% top-3) is set over the expanded set, not these 1
 
 Fusion avoids normalising a lexical score against a cosine similarity, which is the usual
 source of silent mis-weighting, and degrades cleanly when one ranker is absent.
+
+Fusion is the failure path rather than the primary ordering. The primary path unions the
+lexical, base-cosine, and generated-query-centroid top lists, then sends that bounded pool to
+the configured chat reranker. Generated queries and centroids are cached by the exact prompt,
+tool input, generator model, embedding model, and dimension. A search makes one rerank request
+with a fixed deadline; a timeout, malformed response, or unavailable gateway returns the fused
+ordering instead of failing the search.
 
 Abstention deliberately does not read the fused score. Reciprocal rank fusion encodes rank
 position and ranker agreement, so the top result of any query scores about the same whether
@@ -181,8 +189,9 @@ under the existing clients.
   auditability, not containment.
 - **Workspace roots are daemon-global.** One shared child process means one roots value for
   every client and project.
-- **Embeddings require the gateway at refresh time.** A warm cache is fully functional
-  offline; only newly appeared tools degrade to lexical ranking.
+- **Ranking depends on the gateway.** Base embeddings and generated-query centroids need it on
+  a cache miss, and primary ordering makes one bounded chat request per search. A warm index
+  avoids refresh-time calls, and any request-time failure returns reciprocal-rank fusion.
 - **A backend advertising a long list-cache TTL** would serve a manual re-index from cache,
   and the SDK exposes no way to invalidate. The TTL is surfaced in status so the cause is
   visible, and reconnect forces freshness.
