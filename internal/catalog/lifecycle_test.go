@@ -338,7 +338,7 @@ func lifecycle(t *testing.T, dir string, tune tuning, specs ...config.Backend) (
 	for _, spec := range specs {
 		cfg.Backends[spec.Name] = spec
 	}
-	ov, err := backend.LoadOverrides(filepath.Join(dir, "overrides.json"))
+	ov, err := backend.LoadOverrides(filepath.Join(dir, "overrides.json"), testfake.PermissiveDeclarations{})
 	if err != nil {
 		t.Fatalf("load overrides: %v", err)
 	}

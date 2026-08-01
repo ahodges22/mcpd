@@ -17,11 +17,35 @@ func newWriterAt(t *testing.T, body string) (*Writer, string) {
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
-	w, err := NewWriter(path)
+	w, _, err := NewWriter(path)
 	if err != nil {
 		t.Fatalf("NewWriter: %v", err)
 	}
 	return w, path
+}
+
+func TestWriterInitialSnapshotMatchesDeclaredState(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(path, []byte(`{"backends":{"art":{"http_url":"https://first.example/mcp","auth":"oauth"}}}`), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	w, initial, err := NewWriter(path)
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(`{"backends":{"art":{"http_url":"https://second.example/mcp","auth":"oauth"}}}`), 0o600); err != nil {
+		t.Fatalf("replace config: %v", err)
+	}
+
+	if got := initial.Backends["art"].HTTPURL; got != "https://first.example/mcp" {
+		t.Errorf("initial config URL = %q, want first snapshot", got)
+	}
+	id, ok := w.Identity("art")
+	if !ok || id.Resource != "https://first.example/mcp" {
+		t.Errorf("initial declared identity = %+v, %v; want first snapshot", id, ok)
+	}
 }
 
 func readFile(t *testing.T, path string) string {
@@ -266,7 +290,7 @@ func TestWriter_WritesThroughASymlink(t *testing.T) {
 		t.Fatalf("Symlink: %v", err)
 	}
 
-	w, err := NewWriter(link)
+	w, _, err := NewWriter(link)
 	if err != nil {
 		t.Fatalf("NewWriter: %v", err)
 	}

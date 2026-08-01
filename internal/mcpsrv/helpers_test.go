@@ -35,7 +35,7 @@ func httpRegistry(t *testing.T, fakes ...*testfake.Fake) *backend.Registry {
 		})
 		cfg.Backends[f.Name] = config.Backend{Name: f.Name, HTTPURL: srv.URL, TimeoutSec: 10}
 	}
-	ov, err := backend.LoadOverrides(filepath.Join(t.TempDir(), "overrides.json"))
+	ov, err := backend.LoadOverrides(filepath.Join(t.TempDir(), "overrides.json"), testfake.PermissiveDeclarations{})
 	if err != nil {
 		t.Fatalf("load overrides: %v", err)
 	}

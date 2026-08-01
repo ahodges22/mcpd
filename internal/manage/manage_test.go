@@ -94,15 +94,11 @@ func newHarness(t *testing.T, body string) *harness {
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
-	w, err := config.NewWriter(path)
+	w, cfg, err := config.NewWriter(path)
 	if err != nil {
 		t.Fatalf("NewWriter: %v", err)
 	}
-	cfg, err := config.Load(path)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	ov, err := backend.LoadOverrides(filepath.Join(dir, "overrides.json"))
+	ov, err := backend.LoadOverrides(filepath.Join(dir, "overrides.json"), w)
 	if err != nil {
 		t.Fatalf("LoadOverrides: %v", err)
 	}
@@ -323,7 +319,11 @@ func TestReloadKeepsADisabledBackendDisabledAcrossARestart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	ov, err := backend.LoadOverrides(filepath.Join(filepath.Dir(h.path), "overrides.json"))
+	restartWriter, _, err := config.NewWriter(h.path)
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	ov, err := backend.LoadOverrides(filepath.Join(filepath.Dir(h.path), "overrides.json"), restartWriter)
 	if err != nil {
 		t.Fatalf("LoadOverrides: %v", err)
 	}

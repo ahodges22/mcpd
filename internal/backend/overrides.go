@@ -18,15 +18,13 @@ import (
 type Overrides struct {
 	path string
 
-	mu       sync.Mutex
-	disabled map[string]config.Identity
+	mu           sync.Mutex
+	disabled     map[string]config.Identity
+	declarations declarationGuard
+}
 
-	// Guard, when set, must report whether name is still declared and must hold that
-	// answer true for the duration of fn. It is what keeps a disable racing a removal
-	// from writing state the removal's cleanup has already passed. It is a hook rather
-	// than a direct dependency because this writer runs beneath the backend locks,
-	// where taking the daemon's outermost operation lock would invert the lock order.
-	Guard func(name string, fn func()) bool
+type declarationGuard interface {
+	HoldDeclared(name string, want *config.Identity, fn func()) bool
 }
 
 type overrideDocument struct {
@@ -39,8 +37,11 @@ type overrideDocument struct {
 
 // LoadOverrides reads the override file. An absent file is a first run, not an
 // error.
-func LoadOverrides(path string) (*Overrides, error) {
-	o := &Overrides{path: path, disabled: make(map[string]config.Identity)}
+func LoadOverrides(path string, declarations declarationGuard) (*Overrides, error) {
+	if declarations == nil {
+		return nil, errors.New("declaration guard is required")
+	}
+	o := &Overrides{path: path, disabled: make(map[string]config.Identity), declarations: declarations}
 	raw, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return o, nil
@@ -117,7 +118,7 @@ func (o *Overrides) Disabled(name string) bool {
 // set persists name's new state before recording it in memory, so what the
 // daemon believes can never be ahead of what a restart would read.
 //
-// The write happens under Guard when one is installed, so the whole
+// The write happens under the declaration guard, so the whole
 // check-and-replace is atomic against a concurrent removal: a write that observed
 // the name as declared has landed before that removal's cleanup runs, and one
 // arriving later is refused. Refusing loses nothing, because an undeclared backend
@@ -139,11 +140,8 @@ func (o *Overrides) set(name string, disabled bool, id config.Identity) error {
 		o.disabled = next
 		return nil
 	}
-	if o.Guard == nil {
-		return write()
-	}
 	var err error
-	if !o.Guard(name, func() { err = write() }) {
+	if !o.declarations.HoldDeclared(name, nil, func() { err = write() }) {
 		return fmt.Errorf("%s: %w", name, ErrUndeclared)
 	}
 	return err

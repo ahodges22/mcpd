@@ -80,10 +80,10 @@ type Writer struct {
 // every later read and write. A configuration symlinked into a dotfiles repository is a
 // normal setup, and exchanging on the link would swap the link itself for a regular file,
 // leaving the daemon reading a detached copy while the user kept editing the original.
-func NewWriter(path string) (*Writer, error) {
+func NewWriter(path string) (*Writer, *Config, error) {
 	resolved, err := filepath.EvalSymlinks(path)
 	if err != nil {
-		return nil, fmt.Errorf("resolve config path: %w", err)
+		return nil, nil, fmt.Errorf("resolve config path: %w", err)
 	}
 	dir := filepath.Dir(resolved)
 	// The directory mode is the control for credential confidentiality, not the mode of
@@ -91,19 +91,19 @@ func NewWriter(path string) (*Writer, error) {
 	// resting on one would have to choose between aborting late and keeping a readable
 	// credential. Establishing this once at startup avoids that choice.
 	if err := os.Chmod(dir, 0o700); err != nil {
-		return nil, fmt.Errorf("restrict config directory: %w", err)
+		return nil, nil, fmt.Errorf("restrict config directory: %w", err)
 	}
 	raw, err := os.ReadFile(resolved)
 	if err != nil {
-		return nil, fmt.Errorf("read config: %w", err)
+		return nil, nil, fmt.Errorf("read config: %w", err)
 	}
 	w := &Writer{path: resolved, dir: dir, baseline: raw, exchange: exchangeFiles}
 	cfg, err := parse(raw)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	w.publish(cfg)
-	return w, nil
+	return w, cfg, nil
 }
 
 func exchangeFiles(displaced, incoming string) error {

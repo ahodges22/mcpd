@@ -506,7 +506,7 @@ func countCalls(received []string) int {
 
 func overridesAt(t *testing.T, path string) *Overrides {
 	t.Helper()
-	ov, err := LoadOverrides(path)
+	ov, err := LoadOverrides(path, testfake.PermissiveDeclarations{})
 	if err != nil {
 		t.Fatalf("load overrides: %v", err)
 	}

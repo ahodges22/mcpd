@@ -62,7 +62,7 @@ func TestSearchToolsExplainsColdStartDistinctlyFromNoBackends(t *testing.T) {
 	cfg := &config.Config{Backends: map[string]config.Backend{
 		"cold": {Name: "cold", HTTPURL: deadEndpoint(t)},
 	}}
-	ov, err := backend.LoadOverrides(filepath.Join(t.TempDir(), "overrides.json"))
+	ov, err := backend.LoadOverrides(filepath.Join(t.TempDir(), "overrides.json"), testfake.PermissiveDeclarations{})
 	if err != nil {
 		t.Fatalf("load overrides: %v", err)
 	}
@@ -235,7 +235,7 @@ func TestCallToolSurfacesNotAttemptedDistinctlyFromOutcomeUnknown(t *testing.T) 
 	cfg := &config.Config{Backends: map[string]config.Backend{
 		"dead": {Name: "dead", HTTPURL: deadEndpoint(t), TimeoutSec: 1},
 	}}
-	ov, err := backend.LoadOverrides(filepath.Join(t.TempDir(), "overrides.json"))
+	ov, err := backend.LoadOverrides(filepath.Join(t.TempDir(), "overrides.json"), testfake.PermissiveDeclarations{})
 	if err != nil {
 		t.Fatalf("load overrides: %v", err)
 	}
@@ -308,7 +308,7 @@ func TestCallToolSurfacesOutcomeUnknownDistinctlyFromNotAttempted(t *testing.T) 
 	cfg := &config.Config{Backends: map[string]config.Backend{
 		"slow": {Name: "slow", HTTPURL: srv.URL, TimeoutSec: 1},
 	}}
-	ov, err := backend.LoadOverrides(filepath.Join(t.TempDir(), "overrides.json"))
+	ov, err := backend.LoadOverrides(filepath.Join(t.TempDir(), "overrides.json"), testfake.PermissiveDeclarations{})
 	if err != nil {
 		t.Fatalf("load overrides: %v", err)
 	}

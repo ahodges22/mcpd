@@ -40,11 +40,7 @@ func wireDaemon(t *testing.T, tools ...*mcp.Tool) (*daemon, *httptest.Server) {
 	if err := os.WriteFile(cfgPath, []byte(body), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
-	cfg, err := config.Load(cfgPath)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	writer, err := config.NewWriter(cfgPath)
+	writer, cfg, err := config.NewWriter(cfgPath)
 	if err != nil {
 		t.Fatalf("NewWriter: %v", err)
 	}
@@ -52,7 +48,7 @@ func wireDaemon(t *testing.T, tools ...*mcp.Tool) (*daemon, *httptest.Server) {
 	if err := os.MkdirAll(state, 0o700); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
-	ov, err := backend.LoadOverrides(filepath.Join(state, "overrides.json"))
+	ov, err := backend.LoadOverrides(filepath.Join(state, "overrides.json"), writer)
 	if err != nil {
 		t.Fatalf("LoadOverrides: %v", err)
 	}
@@ -246,12 +242,11 @@ func TestStartupDropsTheToolsOfABackendThatLoadedDisabled(t *testing.T) {
 	}
 
 	// The restart, over the same state, with the tools still on disk.
-	cfg := cfgFull(t, d)
-	writer, err := config.NewWriter(d.writer.Path())
+	writer, cfg, err := config.NewWriter(d.writer.Path())
 	if err != nil {
 		t.Fatalf("NewWriter: %v", err)
 	}
-	ov, err := backend.LoadOverrides(filepath.Join(d.state, "overrides.json"))
+	ov, err := backend.LoadOverrides(filepath.Join(d.state, "overrides.json"), writer)
 	if err != nil {
 		t.Fatalf("LoadOverrides: %v", err)
 	}

@@ -60,20 +60,11 @@ type Hooks struct {
 // user's configuration is never written: it declares backends and the daemon only
 // reads it.
 type Store struct {
-	dir         string
-	redirectURL string
-	hooks       Hooks
-	client      *http.Client
-
-	// Declared reports the current declaration identity for a backend, or false once it
-	// is no longer declared. It is a hook rather than a direct dependency because this
-	// store is consulted from beneath the backend locks, where taking the daemon's
-	// outermost operation lock would invert the lock order.
-	Declared func(server string) (config.Identity, bool)
-	// Held, when set, runs fn while the declared set cannot change, reporting whether
-	// server is declared under want. It is what makes a token write atomic against a
-	// concurrent removal rather than merely preceded by a check.
-	Held func(server string, want config.Identity, fn func()) bool
+	dir          string
+	redirectURL  string
+	hooks        Hooks
+	client       *http.Client
+	declarations declarationState
 
 	mu       sync.Mutex
 	handlers map[string]auth.OAuthHandler
@@ -87,19 +78,28 @@ type Store struct {
 	grants map[string]grantState
 }
 
+type declarationState interface {
+	Identity(name string) (config.Identity, bool)
+	HoldDeclared(name string, want *config.Identity, fn func()) bool
+}
+
 // New returns a store persisting under dir and bridging the authorization flow
 // through redirectURL, which must be the daemon's own callback route: it is
 // registered with the provider as the redirect URI and must not move.
-func New(dir, redirectURL string, hooks Hooks) *Store {
+func New(dir, redirectURL string, declarations declarationState, hooks Hooks) *Store {
+	if declarations == nil {
+		panic("declaration state is required")
+	}
 	return &Store{
-		dir:         dir,
-		redirectURL: redirectURL,
-		hooks:       hooks,
-		client:      &http.Client{Timeout: providerTimeout, Transport: publicClient{http.DefaultTransport}},
-		handlers:    make(map[string]auth.OAuthHandler),
-		builtFor:    make(map[string]config.Identity),
-		pending:     make(map[string]*pending),
-		grants:      make(map[string]grantState),
+		dir:          dir,
+		redirectURL:  redirectURL,
+		declarations: declarations,
+		hooks:        hooks,
+		client:       &http.Client{Timeout: providerTimeout, Transport: publicClient{http.DefaultTransport}},
+		handlers:     make(map[string]auth.OAuthHandler),
+		builtFor:     make(map[string]config.Identity),
+		pending:      make(map[string]*pending),
+		grants:       make(map[string]grantState),
 	}
 }
 
@@ -286,15 +286,12 @@ func (s *Store) Handler(server string) (auth.OAuthHandler, error) {
 	// The identity check comes first and applies to the cached handler too. A cache hit
 	// never reaches disk, so a check placed on the record read alone would never run for
 	// a primed handler, and that handler holds a usable token in memory.
-	want, declared := config.Identity{}, true
-	if s.Declared != nil {
-		want, declared = s.Declared(server)
-		if !declared {
-			return nil, fmt.Errorf("%s: %w", server, ErrUndeclared)
-		}
+	want, declared := s.declarations.Identity(server)
+	if !declared {
+		return nil, fmt.Errorf("%s: %w", server, ErrUndeclared)
 	}
 	if h, ok := s.handlers[server]; ok {
-		if s.Declared == nil || s.builtFor[server] == want {
+		if s.builtFor[server] == want {
 			return h, nil
 		}
 		s.discardLocked(server)
@@ -307,7 +304,7 @@ func (s *Store) Handler(server string) (auth.OAuthHandler, error) {
 	// merely stale: it is discarded, deleted, and the backend is reported as needing
 	// authorization. An absent identity counts as a mismatch, because a record written
 	// before identities existed cannot be shown to belong here.
-	if rec != nil && s.Declared != nil && rec.Identity != want {
+	if rec != nil && rec.Identity != want {
 		s.deleteLocked(server)
 		rec = nil
 		s.hooks.NeedsAuth(server, repointedNote)
@@ -563,23 +560,19 @@ func (p *persistingSource) persistLocked(tok *oauth2.Token) error {
 	// one critical section against the declared set, so a write that saw the backend as
 	// declared has landed before that removal's cleanup runs, and a later one is refused.
 	// Refusing loses nothing: the token in hand still serves this request.
-	if p.store.Declared != nil {
-		saved := false
-		var err error
-		if !p.store.holdDeclared(p.server, rec.Identity, func() {
-			err = p.store.save(p.server, rec)
-			saved = true
-		}) {
-			return fmt.Errorf("%s: %w", p.server, ErrUndeclared)
-		}
-		if err != nil {
-			return err
-		}
-		if !saved {
-			return fmt.Errorf("%s: %w", p.server, ErrUndeclared)
-		}
-	} else if err := p.store.save(p.server, rec); err != nil {
+	saved := false
+	var err error
+	if !p.store.holdDeclared(p.server, rec.Identity, func() {
+		err = p.store.save(p.server, rec)
+		saved = true
+	}) {
+		return fmt.Errorf("%s: %w", p.server, ErrUndeclared)
+	}
+	if err != nil {
 		return err
+	}
+	if !saved {
+		return fmt.Errorf("%s: %w", p.server, ErrUndeclared)
 	}
 	p.lastAccess, p.lastRefresh = tok.AccessToken, tok.RefreshToken
 	return nil
@@ -588,15 +581,7 @@ func (p *persistingSource) persistLocked(tok *oauth2.Token) error {
 // holdDeclared runs fn only while server is declared under want, and holds that answer
 // for the duration of fn.
 func (s *Store) holdDeclared(server string, want config.Identity, fn func()) bool {
-	if s.Held != nil {
-		return s.Held(server, want, fn)
-	}
-	id, ok := s.Declared(server)
-	if !ok || id != want {
-		return false
-	}
-	fn()
-	return true
+	return s.declarations.HoldDeclared(server, &want, fn)
 }
 
 func (s *Store) needsAuth(server, note string) {

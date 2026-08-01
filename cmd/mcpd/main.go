@@ -78,17 +78,13 @@ func run() error {
 	if err := os.MkdirAll(*statePath, 0o700); err != nil {
 		return fmt.Errorf("create state directory: %w", err)
 	}
-	cfg, err := config.Load(*cfgPath)
-	if err != nil {
-		return err
-	}
 	// Resolved once here so every write and every read uses the same path, and so a
 	// configuration symlinked into a dotfiles repository keeps working.
-	writer, err := config.NewWriter(*cfgPath)
+	writer, cfg, err := config.NewWriter(*cfgPath)
 	if err != nil {
 		return err
 	}
-	overrides, err := backend.LoadOverrides(filepath.Join(*statePath, "overrides.json"))
+	overrides, err := backend.LoadOverrides(filepath.Join(*statePath, "overrides.json"), writer)
 	if err != nil {
 		return err
 	}
@@ -117,7 +113,7 @@ type daemon struct {
 }
 
 func (d *daemon) wire(cfg *config.Config, addr string) error {
-	d.store = oauthstore.New(d.state, "http://"+addr+"/oauth/callback", oauthstore.Hooks{
+	d.store = oauthstore.New(d.state, "http://"+addr+"/oauth/callback", d.writer, oauthstore.Hooks{
 		// Nil store hooks fail silently, and needs-auth then never surfaces at all,
 		// which is the worse half of getting this wiring wrong.
 		NeedsAuth: func(name, note string) {
@@ -142,16 +138,6 @@ func (d *daemon) wire(cfg *config.Config, addr string) error {
 	})
 	d.cat = catalog.New(d.reg, filepath.Join(d.state, "catalog.json"))
 
-	// The three hooks without which the declared-set protection is inert. They are
-	// deliberately hooks rather than direct dependencies: both writers run beneath the
-	// backend locks, where taking the outermost operation lock would invert the order.
-	d.overrides.Guard = func(name string, fn func()) bool {
-		return d.writer.HoldDeclared(name, nil, fn)
-	}
-	d.store.Declared = d.writer.Identity
-	d.store.Held = func(server string, want config.Identity, fn func()) bool {
-		return d.writer.HoldDeclared(server, &want, fn)
-	}
 	d.mgr = manage.New(d.writer, d.reg, d.cat, d.overrides, d.store)
 
 	// The backstop for a crash between a commit and its cleanup, and the only thing that

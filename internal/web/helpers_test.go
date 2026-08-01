@@ -66,16 +66,16 @@ func newHarness(t *testing.T, fakes ...*testfake.Fake) *harness {
 	if err := os.WriteFile(cfgPath, raw, 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
-	cfg, err := config.Load(cfgPath)
+	writer, cfg, err := config.NewWriter(cfgPath)
 	if err != nil {
-		t.Fatalf("load config: %v", err)
+		t.Fatalf("new writer: %v", err)
 	}
-	ov, err := backend.LoadOverrides(filepath.Join(statDir, "overrides.json"))
+	ov, err := backend.LoadOverrides(filepath.Join(statDir, "overrides.json"), writer)
 	if err != nil {
 		t.Fatalf("load overrides: %v", err)
 	}
 
-	h := &harness{cfgPath: cfgPath, statDir: statDir}
+	h := &harness{cfgPath: cfgPath, statDir: statDir, writer: writer, ov: ov}
 	h.reg = backend.NewRegistry(cfg, ov, backend.Hooks{
 		ToolListChanged: func(s string) { h.cat.Trigger(s) },
 		Reconnected:     func(s string) { h.cat.Trigger(s) },
@@ -88,7 +88,7 @@ func newHarness(t *testing.T, fakes ...*testfake.Fake) *harness {
 	// Unstarted, so the OAuth store can be given the callback URL this very server
 	// will answer on rather than a guessed port.
 	h.web = httptest.NewUnstartedServer(nil)
-	h.oauth = oauthstore.New(statDir, "http://"+h.web.Listener.Addr().String()+"/oauth/callback",
+	h.oauth = oauthstore.New(statDir, "http://"+h.web.Listener.Addr().String()+"/oauth/callback", writer,
 		oauthstore.Hooks{
 			NeedsAuth: func(server, note string) {
 				if b, ok := h.reg.Get(server); ok {
@@ -101,19 +101,7 @@ func newHarness(t *testing.T, fakes ...*testfake.Fake) *harness {
 				}
 			},
 		})
-	// The management routes are wired the way cmd/mcpd wires them, including the three
-	// hooks without which the declared-set protection is inert.
-	h.ov = ov
-	h.writer, err = config.NewWriter(cfgPath)
-	if err != nil {
-		t.Fatalf("new writer: %v", err)
-	}
 	h.mgr = manage.New(h.writer, h.reg, h.cat, ov, h.oauth)
-	ov.Guard = func(name string, fn func()) bool { return h.writer.HoldDeclared(name, nil, fn) }
-	h.oauth.Declared = h.writer.Identity
-	h.oauth.Held = func(server string, want config.Identity, fn func()) bool {
-		return h.writer.HoldDeclared(server, &want, fn)
-	}
 	h.server = New(h.reg, h.cat, h.guard, h.oauth).WithManager(h.mgr)
 	h.web.Config.Handler = h.server.Handler()
 	h.web.Start()

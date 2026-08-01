@@ -118,7 +118,7 @@ func TestPassthroughSyncSkipsANonObjectSchemaWithoutPanicking(t *testing.T) {
 	cfg := &config.Config{Backends: map[string]config.Backend{
 		"odd": {Name: "odd", HTTPURL: deadEndpoint(t)},
 	}}
-	ov, err := backend.LoadOverrides(filepath.Join(t.TempDir(), "overrides.json"))
+	ov, err := backend.LoadOverrides(filepath.Join(t.TempDir(), "overrides.json"), testfake.PermissiveDeclarations{})
 	if err != nil {
 		t.Fatalf("load overrides: %v", err)
 	}
@@ -165,7 +165,7 @@ func TestPassthroughSyncUnadvertisesAToolThatBecomesInvalidThenDropped(t *testin
 	cfg := &config.Config{Backends: map[string]config.Backend{
 		"odd": {Name: "odd", HTTPURL: deadEndpoint(t)},
 	}}
-	ov, err := backend.LoadOverrides(filepath.Join(t.TempDir(), "overrides.json"))
+	ov, err := backend.LoadOverrides(filepath.Join(t.TempDir(), "overrides.json"), testfake.PermissiveDeclarations{})
 	if err != nil {
 		t.Fatalf("load overrides: %v", err)
 	}
@@ -231,7 +231,7 @@ func TestPassthroughSyncUnadvertisesAToolWhoseAddToolPanics(t *testing.T) {
 	cfg := &config.Config{Backends: map[string]config.Backend{
 		"odd": {Name: "odd", HTTPURL: deadEndpoint(t)},
 	}}
-	ov, err := backend.LoadOverrides(filepath.Join(t.TempDir(), "overrides.json"))
+	ov, err := backend.LoadOverrides(filepath.Join(t.TempDir(), "overrides.json"), testfake.PermissiveDeclarations{})
 	if err != nil {
 		t.Fatalf("load overrides: %v", err)
 	}

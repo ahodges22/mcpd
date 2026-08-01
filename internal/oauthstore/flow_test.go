@@ -43,6 +43,25 @@ type daemon struct {
 	lastCallback string
 }
 
+type daemonDeclarations struct{ daemon *daemon }
+
+func (d daemonDeclarations) Identity(name string) (config.Identity, bool) {
+	b, ok := d.daemon.cfg.Backends[name]
+	if !ok {
+		return config.Identity{}, false
+	}
+	return config.IdentityOf(b), true
+}
+
+func (d daemonDeclarations) HoldDeclared(name string, want *config.Identity, fn func()) bool {
+	id, ok := d.Identity(name)
+	if !ok || (want != nil && id != *want) {
+		return false
+	}
+	fn()
+	return true
+}
+
 // swapHandler serves whichever web surface is current, so a restart can replace the
 // daemon without moving the address its redirect URI is registered with. A real
 // daemon keeps that address by binding a fixed port, and the provider refuses a
@@ -64,14 +83,14 @@ func startDeclaring(t *testing.T, dir string, p *provider, ts *httptest.Server, 
 	cfg := &config.Config{Backends: map[string]config.Backend{
 		server: {Name: server, HTTPURL: declaredURL, Auth: "oauth", TimeoutSec: 10},
 	}}
-	ov, err := backend.LoadOverrides(filepath.Join(dir, "overrides.json"))
+	d := &daemon{t: t, dir: dir, prov: p, web: ts, swap: swap, cfg: cfg}
+	ov, err := backend.LoadOverrides(filepath.Join(dir, "overrides.json"), daemonDeclarations{d})
 	if err != nil {
 		t.Fatalf("load overrides: %v", err)
 	}
-	d := &daemon{t: t, dir: dir, prov: p, web: ts, swap: swap, cfg: cfg}
 	// The redirect URI is the address this server already answers on, rather than a
 	// port a test assumed.
-	d.store = oauthstore.New(dir, "http://"+ts.Listener.Addr().String()+"/oauth/callback",
+	d.store = oauthstore.New(dir, "http://"+ts.Listener.Addr().String()+"/oauth/callback", daemonDeclarations{d},
 		oauthstore.Hooks{
 			NeedsAuth: func(name, note string) {
 				if b, ok := d.reg.Get(name); ok {
@@ -84,15 +103,6 @@ func startDeclaring(t *testing.T, dir string, p *provider, ts *httptest.Server, 
 				}
 			},
 		})
-	// The daemon supplies the declared set, which is what binds a stored grant to the
-	// declaration it was issued under.
-	d.store.Declared = func(name string) (config.Identity, bool) {
-		b, ok := d.cfg.Backends[name]
-		if !ok {
-			return config.Identity{}, false
-		}
-		return config.IdentityOf(b), true
-	}
 	d.reg = backend.NewRegistry(cfg, ov, backend.Hooks{
 		Reconnected: func(s string) { d.cat.Trigger(s) },
 		StopRefresh: func(s string) { d.cat.StopRefresh(s) },
