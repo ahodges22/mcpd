@@ -127,7 +127,7 @@ func (h *harness) declared(t *testing.T) map[string]config.Backend {
 // Scenario: "An added backend serves tools without a restart", at the operation level: the
 // declaration is written and the backend is published and refreshed.
 func TestAddDeclaresPublishesAndRefreshes(t *testing.T) {
-	h := newHarness(t, `{"backends": {"art": {"command": "x"}}}`)
+	h := newHarness(t, `{"backends": {"platform": {"command": "x"}}}`)
 
 	if _, err := h.m.Add("flint", config.Backend{Command: "npx"}); err != nil {
 		t.Fatalf("Add: %v", err)
@@ -147,24 +147,24 @@ func TestAddDeclaresPublishesAndRefreshes(t *testing.T) {
 // Scenario: "A rejected declaration changes nothing", including every piece of name-keyed
 // state. This is the case an earlier draft got wrong by deleting state before the commit.
 func TestARejectedAddLeavesStateUntouched(t *testing.T) {
-	h := newHarness(t, `{"backends": {"art": {"command": "x"}}}`)
-	if err := h.reg.Disable("art"); err != nil {
+	h := newHarness(t, `{"backends": {"platform": {"command": "x"}}}`)
+	if err := h.reg.Disable("platform"); err != nil {
 		t.Fatalf("Disable: %v", err)
 	}
-	h.tok.held["art"] = true
+	h.tok.held["platform"] = true
 
-	if _, err := h.m.Add("art", config.Backend{Command: "y"}); !errors.Is(err, config.ErrDuplicate) {
+	if _, err := h.m.Add("platform", config.Backend{Command: "y"}); !errors.Is(err, config.ErrDuplicate) {
 		t.Fatalf("Add of an existing name = %v, want ErrDuplicate", err)
 	}
 
-	if !h.ov.Disabled("art") {
+	if !h.ov.Disabled("platform") {
 		t.Error("a rejected add deleted a live backend's override")
 	}
-	if !h.tok.has("art") {
+	if !h.tok.has("platform") {
 		t.Error("a rejected add deleted a live backend's stored token")
 	}
-	if got := h.declared(t)["art"].Command; got != "x" {
-		t.Errorf("art command = %q, want the original: a rejected add rewrote the declaration", got)
+	if got := h.declared(t)["platform"].Command; got != "x" {
+		t.Errorf("platform command = %q, want the original: a rejected add rewrote the declaration", got)
 	}
 }
 
@@ -172,7 +172,7 @@ func TestARejectedAddLeavesStateUntouched(t *testing.T) {
 // immediately routable and a dial that beat the deletion could authenticate with the
 // record a previous removal was supposed to have deleted.
 func TestAddClearsStaleStateBeforePublishing(t *testing.T) {
-	h := newHarness(t, `{"backends": {"art": {"command": "x"}}}`)
+	h := newHarness(t, `{"backends": {"platform": {"command": "x"}}}`)
 	// What a removal whose cleanup failed leaves behind.
 	if err := h.ov.Rebind("flint", config.Identity{}); err != nil {
 		t.Fatalf("Rebind: %v", err)
@@ -201,7 +201,7 @@ func TestAddClearsStaleStateBeforePublishing(t *testing.T) {
 
 // Scenario: "A removed backend stops serving", plus the state cleanup that goes with it.
 func TestRemoveUndeclaresTearsDownAndCleansUp(t *testing.T) {
-	h := newHarness(t, `{"backends": {"art": {"command": "x"}, "flint": {"command": "y"}}}`)
+	h := newHarness(t, `{"backends": {"platform": {"command": "x"}, "flint": {"command": "y"}}}`)
 	if err := h.reg.Disable("flint"); err != nil {
 		t.Fatalf("Disable: %v", err)
 	}
@@ -231,7 +231,7 @@ func TestRemoveUndeclaresTearsDownAndCleansUp(t *testing.T) {
 // A cleanup failure is reported but does not stop the removal: the declaration is already
 // gone and the backend is already down, so aborting would only add inconsistency.
 func TestRemoveReportsCleanupFailureWithoutAborting(t *testing.T) {
-	h := newHarness(t, `{"backends": {"art": {"command": "x"}, "flint": {"command": "y"}}}`)
+	h := newHarness(t, `{"backends": {"platform": {"command": "x"}, "flint": {"command": "y"}}}`)
 	h.tok.forgetErr = errors.New("disk on fire")
 
 	warnings, err := h.m.Remove("flint")
@@ -249,15 +249,15 @@ func TestRemoveReportsCleanupFailureWithoutAborting(t *testing.T) {
 // Scenario: "A malformed file changes nothing at all, and every existing backend keeps its
 // session".
 func TestReloadIsAllOrNothing(t *testing.T) {
-	h := newHarness(t, `{"backends": {"art": {"command": "x"}}}`)
+	h := newHarness(t, `{"backends": {"platform": {"command": "x"}}}`)
 
-	if err := os.WriteFile(h.path, []byte(`{"backends": {"art": {"command": "x"}, "broken": {}}}`), 0o600); err != nil {
+	if err := os.WriteFile(h.path, []byte(`{"backends": {"platform": {"command": "x"}, "broken": {}}}`), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 	if _, err := h.m.Reload(); err == nil {
 		t.Fatal("Reload accepted a file with an invalid declaration")
 	}
-	if _, ok := h.reg.Get("art"); !ok {
+	if _, ok := h.reg.Get("platform"); !ok {
 		t.Error("a rejected reload tore down an existing backend")
 	}
 	if _, ok := h.reg.Get("broken"); ok {
@@ -269,10 +269,10 @@ func TestReloadIsAllOrNothing(t *testing.T) {
 // The refresh matters as much as the registration: without it a hand-added backend is
 // published with no tools until the next TTL tick.
 func TestReloadAppliesHandEdits(t *testing.T) {
-	h := newHarness(t, `{"backends": {"art": {"command": "x"}, "gone": {"command": "y"}}}`)
+	h := newHarness(t, `{"backends": {"platform": {"command": "x"}, "gone": {"command": "y"}}}`)
 	h.tok.held["gone"] = true
 
-	body := `{"backends": {"art": {"command": "x"}, "fresh": {"command": "z"}}}`
+	body := `{"backends": {"platform": {"command": "x"}, "fresh": {"command": "z"}}}`
 	if err := os.WriteFile(h.path, []byte(body), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
@@ -298,12 +298,12 @@ func TestReloadAppliesHandEdits(t *testing.T) {
 // and it must hold across a restart too: carrying the state into the replacement object
 // alone leaves the persisted entry recording the previous declaration.
 func TestReloadKeepsADisabledBackendDisabledAcrossARestart(t *testing.T) {
-	h := newHarness(t, `{"backends": {"art": {"command": "x", "args": ["one"]}}}`)
-	if err := h.reg.Disable("art"); err != nil {
+	h := newHarness(t, `{"backends": {"platform": {"command": "x", "args": ["one"]}}}`)
+	if err := h.reg.Disable("platform"); err != nil {
 		t.Fatalf("Disable: %v", err)
 	}
 
-	body := `{"backends": {"art": {"command": "x", "args": ["two"]}}}`
+	body := `{"backends": {"platform": {"command": "x", "args": ["two"]}}}`
 	if err := os.WriteFile(h.path, []byte(body), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
@@ -311,7 +311,7 @@ func TestReloadKeepsADisabledBackendDisabledAcrossARestart(t *testing.T) {
 		t.Fatalf("Reload: %v", err)
 	}
 
-	if got := h.reg.Health()["art"].State; got != backend.StateDisabled {
+	if got := h.reg.Health()["platform"].State; got != backend.StateDisabled {
 		t.Errorf("state after a declaration edit = %q, want %q", got, backend.StateDisabled)
 	}
 	// The restart: a fresh registry over the same declarations and the same state.
@@ -327,11 +327,11 @@ func TestReloadKeepsADisabledBackendDisabledAcrossARestart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadOverrides: %v", err)
 	}
-	if err := ov.Reconcile(map[string]config.Identity{"art": config.IdentityOf(cfg.Backends["art"])}); err != nil {
+	if err := ov.Reconcile(map[string]config.Identity{"platform": config.IdentityOf(cfg.Backends["platform"])}); err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
 	restarted := backend.NewRegistry(cfg, ov, backend.Hooks{})
-	if got := restarted.Health()["art"].State; got != backend.StateDisabled {
+	if got := restarted.Health()["platform"].State; got != backend.StateDisabled {
 		t.Errorf("state after a restart = %q, want %q: the override was not rebound to the edited declaration", got, backend.StateDisabled)
 	}
 }
@@ -339,10 +339,10 @@ func TestReloadKeepsADisabledBackendDisabledAcrossARestart(t *testing.T) {
 // An unchanged backend must not be rebuilt: doing so would drop a live session, terminate a
 // healthy child, and force an OAuth backend through a handshake it did not need.
 func TestReloadLeavesAnUnchangedBackendAlone(t *testing.T) {
-	h := newHarness(t, `{"backends": {"art": {"command": "x"}, "flint": {"command": "y"}}}`)
-	before, _ := h.reg.Get("art")
+	h := newHarness(t, `{"backends": {"platform": {"command": "x"}, "flint": {"command": "y"}}}`)
+	before, _ := h.reg.Get("platform")
 
-	body := `{"backends": {"art": {"command": "x"}, "flint": {"command": "changed"}}}`
+	body := `{"backends": {"platform": {"command": "x"}, "flint": {"command": "changed"}}}`
 	if err := os.WriteFile(h.path, []byte(body), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
@@ -350,11 +350,11 @@ func TestReloadLeavesAnUnchangedBackendAlone(t *testing.T) {
 		t.Fatalf("Reload: %v", err)
 	}
 
-	after, _ := h.reg.Get("art")
+	after, _ := h.reg.Get("platform")
 	if before != after {
 		t.Error("an unchanged backend was rebuilt, dropping its session")
 	}
-	if h.cat.saw(h.cat.triggered, "art") {
+	if h.cat.saw(h.cat.triggered, "platform") {
 		t.Error("an unchanged backend was refreshed")
 	}
 }
@@ -401,7 +401,7 @@ func TestReloadKeepsAGrantWhenOnlyAnUnrelatedFieldChanges(t *testing.T) {
 // reload registers backends exactly as an add does, so one queued behind shutdown would
 // otherwise publish them and trigger a refresh that spawns a child after the walk.
 func TestEveryOperationRefusesAfterShutdown(t *testing.T) {
-	h := newHarness(t, `{"backends": {"art": {"command": "x"}}}`)
+	h := newHarness(t, `{"backends": {"platform": {"command": "x"}}}`)
 	before, err := os.ReadFile(h.path)
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
@@ -411,7 +411,7 @@ func TestEveryOperationRefusesAfterShutdown(t *testing.T) {
 	if _, err := h.m.Add("flint", config.Backend{Command: "npx"}); !errors.Is(err, backend.ErrRegistryShutdown) {
 		t.Errorf("Add after shutdown = %v, want ErrRegistryShutdown", err)
 	}
-	if _, err := h.m.Remove("art"); !errors.Is(err, backend.ErrRegistryShutdown) {
+	if _, err := h.m.Remove("platform"); !errors.Is(err, backend.ErrRegistryShutdown) {
 		t.Errorf("Remove after shutdown = %v, want ErrRegistryShutdown", err)
 	}
 	if _, err := h.m.Reload(); !errors.Is(err, backend.ErrRegistryShutdown) {
@@ -434,7 +434,7 @@ func TestEveryOperationRefusesAfterShutdown(t *testing.T) {
 // racing goroutine, because a race that only sometimes interleaves proves nothing about
 // whether the lock is doing any work.
 func TestARemovalAndAnAddOfOneNameStayConsistent(t *testing.T) {
-	h := newHarness(t, `{"backends": {"art": {"command": "x"}, "flint": {"command": "y"}}}`)
+	h := newHarness(t, `{"backends": {"platform": {"command": "x"}, "flint": {"command": "y"}}}`)
 	h.tok.held["flint"] = true
 
 	var wg sync.WaitGroup
@@ -470,16 +470,16 @@ func TestARemovalAndAnAddOfOneNameStayConsistent(t *testing.T) {
 // resolve a mismatch in opposite directions, and asserting both here is what stops one of
 // them being "simplified" to match the other.
 func TestReconcileResolvesEachStoreItsOwnWay(t *testing.T) {
-	h := newHarness(t, `{"backends": {"art": {"command": "x"}}}`)
+	h := newHarness(t, `{"backends": {"platform": {"command": "x"}}}`)
 	// A disable recorded under a declaration that no longer matches, plus state under a
 	// name that is not declared at all.
-	if err := h.ov.Rebind("art", config.Identity{}); err != nil {
+	if err := h.ov.Rebind("platform", config.Identity{}); err != nil {
 		t.Fatalf("Rebind: %v", err)
 	}
-	if err := h.reg.Disable("art"); err != nil {
+	if err := h.reg.Disable("platform"); err != nil {
 		t.Fatalf("Disable: %v", err)
 	}
-	if err := h.ov.Rebind("art", config.Identity{Resource: "https://stale.test"}); err != nil {
+	if err := h.ov.Rebind("platform", config.Identity{Resource: "https://stale.test"}); err != nil {
 		t.Fatalf("Rebind: %v", err)
 	}
 
@@ -491,7 +491,7 @@ func TestReconcileResolvesEachStoreItsOwnWay(t *testing.T) {
 		t.Fatalf("Reconcile: %v", err)
 	}
 
-	if !h.ov.Disabled("art") {
+	if !h.ov.Disabled("platform") {
 		t.Error("reconcile discarded a disable whose identity had drifted, which would start a process the user stopped")
 	}
 	raw, err := os.ReadFile(filepath.Join(filepath.Dir(h.path), "overrides.json"))

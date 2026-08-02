@@ -118,21 +118,19 @@ func TestADispatchCannotOutrunADisable(t *testing.T) {
 	}
 
 	releaseWrite()
-	if err := <-inflight; err != nil {
-		t.Errorf("the dispatch that already held a lease failed: %v", err)
-	}
+	assertOutcomeUnknown(t, <-inflight, "open_pull_request")
 	if err := <-disabled; err != nil {
 		t.Fatalf("disable: %v", err)
 	}
 
-	// Every assertion is on what the upstream received. The caller cannot tell a
-	// rejected call from a completed one, so its return value proves nothing.
+	// The caller cannot tell a cancelled send from a completed one; the upstream's
+	// request log is what proves cancellation stopped this one before delivery.
 	if _, err := b.Call(t.Context(), "open_pull_request", nil); !errors.Is(err, ErrDisabled) {
 		t.Errorf("call after the disable err = %v, want ErrDisabled", err)
 	}
 	final := fake.Received()
-	if n := countCalls(final); n != 2 {
-		t.Errorf("upstream received %d tools/call requests out of 3 attempts, want 2: %v", n, final)
+	if n := countCalls(final); n != 1 {
+		t.Errorf("upstream received %d tools/call requests out of 3 attempts, want 1: %v", n, final)
 	}
 	if !slices.Equal(atStop, final) {
 		t.Errorf("the upstream received %v after the gate closed: it held %v when the teardown began", final[len(atStop):], atStop)
@@ -249,6 +247,47 @@ func TestDisableInterruptsAHandshakeADispatchIsWaitingOn(t *testing.T) {
 	}
 	if err := <-call; !errors.Is(err, ErrNotAttempted) {
 		t.Errorf("the interrupted dispatch err = %v, want it to wrap ErrNotAttempted: nothing was sent, so the caller may retry", err)
+	}
+}
+
+func TestDisableInterruptsAnInflightDispatchBeforeDrainingTheGate(t *testing.T) {
+	fake := testfake.New("alpha", tool("open_pull_request"))
+	delivered := make(chan struct{})
+	fake.OnCall = func(ctx context.Context, _ *mcp.CallToolRequest) {
+		close(delivered)
+		<-ctx.Done()
+	}
+	r := wire(t, Hooks{}, fake)
+	b, _ := r.Get("alpha")
+	callCtx, cancelCall := context.WithCancel(context.Background())
+	t.Cleanup(cancelCall)
+
+	call := make(chan error, 1)
+	go func() {
+		_, err := b.Call(callCtx, "open_pull_request", nil)
+		call <- err
+	}()
+	select {
+	case <-delivered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the call never reached the upstream, so this test proves nothing")
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- r.Disable("alpha") }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("disable: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Disable did not cancel an in-flight dispatch before draining the gate")
+	}
+	select {
+	case err := <-call:
+		assertOutcomeUnknown(t, err, "open_pull_request")
+	case <-time.After(5 * time.Second):
+		t.Fatal("the cancelled dispatch did not return after Disable completed")
 	}
 }
 

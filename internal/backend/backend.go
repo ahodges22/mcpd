@@ -66,6 +66,10 @@ type ConnectAttempt struct {
 	Failed     bool
 }
 
+type dispatchCancel struct {
+	cancel context.CancelFunc
+}
+
 // environ is a package var so tests can inject a parent environment.
 var environ = os.Environ
 
@@ -122,6 +126,7 @@ type Backend struct {
 	failures       int
 	retryAt        time.Time
 	connectCancel  context.CancelFunc
+	dispatches     map[*dispatchCancel]struct{}
 	connectAttempt ConnectAttempt
 	connected      bool // a session has existed, so the next connect is a reconnect
 	// interactive latches that the next handshake is one a user asked for and is waiting on
@@ -129,7 +134,8 @@ type Backend struct {
 	// connectTimeout is read with mu already held.
 	interactive atomic.Bool
 
-	// stopping and connectCancel share one critical section so teardown cannot miss a new handshake.
+	// stopping, connectCancel, and dispatches share one critical section so teardown
+	// cannot miss work that entered before its gate writer became visible.
 	stopping bool
 	// shutdown latches for the life of the process: the daemon is exiting, so nothing
 	// may dial again however it asks. stopping cannot serve, being cleared by the very
@@ -206,6 +212,7 @@ func (b *Backend) Call(ctx context.Context, tool string, args map[string]any) (*
 	defer b.gate.RUnlock()
 
 	ctx, cancel := b.withTimeout(ctx)
+	cancel = b.trackDispatch(cancel)
 	defer cancel()
 
 	sess, err := b.ensureSession(ctx)
@@ -410,11 +417,19 @@ const (
 )
 
 // teardown follows transition, gate, life, mu, taking mu before the gate but never across
-// it; stopping precedes cancellation, refresh stops before life, and tools drop last.
+// it; stopping precedes dispatch and handshake cancellation, refresh stops before life,
+// and tools drop last.
 func (b *Backend) teardown(mode teardownMode) {
 	b.mu.Lock()
 	b.stopping = true
+	dispatches := make([]*dispatchCancel, 0, len(b.dispatches))
+	for dispatch := range b.dispatches {
+		dispatches = append(dispatches, dispatch)
+	}
 	b.mu.Unlock()
+	for _, dispatch := range dispatches {
+		dispatch.cancel()
+	}
 	b.cancelConnect()
 
 	b.gate.Lock()
@@ -558,6 +573,28 @@ func (b *Backend) withTimeout(ctx context.Context) (context.Context, context.Can
 		return context.WithCancel(ctx)
 	}
 	return context.WithTimeout(ctx, time.Duration(b.spec.TimeoutSec)*time.Second)
+}
+
+func (b *Backend) trackDispatch(cancel context.CancelFunc) context.CancelFunc {
+	dispatch := &dispatchCancel{cancel: cancel}
+	b.mu.Lock()
+	if b.stopping {
+		b.mu.Unlock()
+		cancel()
+		return cancel
+	}
+	if b.dispatches == nil {
+		b.dispatches = make(map[*dispatchCancel]struct{})
+	}
+	b.dispatches[dispatch] = struct{}{}
+	b.mu.Unlock()
+
+	return func() {
+		cancel()
+		b.mu.Lock()
+		delete(b.dispatches, dispatch)
+		b.mu.Unlock()
+	}
 }
 
 func (b *Backend) stdioTransport(context.Context) (mcp.Transport, error) {

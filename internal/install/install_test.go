@@ -30,7 +30,7 @@ const cursorGolden = `{
     "datadog-mcp": {
       "type": "http",
       "url": "https://ai.example.test/mcp/datadog",
-      "headers": { "Authorization": "Bearer ${LITELLM_KEY}" }
+      "headers": { "Authorization": "Bearer ${GATEWAY_TOKEN}" }
     }
   }
 }
@@ -56,27 +56,27 @@ url = "https://mcp.notion.com/mcp"
 
 #TS#[mcp_servers.github]
 #TS#url = "https://ai.example.test/mcp/github"
-#TS#bearer_token_env_var = "LITELLM_KEY"
+#TS#bearer_token_env_var = "GATEWAY_TOKEN"
 #TS#
 #TS#[mcp_servers.github.tools.create_pull_request]
 #TS#approval_mode = "approve"
 #TS#
-#TS#[mcp_servers.articulate_knowledge]
+#TS#[mcp_servers.knowledge_base]
 #TS#url = "https://ai.example.test/mcp/ak"
 #TS#
-#TS#[mcp_servers.articulate_knowledge.tools.articulate_knowledge-search_articulate_knowledge]
+#TS#[mcp_servers.knowledge_base.tools.knowledge_base-search]
 #TS#approval_mode = "approve"
 #TS#
-#TS#[mcp_servers.articulate_knowledge.tools.search_articulate_knowledge]
+#TS#[mcp_servers.knowledge_base.tools.search]
 #TS#approval_mode = "approve"
 
 [mcp_servers.tool-search]
 command = "uvx"
 
 [mcp_servers.tool-search.env]
-LITELLM_KEY = "${LITELLM_KEY}"
+GATEWAY_TOKEN = "${GATEWAY_TOKEN}"
 
-[projects."/home/alex"]
+[projects."/home/user"]
 trust_level = "trusted"
 `
 
@@ -265,7 +265,7 @@ func TestCodexApprovalGatesSurviveUnderTheNewToolNames(t *testing.T) {
 
 	for _, want := range []string{
 		`[mcp_servers.mcpd.tools."mcp__github__create_pull_request"]`,
-		`[mcp_servers.mcpd.tools."mcp__articulate_knowledge__search_articulate_knowledge"]`,
+		`[mcp_servers.mcpd.tools."mcp__knowledge_base__search"]`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the migrated config has no %s:\n%s", want, body)
@@ -283,13 +283,13 @@ func TestCodexApprovalGatesSurviveUnderTheNewToolNames(t *testing.T) {
 	}
 	// The prototype already prefixed one tool with its server name. Prefixing it again
 	// would produce a key that matches no tool the daemon serves, and would fail silently.
-	if strings.Contains(body, "mcp__articulate_knowledge__articulate_knowledge-") {
+	if strings.Contains(body, "mcp__knowledge_base__knowledge_base-") {
 		t.Error("an already-prefixed tool name was prefixed a second time")
 	}
 	// The real file declares that one tool twice, prefixed and unprefixed, and both reduce to
 	// one id. Two tables of the same name is a duplicate TOML key, and Codex then loads no
 	// servers at all: the migration written to protect one gate would remove every one.
-	const once = `[mcp_servers.mcpd.tools."mcp__articulate_knowledge__search_articulate_knowledge"]`
+	const once = `[mcp_servers.mcpd.tools."mcp__knowledge_base__search"]`
 	if n := strings.Count(body, once); n != 1 {
 		t.Errorf("the migrated table appears %d times, want 1: duplicate keys make config.toml unloadable", n)
 	}
@@ -698,5 +698,151 @@ func TestAReceiptFromTheInFileStashSchemeStillReverts(t *testing.T) {
 	}
 	if _, ok := got[StashKey]; ok {
 		t.Errorf("revert left %q behind", StashKey)
+	}
+}
+
+func TestJSONInstallAndRevertWithoutExistingContainer(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		container string
+		body      string
+	}{
+		{name: "claude", container: "mcpServers", body: "{\n  \"theme\": \"dark\"\n}\n"},
+		{name: "cursor", container: "mcpServers", body: "{\n  \"theme\": \"dark\"\n}\n"},
+		{name: "opencode", container: "mcp", body: "{\n  \"$schema\": \"https://opencode.ai/config.json\",\n  \"theme\": \"dark\"\n}\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t, tc.name, tc.body)
+			f.install(t)
+
+			doc := parse(t, f.read(t))
+			container, ok := doc[tc.container].(map[string]any)
+			if !ok {
+				t.Fatalf("%q is missing or not an object after install", tc.container)
+			}
+			entry, ok := container[ServerName].(map[string]any)
+			if !ok {
+				t.Fatalf("%s.%s is missing or not an object", tc.container, ServerName)
+			}
+			if got, want := entry["url"], f.client.Endpoint("127.0.0.1:7420"); got != want {
+				t.Errorf("%s.%s url = %v, want %s", tc.container, ServerName, got, want)
+			}
+
+			f.revert(t)
+			if got := f.read(t); got != tc.body {
+				t.Errorf("revert is not byte-for-byte:\n--- got ---\n%s\n--- want ---\n%s", got, tc.body)
+			}
+		})
+	}
+}
+
+func TestApplyAndRevertRefuseFilesChangedSinceInspection(t *testing.T) {
+	t.Run("apply", func(t *testing.T) {
+		f := newFixture(t, "cursor", cursorGolden)
+		p, err := f.client.PlanInstall("127.0.0.1:7420")
+		if err != nil {
+			t.Fatalf("PlanInstall: %v", err)
+		}
+		if err := os.WriteFile(f.client.Path, []byte(f.body+"\n"), 0o600); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+		if err := f.client.Apply(f.state, p); err == nil || !strings.Contains(err.Error(), "changed since it was inspected") {
+			t.Fatalf("Apply = %v, want changed-since-inspection refusal", err)
+		}
+	})
+
+	t.Run("revert", func(t *testing.T) {
+		f := newFixture(t, "cursor", cursorGolden)
+		f.install(t)
+		p, err := f.client.PlanRevert(f.state)
+		if err != nil {
+			t.Fatalf("PlanRevert: %v", err)
+		}
+		if err := os.WriteFile(f.client.Path, []byte(f.read(t)+"\n"), 0o600); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+		if err := f.client.Revert(f.state, p); err == nil || !strings.Contains(err.Error(), "changed since it was inspected") {
+			t.Fatalf("Revert = %v, want changed-since-inspection refusal", err)
+		}
+	})
+}
+
+func TestApplyEditsRefusesInvalidAnchors(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+		edit edit
+		want string
+	}{
+		{name: "out of bounds insertion", body: "abc", edit: edit{Address: "insert", To: "x", At: 4}, want: "outside the file"},
+		{name: "offset text mismatch", body: "abc", edit: edit{Address: "replace", From: "z", To: "x", At: 1}, want: "no longer what the plan resolved"},
+		{name: "non-unique anchor", body: "abcabc", edit: edit{Address: "replace", From: "abc", To: "x"}, want: "found 2 times, want 1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := applyEdits(tc.body, []edit{tc.edit})
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("applyEdits = %v, want refusal containing %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestRevertCleansReceiptWhenInstallWasNeverApplied(t *testing.T) {
+	f := newFixture(t, "cursor", cursorGolden)
+	p, err := f.client.PlanInstall("127.0.0.1:7420")
+	if err != nil {
+		t.Fatalf("PlanInstall: %v", err)
+	}
+	if err := writeReceipt(f.state, Receipt{
+		Client: f.client.Name, Path: f.client.Path, Endpoint: p.Endpoint,
+		InstallAt: "2026-08-01T00:00:00Z", Edits: p.edits, Displaced: p.displaced,
+		OriginalHash: contentHash([]byte(f.body)),
+	}); err != nil {
+		t.Fatalf("writeReceipt: %v", err)
+	}
+
+	revert, err := f.client.PlanRevert(f.state)
+	if err != nil {
+		t.Fatalf("PlanRevert: %v", err)
+	}
+	if !revert.Empty() {
+		t.Fatalf("PlanRevert returned edits for an install that was never applied: %v", revert.Notes)
+	}
+	if err := f.client.Revert(f.state, revert); err != nil {
+		t.Fatalf("Revert: %v", err)
+	}
+	if got := f.read(t); got != f.body {
+		t.Errorf("revert changed an untouched client file:\n%s", got)
+	}
+	if _, err := os.Stat(receiptPath(f.state, f.client.Name)); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("receipt still exists after cleanup: %v", err)
+	}
+}
+
+func TestTOMLMultilineStringIsNotTreatedAsAServerBlock(t *testing.T) {
+	const body = `model = "gpt-5.6-terra"
+description = """
+before
+[mcp_servers.not-a-table]
+after
+"""
+
+[projects."/home/user"]
+trust_level = "trusted"
+`
+	f := newFixture(t, "codex", body)
+	f.install(t)
+
+	got := f.read(t)
+	owned := "\n[mcp_servers.mcpd]\nurl = \"http://127.0.0.1:7420/mcp/passthrough\"\n"
+	outside, found := strings.CutSuffix(got, owned)
+	if !found {
+		t.Fatalf("installed file does not end with the mcpd-owned region:\n%s", got)
+	}
+	if outside != body {
+		t.Errorf("install changed bytes outside the mcpd-owned region:\n--- got ---\n%s\n--- want ---\n%s", outside, body)
+	}
+	if !strings.Contains(got, "description = \"\"\"\nbefore\n[mcp_servers.not-a-table]\nafter\n\"\"\"") {
+		t.Errorf("the multi-line string was corrupted:\n%s", got)
 	}
 }

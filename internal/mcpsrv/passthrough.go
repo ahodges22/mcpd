@@ -13,6 +13,7 @@ import (
 
 	"github.com/ahodges22/mcpd/internal/backend"
 	"github.com/ahodges22/mcpd/internal/catalog"
+	"github.com/ahodges22/mcpd/internal/version"
 )
 
 var objectSchema = json.RawMessage(`{"type":"object"}`)
@@ -36,7 +37,7 @@ func NewPassthrough(cat *catalog.Catalog, reg *backend.Registry) *Passthrough {
 	p := &Passthrough{
 		cat: cat,
 		reg: reg,
-		srv: mcp.NewServer(&mcp.Implementation{Name: "mcpd-passthrough", Version: "dev"},
+		srv: mcp.NewServer(&mcp.Implementation{Name: "mcpd-passthrough", Version: version.String()},
 			&mcp.ServerOptions{Instructions: passthroughInstructions(reg)}),
 		known: make(map[string]catalog.Entry),
 	}

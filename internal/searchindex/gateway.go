@@ -109,9 +109,10 @@ func (g *gateway) rerank(ctx context.Context, model, query string, candidates []
 		Name        string `json:"name"`
 		Description string `json:"description"`
 	}
-	sort.Slice(candidates, func(i, j int) bool { return candidates[i].ID < candidates[j].ID })
-	items := make([]candidate, 0, len(candidates))
-	for _, entry := range candidates {
+	sorted := append([]catalog.Entry(nil), candidates...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].ID < sorted[j].ID })
+	items := make([]candidate, 0, len(sorted))
+	for _, entry := range sorted {
 		items = append(items, candidate{
 			ID:          entry.ID,
 			Name:        entry.Tool,

@@ -3,6 +3,7 @@ package mcpsrv
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -18,6 +19,13 @@ import (
 	"github.com/ahodges22/mcpd/internal/rank"
 	"github.com/ahodges22/mcpd/internal/testfake"
 )
+
+type degradedSearchIndex struct{}
+
+func (degradedSearchIndex) Search(_ context.Context, _ string, entries []catalog.Entry, _ int) ([]rank.Result, rank.Evidence, error) {
+	entry := entries[0]
+	return []rank.Result{{ID: entry.ID, Server: entry.Server, Description: entry.Description}}, rank.Evidence{}, errors.New("embedding unavailable")
+}
 
 func TestSearchFacadeAdvertisesExactlyThreeTools(t *testing.T) {
 	reg := httpRegistry(t)
@@ -140,6 +148,19 @@ func TestSearchToolsReturnsFusedResultsForAMatchingQuery(t *testing.T) {
 	out := callSearch(t, client, "create pull request", 0)
 	if len(out.Results) != 1 || out.Results[0].ID != "mcp__github__create_pull_request" {
 		t.Fatalf("results = %+v, want the one matching tool", out.Results)
+	}
+}
+
+func TestSearchToolsServesDegradedIndexResults(t *testing.T) {
+	reg := httpRegistry(t, testfake.New("github", tool("create_pull_request")))
+	cat := catalog.New(reg, filepath.Join(t.TempDir(), "catalog.json"))
+	cat.RefreshAll(t.Context())
+	t.Cleanup(func() { cat.StopRefresh("github") })
+
+	client := connectClient(t, NewSearch(cat, reg, rank.Thresholds{}, degradedSearchIndex{}))
+	out := callSearch(t, client, "create pull request", 0)
+	if len(out.Results) != 1 || out.Results[0].ID != "mcp__github__create_pull_request" {
+		t.Fatalf("results = %+v, want the degraded index result", out.Results)
 	}
 }
 

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/ahodges22/mcpd/internal/catalog"
+	"github.com/ahodges22/mcpd/internal/config"
 	"github.com/ahodges22/mcpd/internal/rank"
 )
 
@@ -88,13 +89,30 @@ func TestSearchVectorFallsBackWhenRerankerFails(t *testing.T) {
 	}
 }
 
+func TestSearchReturnsLexicalResultsWhenEmbeddingFails(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "unavailable", http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+
+	entries := []catalog.Entry{{ID: "mcp__x__alpha", Server: "x", Tool: "alpha", Description: "alpha"}}
+	index := New(t.TempDir(), config.Embeddings{URL: server.URL, Model: "embed"}, config.Ranking{})
+	got, _, err := index.Search(t.Context(), "alpha", entries, 1)
+	if err == nil {
+		t.Fatal("Search error = nil, want the embedding failure reported")
+	}
+	if resultIDs(got) != "mcp__x__alpha" {
+		t.Fatalf("results = %s, want lexical result mcp__x__alpha", resultIDs(got))
+	}
+}
+
 func TestRefreshReportsMissingExpansion(t *testing.T) {
 	server := embeddingServer(t, func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "generation unavailable", http.StatusServiceUnavailable)
 	})
 	defer server.Close()
 
-	index := New(t.TempDir(), server.URL, "", "embed", "generator", "reranker", time.Second)
+	index := New(t.TempDir(), config.Embeddings{URL: server.URL, Model: "embed"}, config.Ranking{ExpansionModel: "generator", RerankModel: "reranker", RerankTimeoutMS: 1000})
 	index.Refresh(t.Context(), []catalog.Entry{{ID: "mcp__x__tool", Server: "x", Tool: "tool", Description: "does work"}})
 	if index.Unvectorized() != 0 || index.Unexpanded() != 1 {
 		t.Fatalf("missing base=%d expansion=%d, want 0 and 1", index.Unvectorized(), index.Unexpanded())
@@ -122,7 +140,7 @@ func TestQueueRefreshPublishesOnlyTheNewestSnapshot(t *testing.T) {
 	})
 	defer server.Close()
 
-	index := New(t.TempDir(), server.URL, "", "embed", "generator", "reranker", time.Second)
+	index := New(t.TempDir(), config.Embeddings{URL: server.URL, Model: "embed"}, config.Ranking{ExpansionModel: "generator", RerankModel: "reranker", RerankTimeoutMS: 1000})
 	oldEntry := catalog.Entry{ID: "mcp__x__old", Server: "x", Tool: "old", Description: "old"}
 	newEntry := catalog.Entry{ID: "mcp__x__new", Server: "x", Tool: "new", Description: "new"}
 	index.QueueRefresh([]catalog.Entry{oldEntry}, 5*time.Second)

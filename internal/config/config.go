@@ -3,8 +3,8 @@
 package config
 
 import (
-	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"regexp"
 	"strings"
@@ -98,19 +98,26 @@ func (b Backend) ChildEnv(parent []string) []string {
 	}
 	for _, pat := range b.EnvPassthrough {
 		if prefix, ok := strings.CutSuffix(pat, "*"); ok {
+			matched := false
 			for k, v := range index {
 				if strings.HasPrefix(k, prefix) {
 					add(k, v)
+					matched = true
 				}
+			}
+			if !matched {
+				b.warnUnset("env_passthrough matches nothing in the daemon environment", pat)
 			}
 			continue
 		}
 		if v, ok := index[pat]; ok {
 			add(pat, v)
+		} else {
+			b.warnUnset("env_passthrough variable is not set in the daemon environment", pat)
 		}
 	}
 	for k, v := range b.Env {
-		add(k, expand(v, index))
+		add(k, b.expand(v, index))
 	}
 	return out
 }
@@ -122,7 +129,7 @@ func (b Backend) ExpandHeaders(parent []string) map[string]string {
 	index := indexEnv(parent)
 	out := make(map[string]string, len(b.Headers))
 	for k, v := range b.Headers {
-		out[k] = expand(v, index)
+		out[k] = b.expand(v, index)
 	}
 	return out
 }
@@ -137,10 +144,22 @@ func indexEnv(parent []string) map[string]string {
 	return index
 }
 
-func expand(s string, index map[string]string) string {
+// expand resolves ${VAR} references, warning on any variable the daemon does not
+// hold: the reference still becomes "", but silently sending "Bearer " upstream
+// looks exactly like a bad credential, so the log must name the real cause.
+func (b Backend) expand(s string, index map[string]string) string {
 	return envRef.ReplaceAllStringFunc(s, func(m string) string {
-		return index[envRef.FindStringSubmatch(m)[1]]
+		name := envRef.FindStringSubmatch(m)[1]
+		v, ok := index[name]
+		if !ok {
+			b.warnUnset("declaration references a variable the daemon environment does not hold", name)
+		}
+		return v
 	})
+}
+
+func (b Backend) warnUnset(msg, variable string) {
+	slog.Warn(msg, "backend", b.Name, "variable", variable)
 }
 
 func Load(path string) (*Config, error) {
@@ -148,43 +167,9 @@ func Load(path string) (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read config: %w", err)
 	}
-	// A pointer distinguishes an absent or null "backends" from an empty one. Empty is
-	// legal, because removing the last backend produces it; absent is a malformed file,
-	// and booting with every backend silently gone is worse than refusing.
-	var doc struct {
-		Backends   *map[string]Backend `json:"backends"`
-		Embeddings Embeddings          `json:"embeddings"`
-		Ranking    Ranking             `json:"ranking"`
-	}
-	if err := json.Unmarshal(raw, &doc); err != nil {
-		return nil, fmt.Errorf("parse config: %w", err)
-	}
-	if doc.Backends == nil {
-		return nil, fmt.Errorf("config declares no backends object")
-	}
-	c := Config{Backends: *doc.Backends, Embeddings: doc.Embeddings, Ranking: doc.Ranking}
-	if err := validateRanking(c); err != nil {
-		return nil, err
-	}
-	if c.Backends == nil {
-		c.Backends = map[string]Backend{}
-	}
-	for name, b := range c.Backends {
-		if !ValidName(name) {
-			return nil, fmt.Errorf("backend name %q must match %s", name, nameRef)
-		}
-		if b.IsStdio() == (b.HTTPURL != "") {
-			return nil, fmt.Errorf("backend %q must declare exactly one of command or http_url", name)
-		}
-		for _, pat := range b.EnvPassthrough {
-			if prefix, ok := strings.CutSuffix(pat, "*"); ok && prefix == "" {
-				return nil, fmt.Errorf("backend %q env_passthrough %q would grant its entire environment", name, pat)
-			}
-		}
-		b.Name = name
-		c.Backends[name] = b
-	}
-	return &c, nil
+	// parse holds the shared validation, so a file loaded at startup and a document
+	// written through the panel are held to exactly the same rules.
+	return parse(raw)
 }
 
 func validateRanking(c Config) error {

@@ -284,6 +284,34 @@ func tool(name string) *mcp.Tool {
 	return &mcp.Tool{Name: name, Description: name + " description"}
 }
 
+// The daemon has no user authentication, so it must refuse to bind anywhere but loopback:
+// a non-loopback listener would expose every connected tool to the network and drop the
+// MCP endpoints' rebinding defense.
+func TestRequireLoopbackAddrRefusesNonLoopback(t *testing.T) {
+	for _, tc := range []struct {
+		addr string
+		ok   bool
+	}{
+		{"127.0.0.1:7420", true},
+		{"localhost:7420", true},
+		{"[::1]:7420", true},
+		{"127.0.0.2:0", true},
+		{":7420", false},
+		{"0.0.0.0:7420", false},
+		{"192.168.1.10:7420", false},
+		{"example.com:7420", false},
+		{"127.0.0.1", false},
+	} {
+		err := requireLoopbackAddr(tc.addr)
+		if tc.ok && err != nil {
+			t.Errorf("requireLoopbackAddr(%q) = %v, want nil", tc.addr, err)
+		}
+		if !tc.ok && err == nil {
+			t.Errorf("requireLoopbackAddr(%q) = nil, want an error", tc.addr)
+		}
+	}
+}
+
 // Abstention is inert unless it is wired, and an unwired threshold is invisible: search keeps
 // answering, just without ever saying it found nothing good. Task 7 built the mechanism and
 // Task 13 calibrated the number, so this asserts the one thing neither of those can: that the
@@ -301,10 +329,16 @@ func TestAbstentionIsWiredOnlyWhenAGatewayCanProduceACosine(t *testing.T) {
 		t.Errorf("abstention is enabled with no gateway: %+v", got)
 	}
 
-	// And with a gateway, the calibrated number reaches the facade.
-	d.index = searchindex.New(t.TempDir(), "https://gateway.test", "", "", "", "", 0)
+	// And with a gateway sending the calibrated model, the number reaches the facade.
+	d.index = searchindex.New(t.TempDir(), config.Embeddings{URL: "https://gateway.test", Model: abstainModel}, config.Ranking{})
 	got := d.thresholds()
 	if !got.Enabled || got.Cosine != abstainCosine {
 		t.Errorf("thresholds = %+v, want the calibrated %v enabled", got, abstainCosine)
+	}
+
+	// Any other model gets no abstention: the threshold was not measured for its vectors.
+	d.index = searchindex.New(t.TempDir(), config.Embeddings{URL: "https://gateway.test"}, config.Ranking{})
+	if got := d.thresholds(); got.Enabled {
+		t.Errorf("abstention is enabled for an uncalibrated embedding model: %+v", got)
 	}
 }

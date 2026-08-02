@@ -8,6 +8,7 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -733,5 +734,25 @@ func waitFor(t *testing.T, cond func() bool) {
 			t.Fatal("condition not met within 5s")
 		}
 		time.Sleep(time.Millisecond)
+	}
+}
+
+// A truncated or damaged catalog.json is a rebuildable cache, so it must cost a cold
+// start rather than block the daemon until someone hand-deletes the file.
+func TestACorruptPersistedCatalogCostsAColdStartNotTheDaemon(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "catalog.json")
+	if err := os.WriteFile(path, []byte("{truncated"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	c := newCatalog(stubSource{"alpha": serving(tool("kubectl_logs"))}, path, fastTuning)
+	if err := c.Load(); err != nil {
+		t.Fatalf("Load returned %v: a damaged cache must not abort startup", err)
+	}
+	if got := len(c.Entries()); got != 0 {
+		t.Errorf("loaded %d entries from a damaged file, want a cold start", got)
+	}
+	if _, err := os.Stat(path + ".corrupt"); err != nil {
+		t.Errorf("damaged file was not kept aside for diagnosis: %v", err)
 	}
 }

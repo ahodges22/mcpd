@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"sync"
 
+	"github.com/ahodges22/mcpd/internal/atomicfile"
 	"github.com/ahodges22/mcpd/internal/catalog"
 )
 
@@ -180,20 +181,8 @@ func (c *Cache) Save() error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("create state directory: %w", err)
 	}
-	tmp, err := os.CreateTemp(dir, ".embeddings-*")
-	if err != nil {
-		return fmt.Errorf("create temporary embedding cache: %w", err)
-	}
-	defer os.Remove(tmp.Name())
-	if _, err := tmp.Write(raw); err != nil {
-		tmp.Close()
+	if err := atomicfile.Write(c.path, raw, 0o600); err != nil {
 		return fmt.Errorf("write embedding cache: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("write embedding cache: %w", err)
-	}
-	if err := os.Rename(tmp.Name(), c.path); err != nil {
-		return fmt.Errorf("replace embedding cache: %w", err)
 	}
 	return nil
 }
@@ -254,9 +243,10 @@ func Vectorize(ctx context.Context, client *Client, cache *Cache, entries []cata
 // The numbers, over 47 answerable queries: name and description alone score top-1 66.0% and top-3
 // 78.7%. Adding parameter names leaves top-1 at 66.0% and drops top-3 to 76.6%. Adding the server
 // name as well drops top-1 to 61.7%. Both additions are shared vocabulary rather than
-// distinguishing vocabulary: `account`, `region`, `role` and `workspace` are parameters of nearly
-// every art tool, and one server contributes 315 of the 611 tools, so its name is a token half the
-// catalogue has. Each makes tools look more alike, which is the opposite of what retrieval needs.
+// distinguishing vocabulary: parameters like `account`, `region`, `role` and `workspace` recur
+// across nearly every tool, and one large backend contributed over half the catalog, so its name
+// is a token half the catalog shares. Each makes tools look more alike, which is the opposite of
+// what retrieval needs.
 func embedText(e catalog.Entry) string {
 	if e.Description == "" {
 		return e.Tool

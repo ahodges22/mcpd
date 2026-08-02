@@ -27,7 +27,7 @@ func newWriterAt(t *testing.T, body string) (*Writer, string) {
 func TestWriterInitialSnapshotMatchesDeclaredState(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")
-	if err := os.WriteFile(path, []byte(`{"backends":{"art":{"http_url":"https://first.example/mcp","auth":"oauth"}}}`), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(`{"backends":{"platform":{"http_url":"https://first.example/mcp","auth":"oauth"}}}`), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -35,14 +35,14 @@ func TestWriterInitialSnapshotMatchesDeclaredState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewWriter: %v", err)
 	}
-	if err := os.WriteFile(path, []byte(`{"backends":{"art":{"http_url":"https://second.example/mcp","auth":"oauth"}}}`), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(`{"backends":{"platform":{"http_url":"https://second.example/mcp","auth":"oauth"}}}`), 0o600); err != nil {
 		t.Fatalf("replace config: %v", err)
 	}
 
-	if got := initial.Backends["art"].HTTPURL; got != "https://first.example/mcp" {
+	if got := initial.Backends["platform"].HTTPURL; got != "https://first.example/mcp" {
 		t.Errorf("initial config URL = %q, want first snapshot", got)
 	}
-	id, ok := w.Identity("art")
+	id, ok := w.Identity("platform")
 	if !ok || id.Resource != "https://first.example/mcp" {
 		t.Errorf("initial declared identity = %+v, %v; want first snapshot", id, ok)
 	}
@@ -71,7 +71,7 @@ func mode(t *testing.T, path string) os.FileMode {
 func TestWriter_PreservesUnmodelledFields(t *testing.T) {
 	w, path := newWriterAt(t, `{
   "backends": {
-    "art": {"command": "art-mcp-server", "future_knob": {"deep": [1, 2]}}
+    "platform": {"command": "platform-mcp-server", "future_knob": {"deep": [1, 2]}}
   },
   "top_level_extra": "keep me"
 }`)
@@ -99,9 +99,9 @@ func TestWriter_PreservesUnmodelledFields(t *testing.T) {
 // Scenario: "A write is refused when the file changed underneath it", and the file is left
 // byte identical.
 func TestWriter_RefusesStaleWriteAndChangesNothing(t *testing.T) {
-	w, path := newWriterAt(t, `{"backends": {"art": {"command": "x"}}}`)
+	w, path := newWriterAt(t, `{"backends": {"platform": {"command": "x"}}}`)
 
-	handEdit := `{"backends": {"art": {"command": "x"}, "byhand": {"command": "y"}}}`
+	handEdit := `{"backends": {"platform": {"command": "x"}, "byhand": {"command": "y"}}}`
 	if err := os.WriteFile(path, []byte(handEdit), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
@@ -118,7 +118,7 @@ func TestWriter_RefusesStaleWriteAndChangesNothing(t *testing.T) {
 // Scenario: "A second write is not refused", which is what proves the baseline advanced
 // rather than staying pinned to the bytes read at startup.
 func TestWriter_BaselineAdvancesAfterSuccess(t *testing.T) {
-	w, _ := newWriterAt(t, `{"backends": {"art": {"command": "x"}}}`)
+	w, _ := newWriterAt(t, `{"backends": {"platform": {"command": "x"}}}`)
 
 	if _, err := w.Add("flint", Backend{Command: "npx"}); err != nil {
 		t.Fatalf("first Add: %v", err)
@@ -131,9 +131,9 @@ func TestWriter_BaselineAdvancesAfterSuccess(t *testing.T) {
 // Scenario: "An edit landing after the comparison is archived rather than lost", and it
 // survives ten later routine writes. A copy taken before the exchange would miss it.
 func TestWriter_ArchivesAnEditThatLandsAfterTheComparison(t *testing.T) {
-	w, path := newWriterAt(t, `{"backends": {"art": {"command": "x"}}}`)
+	w, path := newWriterAt(t, `{"backends": {"platform": {"command": "x"}}}`)
 
-	sneaky := `{"backends": {"art": {"command": "x"}, "sneaky": {"command": "z"}}}`
+	sneaky := `{"backends": {"platform": {"command": "x"}, "sneaky": {"command": "z"}}}`
 	w.beforeExchange = func() {
 		if err := os.WriteFile(path, []byte(sneaky), 0o600); err != nil {
 			t.Fatalf("WriteFile: %v", err)
@@ -177,7 +177,7 @@ func TestWriter_ArchivesAnEditThatLandsAfterTheComparison(t *testing.T) {
 // Scenario: "Routine archives are bounded". A displacement the daemon itself wrote is
 // reconstructible, so those are the ones that may be discarded.
 func TestWriter_BoundsRoutineArchives(t *testing.T) {
-	w, path := newWriterAt(t, `{"backends": {"art": {"command": "x"}}}`)
+	w, path := newWriterAt(t, `{"backends": {"platform": {"command": "x"}}}`)
 
 	for i := range routineArchiveLimit + 3 {
 		if _, err := w.Add("b"+string(rune('a'+i)), Backend{Command: "x"}); err != nil {
@@ -204,7 +204,7 @@ func TestWriter_BoundsRoutineArchives(t *testing.T) {
 // plain-rename fallback: a fallback reopens the window the exchange exists to close, and
 // it does so exactly where nobody would notice.
 func TestWriter_RefusesWhenExchangeUnavailable(t *testing.T) {
-	w, path := newWriterAt(t, `{"backends": {"art": {"command": "x"}}}`)
+	w, path := newWriterAt(t, `{"backends": {"platform": {"command": "x"}}}`)
 	before := readFile(t, path)
 	w.exchange = func(string, string) error { return errors.ErrUnsupported }
 
@@ -221,7 +221,7 @@ func TestWriter_RefusesWhenExchangeUnavailable(t *testing.T) {
 // left recoverable and owner-only. Archiving happens after the commit point, so treating
 // it as an error would leave the file committed and the caller believing it failed.
 func TestWriter_ArchiveFailureIsAWarningNotAnError(t *testing.T) {
-	w, path := newWriterAt(t, `{"backends": {"art": {"command": "x"}}}`)
+	w, path := newWriterAt(t, `{"backends": {"platform": {"command": "x"}}}`)
 	w.archiveFails = true
 
 	warnings, err := w.Add("flint", Backend{Command: "npx"})
@@ -248,7 +248,7 @@ func TestWriter_ArchiveFailureIsAWarningNotAnError(t *testing.T) {
 // daemon read is not enough, because an editor can swap in a fresh permissive one after
 // the check: the mode of the inode checked is not the mode of the inode displaced.
 func TestWriter_DisplacedInodeIsRestrictedEvenWhenSwapped(t *testing.T) {
-	w, path := newWriterAt(t, `{"backends": {"art": {"command": "x"}}}`)
+	w, path := newWriterAt(t, `{"backends": {"platform": {"command": "x"}}}`)
 	if got := mode(t, filepath.Dir(path)); got != 0o700 {
 		t.Errorf("declaration directory mode = %v, want 0700", got)
 	}
@@ -282,7 +282,7 @@ func TestWriter_DisplacedInodeIsRestrictedEvenWhenSwapped(t *testing.T) {
 func TestWriter_WritesThroughASymlink(t *testing.T) {
 	dir := t.TempDir()
 	target := filepath.Join(dir, "dotfiles-config.json")
-	if err := os.WriteFile(target, []byte(`{"backends": {"art": {"command": "x"}}}`), 0o600); err != nil {
+	if err := os.WriteFile(target, []byte(`{"backends": {"platform": {"command": "x"}}}`), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 	link := filepath.Join(dir, "config.json")
@@ -313,9 +313,9 @@ func TestWriter_WritesThroughASymlink(t *testing.T) {
 // Scenario: "A duplicate name is refused rather than replacing an existing declaration",
 // and its mirror for removal.
 func TestWriter_RefusesDuplicateAndUnknown(t *testing.T) {
-	w, _ := newWriterAt(t, `{"backends": {"art": {"command": "x"}}}`)
+	w, _ := newWriterAt(t, `{"backends": {"platform": {"command": "x"}}}`)
 
-	if _, err := w.Add("art", Backend{Command: "y"}); !errors.Is(err, ErrDuplicate) {
+	if _, err := w.Add("platform", Backend{Command: "y"}); !errors.Is(err, ErrDuplicate) {
 		t.Errorf("Add of an existing name = %v, want ErrDuplicate", err)
 	}
 	if _, err := w.Remove("nope"); !errors.Is(err, ErrUnknown) {
@@ -331,9 +331,9 @@ func TestWriter_RefusesDuplicateAndUnknown(t *testing.T) {
 
 // Scenario: "Removing the last backend leaves a loadable file".
 func TestWriter_RemovingTheLastBackendStaysLoadable(t *testing.T) {
-	w, path := newWriterAt(t, `{"backends": {"art": {"command": "x"}}}`)
+	w, path := newWriterAt(t, `{"backends": {"platform": {"command": "x"}}}`)
 
-	if _, err := w.Remove("art"); err != nil {
+	if _, err := w.Remove("platform"); err != nil {
 		t.Fatalf("Remove: %v", err)
 	}
 	cfg, err := Load(path)
@@ -349,7 +349,7 @@ func TestWriter_RemovingTheLastBackendStaysLoadable(t *testing.T) {
 // duplicate rather than as stale, which is what serializing inside the critical section
 // buys: the loser re-reads a file that already contains the winner.
 func TestWriter_SerializesConcurrentWrites(t *testing.T) {
-	w, path := newWriterAt(t, `{"backends": {"art": {"command": "x"}}}`)
+	w, path := newWriterAt(t, `{"backends": {"platform": {"command": "x"}}}`)
 
 	var wg sync.WaitGroup
 	errs := make([]error, 2)
@@ -384,7 +384,7 @@ func TestWriter_SerializesConcurrentWrites(t *testing.T) {
 		t.Fatalf("Unmarshal: %v", err)
 	}
 	if _, ok := doc.Backends["flint"]; !ok || len(doc.Backends) != 2 {
-		t.Errorf("backends = %v, want exactly art and one flint", doc.Backends)
+		t.Errorf("backends = %v, want exactly platform and one flint", doc.Backends)
 	}
 }
 
@@ -392,9 +392,9 @@ func TestWriter_SerializesConcurrentWrites(t *testing.T) {
 // reconcile the runtime while every later write from the surface refused as stale until
 // the next restart.
 func TestWriter_ReloadAdoptsBaselineSoLaterWritesSucceed(t *testing.T) {
-	w, path := newWriterAt(t, `{"backends": {"art": {"command": "x"}}}`)
+	w, path := newWriterAt(t, `{"backends": {"platform": {"command": "x"}}}`)
 
-	handEdit := `{"backends": {"art": {"command": "x"}, "byhand": {"command": "y"}}}`
+	handEdit := `{"backends": {"platform": {"command": "x"}, "byhand": {"command": "y"}}}`
 	if err := os.WriteFile(path, []byte(handEdit), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
@@ -418,12 +418,12 @@ func TestWriter_ReloadAdoptsBaselineSoLaterWritesSucceed(t *testing.T) {
 // before it touches anything, which is the level at which a bad hand edit can be stopped
 // from taking down a working backend.
 func TestWriter_ReloadIsAllOrNothing(t *testing.T) {
-	w, path := newWriterAt(t, `{"backends": {"art": {"command": "x"}}}`)
+	w, path := newWriterAt(t, `{"backends": {"platform": {"command": "x"}}}`)
 
 	for _, bad := range []string{
-		`{"backends": {"art": {"command": "x"}, "broken": {}}}`,
-		`{"backends": {"art": {"command": "x"}`,
-		`{"backends": {"art": {"command": "x"}, "Bad Name": {"command": "y"}}}`,
+		`{"backends": {"platform": {"command": "x"}, "broken": {}}}`,
+		`{"backends": {"platform": {"command": "x"}`,
+		`{"backends": {"platform": {"command": "x"}, "Bad Name": {"command": "y"}}}`,
 	} {
 		if err := os.WriteFile(path, []byte(bad), 0o600); err != nil {
 			t.Fatalf("WriteFile: %v", err)
@@ -431,7 +431,7 @@ func TestWriter_ReloadIsAllOrNothing(t *testing.T) {
 		if _, err := w.Reload(); err == nil {
 			t.Errorf("Reload accepted an invalid file: %s", bad)
 		}
-		if !w.Declared("art") {
+		if !w.Declared("platform") {
 			t.Fatalf("a rejected reload dropped the declared set: %s", bad)
 		}
 	}
@@ -440,9 +440,9 @@ func TestWriter_ReloadIsAllOrNothing(t *testing.T) {
 // The declared-set snapshot is what the override and token writers consult, so it must
 // track every committed change rather than only what was read at startup.
 func TestWriter_DeclaredSetTracksWrites(t *testing.T) {
-	w, _ := newWriterAt(t, `{"backends": {"art": {"command": "x"}}}`)
+	w, _ := newWriterAt(t, `{"backends": {"platform": {"command": "x"}}}`)
 
-	if !w.Declared("art") || w.Declared("flint") {
+	if !w.Declared("platform") || w.Declared("flint") {
 		t.Fatal("initial declared set is wrong")
 	}
 	if _, err := w.Add("flint", Backend{HTTPURL: "https://example.test/mcp", Auth: "oauth"}); err != nil {

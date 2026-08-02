@@ -11,9 +11,8 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/ahodges22/mcpd/internal/config"
+	"github.com/ahodges22/mcpd/internal/version"
 )
-
-const clientVersion = "0.1.0"
 
 // Hooks are the catalog operations a backend drives. Any field may be nil.
 //
@@ -230,15 +229,15 @@ func newBackend(name string, spec config.Backend, hooks Hooks) *Backend {
 			changed(name)
 		}
 	}
-	b.client = mcp.NewClient(&mcp.Implementation{Name: "mcpd", Version: clientVersion}, opts)
+	b.client = mcp.NewClient(&mcp.Implementation{Name: "mcpd", Version: version.String()}, opts)
 	return b
 }
 
-// Disable is the kill switch: it closes the dispatch gate, cancels and awaits
-// everything in flight, closes the session, terminates a stdio child, and evicts
-// the backend's tools from the catalog. The override is persisted before any of
-// that begins, so a crash mid-teardown leaves the backend disabled rather than
-// silently re-enabled.
+// Disable is the kill switch: it cancels in-flight dispatches and any handshake,
+// awaits the dispatch drain, closes the session, terminates a stdio child, and
+// evicts the backend's tools from the catalog. The override is persisted before
+// any of that begins, so a crash mid-teardown leaves the backend disabled rather
+// than silently re-enabled.
 func (r *Registry) Disable(name string) error {
 	b, done, err := r.beginTransition(name)
 	if err != nil {
@@ -265,8 +264,8 @@ func (r *Registry) Disable(name string) error {
 // be in flight with nothing left to join it, and a respawned child would outlive the
 // daemon.
 //
-// It takes no context and cannot: draining the gate has no cancellable variant, so a
-// tools/call with no configured timeout blocks exit until the client gives up.
+// It takes no context: teardown supplies its own cancellation to every in-flight
+// dispatch before it drains the gate.
 func (r *Registry) Shutdown() {
 	// The latch and the snapshot are taken together, so a backend published after this
 	// point cannot slip past the walk below and leave a stdio child alive after exit.

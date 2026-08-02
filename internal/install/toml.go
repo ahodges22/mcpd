@@ -85,11 +85,13 @@ func serverBlocks(body string) ([]serverBlock, error) {
 	lines := strings.SplitAfter(body, "\n")
 	inside := make([]bool, len(lines))
 	within := false
+	var multiline string
 	for i, line := range lines {
-		if strings.HasPrefix(line, "[") {
+		if multiline == "" && strings.HasPrefix(line, "[") {
 			within = strings.HasPrefix(line, "[mcp_servers.")
 		}
 		inside[i] = within
+		advanceMultiline(line, &multiline)
 	}
 
 	var out []serverBlock
@@ -119,6 +121,66 @@ func serverBlocks(body string) ([]serverBlock, error) {
 	}
 	flush()
 	return out, nil
+}
+
+func advanceMultiline(line string, delimiter *string) {
+	if *delimiter != "" {
+		if tripleQuote(line, *delimiter, 0) >= 0 {
+			*delimiter = ""
+		}
+		return
+	}
+	var quote byte
+	for i := 0; i < len(line); i++ {
+		if quote != 0 {
+			if quote == '"' && line[i] == '\\' {
+				i++
+				continue
+			}
+			if line[i] == quote {
+				quote = 0
+			}
+			continue
+		}
+		if line[i] == '#' {
+			return
+		}
+		candidate := ""
+		switch {
+		case strings.HasPrefix(line[i:], `"""`):
+			candidate = `"""`
+		case strings.HasPrefix(line[i:], `'''`):
+			candidate = `'''`
+		}
+		if candidate != "" {
+			if tripleQuote(line, candidate, i+len(candidate)) < 0 {
+				*delimiter = candidate
+			}
+			return
+		}
+		if line[i] == '"' || line[i] == '\'' {
+			quote = line[i]
+		}
+	}
+}
+
+func tripleQuote(line, delimiter string, start int) int {
+	for i := start; i+len(delimiter) <= len(line); i++ {
+		if !strings.HasPrefix(line[i:], delimiter) {
+			continue
+		}
+		if delimiter == `"""` {
+			backslashes := 0
+			for j := i - 1; j >= 0 && line[j] == '\\'; j-- {
+				backslashes++
+			}
+			if backslashes%2 != 0 {
+				continue
+			}
+		}
+		return i
+	}
+	return -1
 }
 
 // commentOut makes every line of a run inert, preserving the bytes after the prefix so stripping it

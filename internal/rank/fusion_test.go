@@ -241,6 +241,7 @@ func TestHybridRankingKeepsAnExactToolNameAheadAndPreservesBackendDiversity(t *t
 		base,
 		centroids,
 		[]float32{1, 0},
+		Candidates("list the pull requests waiting on me", entries, base, centroids, []float32{1, 0}),
 		reranked,
 		3,
 	)

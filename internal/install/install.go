@@ -9,15 +9,17 @@
 package install
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strings"
 	"time"
+
+	"github.com/ahodges22/mcpd/internal/atomicfile"
 )
 
 // ErrConflict reports that a region mcpd wrote is no longer as mcpd wrote it, so a revert
@@ -130,6 +132,8 @@ type Receipt struct {
 	Path      string `json:"path"`
 	Endpoint  string `json:"endpoint"`
 	InstallAt string `json:"installed_at"`
+	// OriginalHash distinguishes an interrupted install from a later conflicting edit.
+	OriginalHash string `json:"original_hash,omitempty"`
 	// Edits are in the order they were applied. A revert walks them backwards.
 	Edits []edit `json:"edits"`
 	// Displaced is the text the install took out of the client's file, held here because the
@@ -144,8 +148,8 @@ type Receipt struct {
 	Displaced string `json:"displaced,omitempty"`
 }
 
-// Plan is what an install or a revert would do. It is what --dry-run prints, and it is
-// also what apply consumes, so the thing shown is the thing done.
+// Plan is what an install or a revert would do to a client file. It is what --dry-run prints,
+// and it is also what apply consumes, so the file change shown is the file change done.
 type Plan struct {
 	Client   string
 	Path     string
@@ -243,21 +247,25 @@ func (c Client) Apply(state string, p Plan) error {
 	if err := c.verify(string(raw), body); err != nil {
 		return err
 	}
+	if err := writeReceipt(state, Receipt{
+		Client: c.Name, Path: c.Path, Endpoint: p.Endpoint,
+		InstallAt: time.Now().UTC().Format(time.RFC3339), Edits: p.edits,
+		Displaced: p.displaced, OriginalHash: contentHash(raw),
+	}); err != nil {
+		return err
+	}
 	if err := backup(c.Path, raw); err != nil {
 		return err
 	}
 	if err := write(c.Path, body); err != nil {
 		return err
 	}
-	return writeReceipt(state, Receipt{
-		Client: c.Name, Path: c.Path, Endpoint: p.Endpoint,
-		InstallAt: time.Now().UTC().Format(time.RFC3339), Edits: p.edits,
-		Displaced: p.displaced,
-	})
+	return nil
 }
 
 // PlanRevert works out what taking this client back off mcpd would change, refusing when a
-// region mcpd wrote is no longer as it wrote it.
+// region mcpd wrote is no longer as it wrote it. A receipt whose install never reached the
+// client file is removed and produces an empty plan.
 func (c Client) PlanRevert(state string) (Plan, error) {
 	rec, err := readReceipt(state, c.Name)
 	if err != nil {
@@ -266,6 +274,12 @@ func (c Client) PlanRevert(state string) (Plan, error) {
 	raw, err := os.ReadFile(c.Path)
 	if err != nil {
 		return Plan{}, fmt.Errorf("read %s: %w", c.Path, err)
+	}
+	if rec.OriginalHash != "" && contentHash(raw) == rec.OriginalHash {
+		if err := os.Remove(receiptPath(state, c.Name)); err != nil {
+			return Plan{}, fmt.Errorf("remove stale receipt: %w", err)
+		}
+		return Plan{Client: c.Name, Path: c.Path, Endpoint: rec.Endpoint, body: string(raw)}, nil
 	}
 	edits, err := c.edit.revert(c, string(raw), rec)
 	if err != nil {
@@ -301,6 +315,9 @@ func textualInverse(c Client, body string, rec Receipt) ([]edit, error) {
 
 // Revert performs a planned revert and drops the receipt.
 func (c Client) Revert(state string, p Plan) error {
+	if p.Empty() {
+		return nil
+	}
 	raw, err := os.ReadFile(c.Path)
 	if err != nil {
 		return fmt.Errorf("read %s: %w", c.Path, err)
@@ -364,23 +381,7 @@ func write(path, body string) error {
 	if err != nil {
 		return fmt.Errorf("stat %s: %w", path, err)
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".mcpd-install-*")
-	if err != nil {
-		return fmt.Errorf("create temp beside %s: %w", path, err)
-	}
-	defer os.Remove(tmp.Name())
-	if err := tmp.Chmod(info.Mode().Perm()); err != nil {
-		tmp.Close()
-		return fmt.Errorf("chmod temp: %w", err)
-	}
-	if _, err := tmp.WriteString(body); err != nil {
-		tmp.Close()
-		return fmt.Errorf("write temp: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("close temp: %w", err)
-	}
-	return os.Rename(tmp.Name(), path)
+	return atomicfile.Write(path, []byte(body), info.Mode().Perm())
 }
 
 // backup keeps a timestamped copy beside the original on every mutation. It is not the
@@ -417,6 +418,10 @@ func receiptPath(state, client string) string {
 	return filepath.Join(state, "install", client+".json")
 }
 
+func contentHash(body []byte) string {
+	return fmt.Sprintf("%x", sha256.Sum256(body))
+}
+
 func writeReceipt(state string, rec Receipt) error {
 	path := receiptPath(state, rec.Client)
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -426,7 +431,7 @@ func writeReceipt(state string, rec Receipt) error {
 	if err != nil {
 		return fmt.Errorf("encode receipt: %w", err)
 	}
-	return os.WriteFile(path, append(body, '\n'), 0o600)
+	return atomicfile.Write(path, append(body, '\n'), 0o600)
 }
 
 func readReceipt(state, client string) (Receipt, error) {
@@ -442,19 +447,6 @@ func readReceipt(state, client string) (Receipt, error) {
 		return Receipt{}, fmt.Errorf("parse receipt: %w", err)
 	}
 	return rec, nil
-}
-
-// Installed reports which clients have a receipt, so the CLI can list what is wired up
-// without reading every client's file.
-func Installed(state string, home string) []string {
-	var out []string
-	for _, c := range Clients(home) {
-		if _, err := os.Stat(receiptPath(state, c.Name)); err == nil {
-			out = append(out, c.Name)
-		}
-	}
-	sort.Strings(out)
-	return out
 }
 
 // approvalRef matches a Codex per-tool approval table header, active or left commented by

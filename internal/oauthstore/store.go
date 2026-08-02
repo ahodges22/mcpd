@@ -23,6 +23,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/oauthex"
 	"golang.org/x/oauth2"
 
+	"github.com/ahodges22/mcpd/internal/atomicfile"
 	"github.com/ahodges22/mcpd/internal/config"
 )
 
@@ -662,24 +663,8 @@ func (s *Store) save(server string, rec record) error {
 	if err := os.Chmod(s.dir, stateDirMode); err != nil {
 		return fmt.Errorf("restrict state directory: %w", err)
 	}
-	tmp, err := os.CreateTemp(s.dir, ".oauth-*")
-	if err != nil {
-		return fmt.Errorf("create temporary oauth state: %w", err)
-	}
-	defer os.Remove(tmp.Name())
-	if err := tmp.Chmod(tokenFileMode); err != nil {
-		tmp.Close()
-		return fmt.Errorf("restrict oauth state: %w", err)
-	}
-	if _, err := tmp.Write(raw); err != nil {
-		tmp.Close()
+	if err := atomicfile.Write(s.path(server), raw, tokenFileMode); err != nil {
 		return fmt.Errorf("write oauth state: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("write oauth state: %w", err)
-	}
-	if err := os.Rename(tmp.Name(), s.path(server)); err != nil {
-		return fmt.Errorf("replace oauth state: %w", err)
 	}
 	return nil
 }

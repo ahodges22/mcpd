@@ -10,9 +10,11 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -26,6 +28,7 @@ import (
 	"github.com/ahodges22/mcpd/internal/oauthstore"
 	"github.com/ahodges22/mcpd/internal/rank"
 	"github.com/ahodges22/mcpd/internal/searchindex"
+	"github.com/ahodges22/mcpd/internal/version"
 	"github.com/ahodges22/mcpd/internal/web"
 )
 
@@ -46,11 +49,13 @@ const shutdownBudget = 20 * time.Second
 // ceiling 0.1716, separated, midpoint 0.2091, 10 of 10 held-out
 // no-answer queries correctly flagged. The previous 0.2649 was calibrated over
 // text-embedding-3-small and means nothing for these vectors: cosine thresholds do not carry
-// across models, which is the whole reason the cache records which model wrote it. Changing the
-// configured model without changing this number leaves abstention quietly wrong, so the two move
-// together or not at all. Zero disables abstention, which is the right default for a catalog
-// nobody has calibrated against.
+// across models, which is the whole reason the cache records which model wrote it. The two
+// constants move together or not at all: thresholds() disables abstention for any other
+// configured model rather than judge its vectors against a number measured for this one.
+// Zero disables abstention, which is the right default for a catalog nobody has calibrated
+// against.
 const abstainCosine = 0.2091
+const abstainModel = "text-embedding-3-large"
 
 // indexBudget bounds one detached catalog indexing pass, including cold query expansion.
 const indexBudget = 10 * time.Minute
@@ -69,11 +74,24 @@ func run() error {
 		return runInstall(os.Args[2:])
 	}
 	var (
-		addr      = flag.String("addr", "127.0.0.1:7420", "loopback address to serve on")
-		cfgPath   = flag.String("config", defaultPath("XDG_CONFIG_HOME", ".config", "config.json"), "declaration file")
-		statePath = flag.String("state", defaultPath("XDG_STATE_HOME", ".local/state", ""), "state directory")
+		addr        = flag.String("addr", "127.0.0.1:7420", "loopback address to serve on")
+		cfgPath     = flag.String("config", defaultPath("XDG_CONFIG_HOME", ".config", "config.json"), "declaration file")
+		statePath   = flag.String("state", defaultPath("XDG_STATE_HOME", ".local/state", ""), "state directory")
+		showVersion = flag.Bool("version", false, "print the mcpd version and exit")
 	)
 	flag.Parse()
+	if *showVersion {
+		fmt.Println(version.String())
+		return nil
+	}
+
+	// mcpd has no user authentication, so a non-loopback listener would hand every
+	// connected tool to the network. The MCP endpoints' DNS-rebinding defense is also
+	// only active on a loopback bind, so binding elsewhere silently drops it. Refuse
+	// rather than serve unprotected.
+	if err := requireLoopbackAddr(*addr); err != nil {
+		return err
+	}
 
 	if err := os.MkdirAll(*statePath, 0o700); err != nil {
 		return fmt.Errorf("create state directory: %w", err)
@@ -165,15 +183,7 @@ func (d *daemon) wire(cfg *config.Config, addr string) error {
 		// The client first, so the cache records the model actually sent rather than the one
 		// configured: an empty configuration resolves to a default, and a header saying "" would
 		// be a claim about a model that does not exist.
-		d.index = searchindex.New(
-			d.state,
-			cfg.Embeddings.URL,
-			cfg.Embeddings.APIKey(),
-			cfg.Embeddings.Model,
-			cfg.Ranking.ExpansionModel,
-			cfg.Ranking.RerankModel,
-			cfg.Ranking.RerankTimeout(),
-		)
+		d.index = searchindex.New(d.state, cfg.Embeddings, cfg.Ranking)
 		if err := d.index.Load(); err != nil {
 			// A cold cache is a slower first refresh, not a failure.
 			slog.Warn("load search index", "error", err)
@@ -224,6 +234,11 @@ func (d *daemon) thresholds() rank.Thresholds {
 	if d.index == nil || abstainCosine <= 0 {
 		return rank.Thresholds{}
 	}
+	if d.index.Model() != abstainModel {
+		slog.Warn("abstention disabled: threshold calibrated for a different embedding model",
+			"calibrated", abstainModel, "configured", d.index.Model())
+		return rank.Thresholds{}
+	}
 	return rank.Thresholds{Cosine: abstainCosine, Enabled: true}
 }
 
@@ -232,6 +247,25 @@ func streamable(srv *mcp.Server) http.Handler {
 		func(*http.Request) *mcp.Server { return srv },
 		&mcp.StreamableHTTPOptions{Stateless: true},
 	)
+}
+
+// requireLoopbackAddr reports an error unless addr binds a loopback host. An empty host
+// (a bare ":port") binds every interface and is refused too.
+func requireLoopbackAddr(addr string) error {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Errorf("invalid -addr %q: %w", addr, err)
+	}
+	if host == "" {
+		return fmt.Errorf("-addr %q binds every interface; mcpd serves loopback only", addr)
+	}
+	if strings.EqualFold(host, "localhost") {
+		return nil
+	}
+	if ip, err := netip.ParseAddr(host); err == nil && ip.IsLoopback() {
+		return nil
+	}
+	return fmt.Errorf("-addr %q is not a loopback address; mcpd serves loopback only", addr)
 }
 
 func (d *daemon) serve(addr string) error {
@@ -256,7 +290,7 @@ func (d *daemon) serve(addr string) error {
 
 	errs := make(chan error, 1)
 	go func() {
-		slog.Info("mcpd serving", "addr", addr, "backends", len(d.reg.Names()))
+		slog.Info("mcpd serving", "addr", addr, "version", version.String(), "backends", len(d.reg.Names()))
 		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errs <- err
 			return

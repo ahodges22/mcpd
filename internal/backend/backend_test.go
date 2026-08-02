@@ -334,7 +334,9 @@ func TestServerInitiatedRequestsAreNotForwarded(t *testing.T) {
 	fake := testfake.New("alpha", tool("kubectl_logs"))
 	roots := make(chan error, 1)
 	fake.OnCall = func(ctx context.Context, req *mcp.CallToolRequest) {
-		_, err := req.Session.ListRoots(ctx, nil)
+		// Any server-initiated request exercises the same invariant; elicitation is one
+		// the daemon's client never advertises, so the shared session must refuse it.
+		_, err := req.Session.Elicit(ctx, nil)
 		roots <- err
 	}
 	r := wire(t, Hooks{}, fake)

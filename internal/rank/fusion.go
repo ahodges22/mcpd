@@ -151,7 +151,7 @@ func Candidates(query string, entries []catalog.Entry, vecs, expanded map[string
 	return out
 }
 
-// Hybrid applies a validated rerank ordering to the candidate union, then fills from the
+// Hybrid applies a validated rerank ordering to the supplied candidate union, then fills from the
 // existing fused order and preserves the backend diversity cap. Empty or wholly invalid
 // rerank output returns the existing fused result unchanged.
 func Hybrid(
@@ -159,11 +159,11 @@ func Hybrid(
 	entries []catalog.Entry,
 	vecs, expanded map[string][]float32,
 	qvec []float32,
+	candidates []catalog.Entry,
 	reranked []string,
 	limit int,
 ) ([]Result, Evidence) {
 	fallback, evidence := Fuse(query, entries, vecs, qvec, 0)
-	candidates := Candidates(query, entries, vecs, expanded, qvec)
 	allowed := make(map[string]catalog.Entry, len(candidates))
 	for _, candidate := range candidates {
 		allowed[candidate.ID] = candidate
@@ -179,7 +179,10 @@ func Hybrid(
 		ordered = append(ordered, id)
 	}
 	if len(ordered) == 0 {
-		return Fuse(query, entries, vecs, qvec, limit)
+		if limit > 0 && len(fallback) > limit {
+			fallback = capPerServer(fallback, limit)
+		}
+		return fallback, evidence
 	}
 	ordered = promoteUniqueExactName(query, candidates, ordered)
 	seen = make(map[string]bool, len(ordered))

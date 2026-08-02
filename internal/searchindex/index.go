@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/ahodges22/mcpd/internal/catalog"
+	"github.com/ahodges22/mcpd/internal/config"
 	"github.com/ahodges22/mcpd/internal/embedding"
 	"github.com/ahodges22/mcpd/internal/rank"
 )
@@ -36,8 +37,10 @@ type Index struct {
 	running bool
 }
 
-func New(statePath, gatewayURL, apiKey, embeddingModel, expansionModel, rerankModel string, rerankTimeout time.Duration) *Index {
-	client := embedding.NewClient(gatewayURL, apiKey, embeddingModel)
+func New(statePath string, emb config.Embeddings, ranking config.Ranking) *Index {
+	apiKey := emb.APIKey()
+	rerankTimeout := ranking.RerankTimeout()
+	client := embedding.NewClient(emb.URL, apiKey, emb.Model)
 	baseCache := embedding.NewCache(filepath.Join(statePath, "embeddings.json"), client.Model())
 	index := &Index{
 		client:    client,
@@ -45,15 +48,15 @@ func New(statePath, gatewayURL, apiKey, embeddingModel, expansionModel, rerankMo
 		base:      map[string][]float32{},
 		expanded:  map[string][]float32{},
 	}
-	if expansionModel != "" && rerankModel != "" && rerankTimeout > 0 {
-		index.gateway = newGateway(gatewayURL, apiKey)
+	if ranking.ExpansionModel != "" && ranking.RerankModel != "" && rerankTimeout > 0 {
+		index.gateway = newGateway(emb.URL, apiKey)
 		index.expansion = newExpansionCache(
 			filepath.Join(statePath, "expansions.json"),
-			expansionModel,
+			ranking.ExpansionModel,
 			client.Model(),
 			baseCache.Dimension(),
 		)
-		index.reranker = rerankModel
+		index.reranker = ranking.RerankModel
 		index.timeout = rerankTimeout
 	}
 	return index
@@ -224,7 +227,7 @@ func (i *Index) SearchVector(ctx context.Context, query string, entries []catalo
 	rerankCtx, cancel := context.WithTimeout(ctx, i.timeout)
 	defer cancel()
 	reranked, err := i.gateway.rerank(rerankCtx, i.reranker, query, candidates, i.timeout)
-	results, evidence := rank.Hybrid(query, entries, base, expanded, qvec, reranked, limit)
+	results, evidence := rank.Hybrid(query, entries, base, expanded, qvec, candidates, reranked, limit)
 	if err != nil {
 		return results, evidence, fmt.Errorf("rerank: %w", err)
 	}

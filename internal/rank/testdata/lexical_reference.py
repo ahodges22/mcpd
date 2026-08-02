@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Differential fixture for internal/rank's port of the Python lexical scorer.
 
-WORD, STOPWORDS, query_terms, and rank below are copied verbatim from
-mcp-tool-search/src/proxy.py (the art-agent-scratch repo, outside this one) as
-of the port in Task 6. They are not imported, because proxy.py pulls in an mcp
-SDK this repo has no reason to depend on; copying the four functions avoids
-that without touching their behaviour.
+WORD, STOPWORDS, query_terms, and rank below are copied verbatim from the
+superseded Python prototype this ranker was ported from, as of the port in
+Task 6. They are not imported, because the prototype pulls in an mcp SDK this
+repo has no reason to depend on; copying the four functions avoids that without
+touching their behaviour.
 
 If Task 13's ranking regression gate ever fails, run this file to tell "the
 port drifted from what was measured" apart from "the port was always wrong":

@@ -18,6 +18,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/ahodges22/mcpd/internal/atomicfile"
 	"github.com/ahodges22/mcpd/internal/backend"
 )
 
@@ -480,7 +481,15 @@ func (c *Catalog) Load() error {
 	}
 	var doc document
 	if err := json.Unmarshal(raw, &doc); err != nil {
-		return fmt.Errorf("parse catalog: %w", err)
+		// The catalog is a rebuildable cache, so a damaged file costs a cold start,
+		// never the daemon. The bytes are kept aside for diagnosis.
+		aside := c.path + ".corrupt"
+		if renameErr := os.Rename(c.path, aside); renameErr != nil {
+			slog.Warn("parse catalog; starting cold", "error", err, "path", c.path)
+		} else {
+			slog.Warn("parse catalog; damaged file moved aside, starting cold", "error", err, "aside", aside)
+		}
+		return nil
 	}
 	configured := c.backends.names()
 
@@ -516,20 +525,8 @@ func (c *Catalog) Save() error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("create state directory: %w", err)
 	}
-	tmp, err := os.CreateTemp(dir, ".catalog-*")
-	if err != nil {
-		return fmt.Errorf("create temporary catalog: %w", err)
-	}
-	defer os.Remove(tmp.Name())
-	if _, err := tmp.Write(raw); err != nil {
-		tmp.Close()
+	if err := atomicfile.Write(c.path, raw, 0o600); err != nil {
 		return fmt.Errorf("write catalog: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("write catalog: %w", err)
-	}
-	if err := os.Rename(tmp.Name(), c.path); err != nil {
-		return fmt.Errorf("replace catalog: %w", err)
 	}
 	return nil
 }

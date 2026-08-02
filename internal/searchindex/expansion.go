@@ -7,10 +7,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
 
+	"github.com/ahodges22/mcpd/internal/atomicfile"
 	"github.com/ahodges22/mcpd/internal/catalog"
 	"github.com/ahodges22/mcpd/internal/embedding"
 )
@@ -159,7 +161,9 @@ func (c *expansionCache) ensure(ctx context.Context, entries []catalog.Entry, ga
 			}(item)
 		}
 		wg.Wait()
-		_ = c.save()
+		if err := c.save(); err != nil {
+			slog.Warn("query-expansion cache save failed", "error", err)
+		}
 	}
 
 	type embedPending struct {
@@ -181,7 +185,13 @@ func (c *expansionCache) ensure(ctx context.Context, entries []catalog.Entry, ga
 	c.mu.Unlock()
 
 	if len(texts) > 0 {
-		vectors, _ := client.Embed(ctx, texts)
+		// Embed returns a full-length slice even on error, filled as far as it got, so a
+		// gateway failure degrades to fewer expansion centroids rather than losing the
+		// batches already fetched. The unresolved ones stay lexical-only.
+		vectors, err := client.Embed(ctx, texts)
+		if err != nil {
+			slog.Warn("embeddings gateway error, some tool query expansions stay lexical-only", "error", err)
+		}
 		c.mu.Lock()
 		for _, item := range toEmbed {
 			batch := vectors[item.start : item.start+len(item.queries)]
@@ -197,7 +207,9 @@ func (c *expansionCache) ensure(ctx context.Context, entries []catalog.Entry, ga
 			c.entries[item.id] = record
 		}
 		c.mu.Unlock()
-		_ = c.save()
+		if err := c.save(); err != nil {
+			slog.Warn("query-expansion cache save failed", "error", err)
+		}
 	}
 	return c.vectors(entries)
 }
@@ -272,20 +284,8 @@ func (c *expansionCache) save() error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("create state directory: %w", err)
 	}
-	tmp, err := os.CreateTemp(dir, ".expansions-*")
-	if err != nil {
-		return fmt.Errorf("create temporary expansion cache: %w", err)
-	}
-	defer os.Remove(tmp.Name())
-	if _, err := tmp.Write(raw); err != nil {
-		tmp.Close()
+	if err := atomicfile.Write(c.path, raw, 0o600); err != nil {
 		return fmt.Errorf("write expansion cache: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("write expansion cache: %w", err)
-	}
-	if err := os.Rename(tmp.Name(), c.path); err != nil {
-		return fmt.Errorf("replace expansion cache: %w", err)
 	}
 	return nil
 }

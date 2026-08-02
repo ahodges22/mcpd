@@ -15,6 +15,7 @@ import (
 	"github.com/ahodges22/mcpd/internal/backend"
 	"github.com/ahodges22/mcpd/internal/catalog"
 	"github.com/ahodges22/mcpd/internal/rank"
+	"github.com/ahodges22/mcpd/internal/version"
 )
 
 const defaultSearchLimit = 10
@@ -63,7 +64,7 @@ type SearchIndex interface {
 }
 
 func NewSearch(cat *catalog.Catalog, reg *backend.Registry, th rank.Thresholds, index SearchIndex) *mcp.Server {
-	s := mcp.NewServer(&mcp.Implementation{Name: "mcpd-search", Version: "dev"},
+	s := mcp.NewServer(&mcp.Implementation{Name: "mcpd-search", Version: version.String()},
 		&mcp.ServerOptions{Instructions: searchInstructions(reg)})
 
 	mcp.AddTool(s, &mcp.Tool{

@@ -1234,3 +1234,48 @@ func TestACallbackNamingADifferentIssuerIsRefused(t *testing.T) {
 		t.Error("the backend came up on an authorization response from another issuer")
 	}
 }
+
+// Reconcile is the startup backstop that settles stored grants against the declarations.
+// It must keep a matching grant, and delete in both mismatch directions: a repointed
+// identity and a declaration that no longer exists.
+func TestReconcileKeepsMatchingGrantsAndDeletesTheRest(t *testing.T) {
+	d := newDaemon(t, tool("search"))
+	d.authorize(nil)
+
+	identity := config.IdentityOf(d.cfg.Backends[server])
+	if err := d.store.Reconcile(map[string]config.Identity{server: identity}); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if d.noTokenFile() {
+		t.Fatal("a grant matching the declared identity was deleted")
+	}
+	if _, err := d.list(); err != nil {
+		t.Errorf("list after a matching reconcile: %v", err)
+	}
+
+	repointed := identity
+	repointed.Resource += "/elsewhere"
+	if err := d.store.Reconcile(map[string]config.Identity{server: repointed}); err != nil {
+		t.Fatalf("Reconcile after a repoint: %v", err)
+	}
+	if !d.noTokenFile() {
+		t.Error("a grant for a repointed declaration was left on disk")
+	}
+	if err := d.reg.Reconnect(server); err != nil {
+		t.Fatalf("reconnect: %v", err)
+	}
+	if _, err := d.list(); err == nil {
+		t.Error("the backend authenticated from the discarded handler's in-memory token")
+	}
+
+	// The not-declared branch, on a fresh grant: a discarded handler cannot restart
+	// the flow non-interactively, so this leg gets its own daemon.
+	gone := newDaemon(t, tool("search"))
+	gone.authorize(nil)
+	if err := gone.store.Reconcile(map[string]config.Identity{}); err != nil {
+		t.Fatalf("Reconcile with nothing declared: %v", err)
+	}
+	if !gone.noTokenFile() {
+		t.Error("a grant with no declaration was left on disk")
+	}
+}

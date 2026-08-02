@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sync"
 
+	"github.com/ahodges22/mcpd/internal/atomicfile"
 	"github.com/ahodges22/mcpd/internal/config"
 )
 
@@ -165,20 +166,8 @@ func (o *Overrides) save(disabled map[string]config.Identity) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("create state directory: %w", err)
 	}
-	tmp, err := os.CreateTemp(dir, ".overrides-*")
-	if err != nil {
-		return fmt.Errorf("create temporary overrides: %w", err)
-	}
-	defer os.Remove(tmp.Name())
-	if _, err := tmp.Write(raw); err != nil {
-		tmp.Close()
+	if err := atomicfile.Write(o.path, raw, 0o600); err != nil {
 		return fmt.Errorf("write overrides: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("write overrides: %w", err)
-	}
-	if err := os.Rename(tmp.Name(), o.path); err != nil {
-		return fmt.Errorf("replace overrides: %w", err)
 	}
 	return nil
 }

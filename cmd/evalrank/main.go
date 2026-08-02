@@ -369,15 +369,7 @@ func vectors(cfgPath, statePath string, set querySet, entries []catalog.Entry) (
 	if !cfg.Ranking.Enabled() {
 		return nil, nil, fmt.Errorf("no expansion and rerank models are configured, so the production ranking pipeline is incomplete")
 	}
-	index = searchindex.New(
-		statePath,
-		cfg.Embeddings.URL,
-		cfg.Embeddings.APIKey(),
-		cfg.Embeddings.Model,
-		cfg.Ranking.ExpansionModel,
-		cfg.Ranking.RerankModel,
-		cfg.Ranking.RerankTimeout(),
-	)
+	index = searchindex.New(statePath, cfg.Embeddings, cfg.Ranking)
 	if err := index.Load(); err != nil {
 		return nil, nil, err
 	}

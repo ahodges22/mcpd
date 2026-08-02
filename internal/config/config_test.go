@@ -1,6 +1,7 @@
 package config
 
 import (
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
@@ -24,21 +25,21 @@ func isBaseKey(k string) bool {
 // stdio child environment").
 func TestChildEnv_GrantsDeclaredPassthrough(t *testing.T) {
 	parent := []string{
-		"PATH=/usr/bin", "HOME=/home/alex",
-		"AWS_PROFILE=mgmt", "KUBECONFIG=/home/alex/.kube/config",
+		"PATH=/usr/bin", "HOME=/home/user",
+		"AWS_PROFILE=mgmt", "KUBECONFIG=/home/user/.kube/config",
 		"GH_PAT=secret-pat",
 	}
-	art := Backend{
-		Name:           "art",
-		Command:        "/usr/local/bin/art-mcp-server",
+	platform := Backend{
+		Name:           "platform",
+		Command:        "/usr/local/bin/platform-mcp-server",
 		EnvPassthrough: []string{"AWS_*", "KUBECONFIG"},
 	}
 
-	got := art.ChildEnv(parent)
+	got := platform.ChildEnv(parent)
 
 	for _, want := range []string{
-		"PATH=/usr/bin", "HOME=/home/alex",
-		"AWS_PROFILE=mgmt", "KUBECONFIG=/home/alex/.kube/config",
+		"PATH=/usr/bin", "HOME=/home/user",
+		"AWS_PROFILE=mgmt", "KUBECONFIG=/home/user/.kube/config",
 	} {
 		if !slices.Contains(got, want) {
 			t.Errorf("missing %q in child env %v", want, got)
@@ -52,8 +53,8 @@ func TestChildEnv_GrantsDeclaredPassthrough(t *testing.T) {
 // Scenario: An undeclared credential is withheld.
 func TestChildEnv_WithholdsUndeclaredCredentials(t *testing.T) {
 	parent := []string{
-		"PATH=/usr/bin", "HOME=/home/alex",
-		"GH_PAT=secret-pat", "DD_ACCESS_TOKEN=secret-dd", "LITELLM_KEY=secret-litellm",
+		"PATH=/usr/bin", "HOME=/home/user",
+		"GH_PAT=secret-pat", "DD_ACCESS_TOKEN=secret-dd", "GATEWAY_TOKEN=secret-gateway",
 	}
 	flint := Backend{Name: "flint", Command: "npx"}
 
@@ -65,7 +66,7 @@ func TestChildEnv_WithholdsUndeclaredCredentials(t *testing.T) {
 			t.Errorf("backend declaring no env and no env_passthrough received undeclared variable %q", kv)
 		}
 	}
-	for _, leak := range []string{"GH_PAT", "DD_ACCESS_TOKEN", "LITELLM_KEY"} {
+	for _, leak := range []string{"GH_PAT", "DD_ACCESS_TOKEN", "GATEWAY_TOKEN"} {
 		for _, kv := range got {
 			if strings.HasPrefix(kv, leak+"=") {
 				t.Errorf("leaked %s to child: %q", leak, kv)
@@ -94,11 +95,11 @@ func TestLoad_ExampleConfigHasNoInternalHostnames(t *testing.T) {
 		t.Fatal("expected at least one backend")
 	}
 	for name, b := range cfg.Backends {
-		if strings.Contains(b.HTTPURL, "art-internal.com") {
+		if strings.Contains(b.HTTPURL, "://example.internal") {
 			t.Errorf("backend %q http_url leaks an internal hostname: %q", name, b.HTTPURL)
 		}
 		for hk, hv := range b.Headers {
-			if strings.Contains(hv, "art-internal.com") {
+			if strings.Contains(hv, "://example.internal") {
 				t.Errorf("backend %q header %q leaks an internal hostname: %q", name, hk, hv)
 			}
 		}
@@ -131,16 +132,16 @@ func TestLoad_ValidatesBackendName(t *testing.T) {
 		name string
 		ok   bool
 	}{
-		{"art", true},
+		{"platform", true},
 		{"datadog-mcp", true},
-		{"articulate_knowledge", true},
+		{"knowledge_base", true},
 		{"a", true},
 		{"x/../../etc/passwd", false},
 		{"..", false},
 		{"a/b", false},
-		{"Art", false},
-		{"-art", false},
-		{"_art", false},
+		{"Platform", false},
+		{"-platform", false},
+		{"_platform", false},
 		{"", false},
 		{strings.Repeat("a", 65), false},
 	} {
@@ -165,7 +166,7 @@ func TestLoad_BackendsMustBePresentButMayBeEmpty(t *testing.T) {
 		ok   bool
 	}{
 		{`{"backends": {}}`, true},
-		{`{"backends": {"art": {"command": "x"}}}`, true},
+		{`{"backends": {"platform": {"command": "x"}}}`, true},
 		{`{}`, false},
 		{`{"backends": null}`, false},
 		{`null`, false},
@@ -185,12 +186,40 @@ func TestLoad_BackendsMustBePresentButMayBeEmpty(t *testing.T) {
 // reject it rather than silently honouring a blanket grant.
 func TestLoad_RejectsBlanketEnvPassthrough(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
-	body := `{"backends": {"art": {"command": "art-mcp-server", "env_passthrough": ["*"]}}}`
+	body := `{"backends": {"platform": {"command": "platform-mcp-server", "env_passthrough": ["*"]}}}`
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
 	if _, err := Load(path); err == nil {
 		t.Fatal("Load accepted an env_passthrough of \"*\", which would grant the entire environment")
+	}
+}
+
+// Scenario: The documented top failure mode, a declaration referencing a variable the
+// daemon does not hold, must be named in the log rather than silently expanding to "".
+func TestExpansion_WarnsOnUnsetVariables(t *testing.T) {
+	var buf strings.Builder
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	defer slog.SetDefault(prev)
+
+	github := Backend{
+		Name:           "github",
+		HTTPURL:        "https://example.test/mcp",
+		Headers:        map[string]string{"Authorization": "Bearer ${GH_TOKEN}"},
+		EnvPassthrough: []string{"MISSING_EXACT", "MISSING_PREFIX_*"},
+	}
+	parent := []string{"PATH=/usr/bin"}
+
+	if got := github.ExpandHeaders(parent)["Authorization"]; got != "Bearer " {
+		t.Fatalf("ExpandHeaders resolved %q, want empty expansion", got)
+	}
+	github.ChildEnv(parent)
+
+	for _, variable := range []string{"GH_TOKEN", "MISSING_EXACT", "MISSING_PREFIX_*"} {
+		if !strings.Contains(buf.String(), "variable="+variable) || !strings.Contains(buf.String(), "backend=github") {
+			t.Errorf("no warning naming backend github and variable %s; log:\n%s", variable, buf.String())
+		}
 	}
 }

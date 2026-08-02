@@ -270,6 +270,10 @@ func (w *Writer) mutate(apply func(map[string]json.RawMessage) error) ([]error, 
 		tmp.Close()
 		return nil, fmt.Errorf("write temporary config: %w", err)
 	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return nil, fmt.Errorf("sync temporary config: %w", err)
+	}
 	if err := tmp.Close(); err != nil {
 		return nil, fmt.Errorf("write temporary config: %w", err)
 	}
@@ -288,6 +292,17 @@ func (w *Writer) mutate(apply func(map[string]json.RawMessage) error) ([]error, 
 	// and the caller believing nothing happened, which is the inconsistency the single
 	// commit point exists to prevent.
 	var warnings []error
+	dir, err := os.Open(w.dir)
+	if err != nil {
+		warnings = append(warnings, fmt.Errorf("open config directory: %w", err))
+	} else {
+		if err := dir.Sync(); err != nil {
+			warnings = append(warnings, fmt.Errorf("sync config directory: %w", err))
+		}
+		if err := dir.Close(); err != nil {
+			warnings = append(warnings, fmt.Errorf("close config directory: %w", err))
+		}
+	}
 	displaced := tmpName
 	// The displaced inode is whatever was in place at the instant of the swap, which is
 	// not necessarily the inode whose mode was read earlier: an editor can replace the
@@ -379,6 +394,10 @@ func (w *Writer) rotate(prefix string) {
 
 // parse is Load's validation over bytes already in hand, so a write and a reload cannot
 // accept a document that a later start would reject.
+//
+// A pointer distinguishes an absent or null "backends" from an empty one. Empty is legal,
+// because removing the last backend produces it; absent is a malformed file, and booting
+// with every backend silently gone is worse than refusing.
 func parse(raw []byte) (*Config, error) {
 	var doc struct {
 		Backends   *map[string]Backend `json:"backends"`
