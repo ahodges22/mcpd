@@ -30,6 +30,22 @@ jobs:
       - name: Run tests
         run: go test -count=1 -race ./...
 
+  vet:
+    name: Vet and vulnerability scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Run go vet
+        run: go vet ./...
+      - name: Run govulncheck
+        run: go tool govulncheck ./...
+
   release-snapshot:
     name: Verify release artifacts
     runs-on: ubuntu-latest
@@ -55,6 +71,7 @@ jobs:
           for archive in .release/mcpd_*_*.tar.gz; do
             tar -tzf "$archive" | grep -qx 'dist/mcpd.service'
             tar -tzf "$archive" | grep -qx 'dist/dev.mcpd.daemon.plist'
+            tar -tzf "$archive" | grep -qx 'THIRD-PARTY-NOTICES'
           done
           cd .release
           sha256sum --check checksums.txt

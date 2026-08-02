@@ -68,9 +68,13 @@ exports. Put them where a **non-interactive** login shell reads them, which on z
 exports are then skipped with no error. Check the same way:
 
 ```sh
-sh -lc '[ -n "${YOUR_TOKEN_VARIABLE:-}" ]' \
+zsh -lc '[ -n "${YOUR_TOKEN_VARIABLE:-}" ]' \
   && echo 'token available' || echo 'token MISSING'
 ```
+
+The agent starts the daemon through `/bin/zsh -lc` for the same reason the check above uses
+`zsh -lc`: only a zsh login shell reads `.zprofile`. `/bin/sh` in login mode reads `~/.profile`
+instead and would skip the exports silently.
 
 Logs go to `~/Library/Logs/mcpd.log` and nothing rotates them.
 

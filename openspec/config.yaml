@@ -4,7 +4,7 @@ context: |
   mcpd is a single-binary Go daemon that fronts many MCP backends for every coding
   agent on one machine (Claude Code, Codex, Cursor CLI, OpenCode, plus Zed over ACP).
 
-  Tech stack: Go 1.26 (go.mod floor 1.25, required for http.CrossOriginProtection),
+  Tech stack: Go 1.26 (go.mod requires 1.26.5, for http.CrossOriginProtection),
   github.com/modelcontextprotocol/go-sdk v1.7.0, golang.org/x/oauth2 transitively via
   the SDK's auth package, stdlib net/http, embed.FS for UI assets. No web framework,
   no database, no other third-party dependencies. Keep it that way.
@@ -39,8 +39,10 @@ context: |
     is shared between the MCP endpoints and the web routes so the two cannot drift.
   - Everything backend-derived reaching the browser (tool names, descriptions, errors,
     and tool results) is escaped or set via textContent. No innerHTML anywhere.
-  - ~/.config/mcpd/config.json belongs to the user; the daemon never writes it.
-    Runtime state lives under ~/.local/state/mcpd/.
+  - ~/.config/mcpd/config.json belongs to the user. The daemon writes it only
+    through explicit panel add and remove actions, with an atomic swap that retains
+    the displaced version; it never rewrites it as a side effect. Runtime state
+    lives under ~/.local/state/mcpd/.
 
 rules:
   proposal:

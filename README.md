@@ -36,7 +36,7 @@ The facade reduces schema load, but it also moves argument validation and approv
 
 ## Install
 
-Release archives contain one self-contained binary. The web UI is embedded.
+mcpd targets Linux and macOS. Release archives contain one self-contained binary. The web UI is embedded.
 
 | Platform | Archive |
 |---|---|
@@ -64,6 +64,12 @@ On macOS, select the archive you downloaded because `shasum` has no `--ignore-mi
 ```sh
 archive=mcpd_darwin_arm64.tar.gz
 grep " $archive$" checksums.txt | shasum -a 256 -c -
+```
+
+Each archive also carries GitHub build provenance. With the `gh` CLI you can verify that the archive was built by this repository's release workflow:
+
+```sh
+gh attestation verify mcpd_linux_amd64.tar.gz --repo ahodges22/mcpd
 ```
 
 To build from source instead:
@@ -101,6 +107,32 @@ Add stdio and HTTP backends from the panel, or edit `~/.config/mcpd/config.json`
 For an HTTP backend, use `http_url` instead of `command`. Header values can reference daemon environment variables as `${VAR}`. Set `"auth": "oauth"` when the server supports OAuth discovery and a loopback redirect.
 
 The daemon reloads declarations through the panel. Panel add and remove actions also update the declaration file with an atomic swap and retain displaced versions beside that file.
+
+Each backend also accepts an optional `timeout` (whole seconds) that bounds a single `tools/call` to that backend.
+
+## Semantic search (optional)
+
+Without extra configuration, `search_tools` ranks lexically. Point mcpd at an OpenAI-compatible embeddings endpoint to add hybrid semantic ranking, query expansion, and low-confidence abstention:
+
+```json
+{
+  "backends": {},
+  "embeddings": {
+    "url": "https://your-gateway.example/",
+    "model": "text-embedding-3-large",
+    "api_key_env": "MCPD_EMBEDDINGS_KEY"
+  },
+  "ranking": {
+    "expansion_model": "gpt-4o-mini",
+    "rerank_model": "gpt-4o-mini",
+    "rerank_timeout_ms": 4000
+  }
+}
+```
+
+`embeddings.url` is the gateway base URL; mcpd calls `POST {url}/v1/embeddings`. `api_key_env` names the environment variable that holds the key, not the key itself. The `ranking` block is optional on top of `embeddings`: it enables LLM query expansion and reranking of the candidate set. With no `embeddings.url`, search degrades to lexical-only rather than failing.
+
+The abstention threshold is calibrated per embedding model and baked into the binary; see [`cmd/evalrank`](cmd/evalrank/) for how it is measured.
 
 ## Connect clients
 

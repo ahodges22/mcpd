@@ -16,8 +16,8 @@ anticipated:
 - Adding one backend means editing `~/.claude.json`, `~/.codex/config.toml`,
   `~/.cursor/mcp.json`, and `~/.config/opencode/opencode.json`.
 
-An existing Python prototype (`mcp-tool-search/`, 758 LOC, in the `art-agent-scratch`
-repo) addresses only the first, and its own README names the other two as known gaps.
+An existing Python prototype (758 LOC, in a separate repository) addresses only the
+first, and its own README names the other two as known gaps.
 
 ## What Changes
 
@@ -40,7 +40,7 @@ repo) addresses only the first, and its own README names the other two as known 
   carries requirements for protecting a concurrent hand edit.
 - `mcpd install` to rewire all four clients from one place, with a surgical `--revert`
   that removes only mcpd-owned entries.
-- **BREAKING for the existing setup:** the `mcp-tool-search` prototype is superseded.
+- **BREAKING for the existing setup:** the earlier Python prototype is superseded.
   Clients are rewired to `mcpd`, and Codex per-tool `approval_mode` blocks must be
   migrated to the new server and tool names or destructive GitHub tools silently lose
   their approval gate.
@@ -71,8 +71,8 @@ None. This is the first change in this repo; `openspec/specs/` is empty.
 
 ## Impact
 
-- **New repo:** `ahodges22/mcpd` (private), at `~/Articulate/repos/mcpd`.
-- **Supersedes:** `art-agent-scratch/mcp-tool-search/` (left in place and running until
+- **New repo:** `ahodges22/mcpd`.
+- **Supersedes:** the earlier Python prototype (left in place and running until
   Task 12 rewires clients; not deleted by this change).
 - **Mutates user config:** `~/.claude.json`, `~/.codex/config.toml`,
   `~/.cursor/mcp.json`, `~/.config/opencode/opencode.json`. This is the highest-risk

@@ -61,7 +61,7 @@ backend's declared `env_passthrough` patterns, and nothing else.
 
 - **WHEN** a backend declares no `env` and no `env_passthrough`
 - **THEN** its child receives only the curated base, and none of the daemon's
-  credentials such as `GH_PAT`, `DD_ACCESS_TOKEN`, or `LITELLM_KEY`
+  credentials such as `GH_PAT`, `DD_ACCESS_TOKEN`, or `GATEWAY_TOKEN`
 
 #### Scenario: The environment is never left unset
 

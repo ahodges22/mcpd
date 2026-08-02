@@ -19,6 +19,7 @@ builds:
       - -trimpath
     ldflags:
       - -s -w
+      - -X github.com/ahodges22/mcpd/internal/version.stamped={{ .Version }}
     mod_timestamp: "{{ .CommitTimestamp }}"
 
 archives:
@@ -27,6 +28,8 @@ archives:
     name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
     files:
       - README.md
+      - LICENSE
+      - THIRD-PARTY-NOTICES
       - src: dist/README.md
         dst: dist/README.md
       - src: dist/mcpd.service

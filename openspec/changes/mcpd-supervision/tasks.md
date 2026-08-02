@@ -4,7 +4,7 @@
       `api_key_env` resolve against the daemon's **own** process environment, so a supervised
       daemon must be given them; a user unit inherits nothing from an interactive shell
 - [x] 1.2 Determine which variables the declaration file references, by name only, without
-      reading any value: `DD_ACCESS_TOKEN`, `GITHUB_TOKEN`, `LITELLM_KEY`, `N8N_STAGE_MCP_TOKEN`
+      reading any value: `DD_ACCESS_TOKEN`, `GITHUB_TOKEN`, `GATEWAY_TOKEN`, `SERVICE_TOKEN`
 - [x] 1.3 Test both candidate mechanisms by execution, printing presence and never a value.
       Both the user manager environment and a non-interactive login shell carry all four, so no
       new credential file is needed and the existing unit's decision to avoid one stands

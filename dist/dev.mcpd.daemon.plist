@@ -10,7 +10,8 @@
        through a login shell and inherits whatever the profile exports. This is the one real
        difference from the systemd unit, and it is why the exports must be somewhere a
        non-interactive login shell reads: .zprofile rather than .zshrc, whose usual early
-       return on a non-interactive shell would skip them silently.
+       return on a non-interactive shell would skip them silently. The shell must be zsh:
+       /bin/sh in login mode reads ~/.profile and never ~/.zprofile.
 
        exec keeps the shell out of the process tree, so KeepAlive watches the daemon itself
        and not a wrapper that has already gone away. The redirection is done here rather than
@@ -19,7 +20,7 @@
        Nothing rotates this file. -->
   <key>ProgramArguments</key>
   <array>
-    <string>/bin/sh</string>
+    <string>/bin/zsh</string>
     <string>-lc</string>
     <string>exec "$HOME/.local/bin/mcpd" >> "$HOME/Library/Logs/mcpd.log" 2>&amp;1</string>
   </array>

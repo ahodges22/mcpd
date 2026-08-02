@@ -1,10 +1,10 @@
 {
   "backends": {
-    "art": {
-      "command": "/usr/local/bin/art-mcp-server",
+    "platform": {
+      "command": "/usr/local/bin/platform-mcp-server",
       "env": {
-        "ART_BIN": "/usr/local/bin/art",
-        "ART_MCP_WORKSPACE_ROOTS": "/home/example/repos"
+        "PLATFORM_BIN": "/usr/local/bin/platform",
+        "PLATFORM_MCP_WORKSPACE_ROOTS": "/home/example/repos"
       },
       "env_passthrough": ["AWS_*", "KUBECONFIG", "VAULT_*"]
     },
@@ -23,35 +23,35 @@
     },
     "platform-n8n": {
       "http_url": "https://gateway.example.internal/mcp/platform-n8n",
-      "headers": { "Authorization": "Bearer ${N8N_STAGE_MCP_TOKEN}" }
+      "headers": { "Authorization": "Bearer ${GATEWAY_TOKEN}" }
     },
     "opslevel": {
       "http_url": "https://gateway.example.internal/mcp/opslevel",
-      "headers": { "Authorization": "Bearer ${LITELLM_KEY}" }
+      "headers": { "Authorization": "Bearer ${GATEWAY_TOKEN}" }
     },
     "pagerduty": {
       "http_url": "https://gateway.example.internal/mcp/pagerduty",
-      "headers": { "Authorization": "Bearer ${LITELLM_KEY}" }
+      "headers": { "Authorization": "Bearer ${GATEWAY_TOKEN}" }
     },
     "context7": {
       "http_url": "https://gateway.example.internal/mcp/context7",
-      "headers": { "Authorization": "Bearer ${LITELLM_KEY}" }
+      "headers": { "Authorization": "Bearer ${GATEWAY_TOKEN}" }
     },
-    "articulate_knowledge": {
-      "http_url": "https://gateway.example.internal/mcp/articulate_knowledge",
-      "headers": { "Authorization": "Bearer ${LITELLM_KEY}" }
+    "knowledge_base": {
+      "http_url": "https://gateway.example.internal/mcp/knowledge_base",
+      "headers": { "Authorization": "Bearer ${GATEWAY_TOKEN}" }
     },
     "slack": {
       "http_url": "https://gateway.example.internal/mcp/slack",
-      "headers": { "Authorization": "Bearer ${LITELLM_KEY}" }
+      "headers": { "Authorization": "Bearer ${GATEWAY_TOKEN}" }
     },
-    "agent-docs": {
-      "http_url": "https://gateway.example.internal/mcp/agent_docs",
-      "headers": { "Authorization": "Bearer ${LITELLM_KEY}" }
+    "docs": {
+      "http_url": "https://gateway.example.internal/mcp/docs",
+      "headers": { "Authorization": "Bearer ${GATEWAY_TOKEN}" }
     },
     "youtrack": {
       "http_url": "https://gateway.example.internal/mcp/youtrack",
-      "headers": { "Authorization": "Bearer ${LITELLM_KEY}" }
+      "headers": { "Authorization": "Bearer ${GATEWAY_TOKEN}" }
     },
     "metabase": {
       "http_url": "https://gateway.example.internal/mcp/metabase"

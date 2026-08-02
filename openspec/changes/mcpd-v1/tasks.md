@@ -346,7 +346,7 @@
       description alone give top-1 66.0% / top-3 78.7%; adding parameter names gives 66.0% / 76.6%;
       adding the server name as well gives 61.7% / 78.7%. Both additions are shared rather than
       distinguishing vocabulary. `account`, `region`, `role` and `workspace` are parameters of
-      almost every art tool, and one backend holds 315 of the 611 tools so its name is a token half
+      almost every tool, and one backend holds 315 of the 611 tools so its name is a token half
       the catalogue carries. Both make tools look more alike, which is the opposite of retrieval.
       Reverted, and recorded in the function so nobody spends the same day on it
 - [x] 13.7c **Found while doing that: `Cache.Key` did not track the embedded text.** It hashed

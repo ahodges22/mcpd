@@ -10,3 +10,6 @@
 /.codex/
 /.cursor/
 /.opencode/
+
+# local agent tooling
+/.superpowers/

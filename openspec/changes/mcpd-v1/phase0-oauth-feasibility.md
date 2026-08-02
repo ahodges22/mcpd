@@ -61,8 +61,8 @@ after the daemon was built around it, would have been considerably more expensiv
 
 ## Housekeeping
 
-Two throwaway client registrations were created at Notion during probing:
-`sg-incGl2s9SHpeL` (manual curl) and `0ap1tkap02JT7AHB` (via the SDK path). Both
+Two throwaway client registrations were created at Notion during probing: one via
+manual curl and one via the SDK path. Both
 are unused public clients with no secret and no granted authorization. They are
 inert, but if Notion's UI exposes registered-client management they can be removed.
 Task 10 will register its own client and persist that one.
