@@ -101,6 +101,13 @@ textarea {
   margin: 0;
 }
 
+.mark-logo {
+  align-self: center;
+  display: block;
+  height: 22px;
+  width: 22px;
+}
+
 .mark-name {
   font-family: var(--mono);
   font-size: 15px;

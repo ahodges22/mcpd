@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="200" height="200" role="img" aria-label="mcpd logo: multiple MCP backends converging through one local daemon">
+  <title>mcpd</title>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#161f29"/>
+      <stop offset="1" stop-color="#0b1118"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="200" height="200" rx="44" fill="url(#bg)"/>
+
+  <g fill="none" stroke="#38d9a9" stroke-width="9" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M42 52h22c16 0 20 17 34 28"/>
+    <path d="M42 100h56"/>
+    <path d="M42 148h22c16 0 20-17 34-28"/>
+    <path d="M122 76c16 0 17-24 36-24"/>
+    <path d="M122 100h36"/>
+    <path d="M122 124c16 0 17 24 36 24"/>
+  </g>
+
+  <g fill="#38d9a9">
+    <circle cx="38" cy="52" r="9"/>
+    <circle cx="38" cy="100" r="9"/>
+    <circle cx="38" cy="148" r="9"/>
+    <circle cx="162" cy="52" r="9"/>
+    <circle cx="162" cy="100" r="9"/>
+    <circle cx="162" cy="148" r="9"/>
+  </g>
+
+  <rect x="88" y="66" width="44" height="68" rx="14" fill="#e7edf4"/>
+  <rect x="100" y="80" width="20" height="40" rx="7" fill="#101821"/>
+  <circle cx="110" cy="100" r="5" fill="#38d9a9"/>
+</svg>
