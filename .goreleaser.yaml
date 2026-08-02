@@ -1,0 +1,49 @@
+version: 2
+
+project_name: mcpd
+dist: .release
+
+builds:
+  - id: mcpd
+    main: ./cmd/mcpd
+    binary: mcpd
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X github.com/ahodges22/mcpd/internal/version.stamped={{ .Version }}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - formats:
+      - tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - README.md
+      - LICENSE
+      - THIRD-PARTY-NOTICES
+      - src: dist/README.md
+        dst: dist/README.md
+      - src: dist/mcpd.service
+        dst: dist/mcpd.service
+      - src: dist/dev.mcpd.daemon.plist
+        dst: dist/dev.mcpd.daemon.plist
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"

@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>mcpd</title>
+<link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+<header class="rail">
+  <p class="mark"><span class="mark-name">mcpd</span><span class="mark-addr">{{.Addr}}</span></p>
+  <nav class="rail-acts">
+    <button class="act" data-post="/api/reconnect-all">Reconnect all</button>
+    <button class="act" data-post="/api/reindex">Refresh tools</button>
+    <button class="act" data-post="/api/reload">Reload config</button>
+  </nav>
+</header>
+
+<p class="note" id="note" hidden></p>
+
+<main>
+
+<section class="block">
+  <p class="eyebrow">Catalog</p>
+  <p class="readout">
+    <span class="readout-n">{{.ToolCount}}</span>
+    <span class="readout-unit">tools</span>
+    <span class="readout-sub">from {{.Serving}} of {{len .Backends}} backends{{if gt .Unvectorized 0}}<span class="readout-vec"> &middot; {{.Unvectorized}} waiting to be embedded</span>{{end}}</span>
+  </p>
+  <div class="bus">
+    {{- range .Segments}}
+    {{- if .Serving}}
+    <span class="seg{{if .Alt}} alt{{end}}" data-tone="{{.Tone}}" data-grow="{{.Grow}}" title="{{.Name}}: {{.ToolCount}} tools">{{if .Named}}<span class="seg-name">{{.Name}}</span>{{end}}</span>
+    {{- else}}
+    <span class="notch" data-tone="{{.Tone}}" title="{{.Name}}: {{.Label}}"></span>
+    {{- end}}
+    {{- end}}
+  </div>
+  <p class="bus-foot">Each block is one backend, sized by its share of the catalog. A notch is a backend serving nothing.</p>
+</section>
+
+<section class="block">
+  <p class="eyebrow">Needs you</p>
+  {{if .Attention}}
+  <ul class="attn">
+    {{- range .Attention}}
+    <li class="attn-row">
+      <span class="lamp" data-tone="{{.Tone}}"></span>
+      <!-- The sentence and the action, and not the upstream's error: this band is a list
+           of things to do, and the error stays in the backend's own row below. -->
+      <span class="attn-says">{{.Wants}}</span>
+      <button class="act attn-do" data-post="{{.FixPath}}">{{.FixLabel}}</button>
+    </li>
+    {{- end}}
+  </ul>
+  {{else}}
+  <p class="allclear">Nothing needs you.</p>
+  {{end}}
+</section>
+
+<section class="block">
+  <div class="block-head">
+    <p class="eyebrow">Backends <span class="tally">{{len .Backends}}</span></p>
+    <button class="ghost" id="add-toggle" data-toggle="add" aria-expanded="false">Add a backend</button>
+  </div>
+
+  <form class="add" id="add" hidden>
+    <div class="add-grid">
+      <label class="field">
+        <span class="field-label">Name</span>
+        <input class="mono" id="add-name" autocomplete="off" spellcheck="false" placeholder="github">
+        <span class="field-help">Lowercase letters, digits, dash and underscore. It becomes the prefix on every tool this backend serves.</span>
+      </label>
+
+      <fieldset class="field switch">
+        <legend class="field-label">Transport</legend>
+        <div class="switch-opts">
+          <label class="opt"><input type="radio" name="add-transport" value="stdio" checked><span>stdio</span></label>
+          <label class="opt"><input type="radio" name="add-transport" value="http"><span>http</span></label>
+        </div>
+        <span class="field-help">stdio runs a command. http talks to a URL.</span>
+      </fieldset>
+
+      <label class="field stdio-only">
+        <span class="field-label">Command</span>
+        <input class="mono" id="add-command" autocomplete="off" spellcheck="false" placeholder="npx">
+      </label>
+      <label class="field stdio-only">
+        <span class="field-label">Arguments</span>
+        <input class="mono" id="add-args" autocomplete="off" spellcheck="false" placeholder="-y @acme/mcp-server">
+        <span class="field-help">Separated by spaces.</span>
+      </label>
+
+      <label class="field http-only wide">
+        <span class="field-label">URL</span>
+        <input class="mono" id="add-url" autocomplete="off" spellcheck="false" placeholder="https://mcp.example.com/mcp">
+      </label>
+      <label class="field http-only check">
+        <input type="checkbox" id="add-oauth">
+        <span>This server needs OAuth</span>
+      </label>
+
+      <label class="field narrow">
+        <span class="field-label">Timeout</span>
+        <span class="suffixed"><input class="mono" id="add-timeout" inputmode="numeric" autocomplete="off" placeholder="60"><span class="suffix">seconds</span></span>
+      </label>
+    </div>
+    <div class="add-foot">
+      <p class="field-help">Credentials do not go here. Put <code>${VAR}</code> in the config file and let the daemon hold the value.</p>
+      <button class="primary" id="add-submit" type="button">Add backend</button>
+    </div>
+  </form>
+
+  <ul class="rows">
+    {{- range .Backends}}
+    <li class="row" data-state="{{.State}}">
+      <span class="lamp" data-tone="{{.Tone}}"></span>
+      <a class="row-name mono" href="/inspect/{{.Name}}">{{.Name}}</a>
+      <span class="row-state">{{.Label}}</span>
+      <span class="row-transport mono">{{.Transport}}</span>
+      <span class="row-tools"><span class="row-tools-n mono">{{.ToolCount}}</span> tools</span>
+      <span class="row-age" title="{{.RefreshedAt}}">{{.Age}}</span>
+      {{if .TokenNote}}<span class="row-token" title="{{.TokenExpiry}}">{{.TokenNote}}</span>{{end}}
+      <!-- One emphasised action at most, and the rest set quietly: fourteen rows of five
+           framed buttons is sixty controls competing with the state they describe. There
+           is no Inspect button because the backend's own name is already that link. -->
+      <span class="row-acts">
+        {{if .OAuth}}<button class="act" data-post="/api/backends/{{.Name}}/authorize">Authorize</button>{{end}}
+        {{if eq .Tone "off"}}
+        <button class="act quiet" data-post="/api/backends/{{.Name}}/enable">Turn on</button>
+        {{else}}
+        <button class="act quiet" data-post="/api/backends/{{.Name}}/reconnect">Reconnect</button>
+        <button class="act quiet" data-post="/api/backends/{{.Name}}/disable">Turn off</button>
+        {{end}}
+        <button class="act quiet danger" data-post="/api/backends/{{.Name}}/remove" data-confirm="remove the declaration for {{.Name}}">Remove</button>
+      </span>
+      {{if .Trouble}}<p class="row-err mono" title="{{.Trouble}}">{{.Trouble}}</p>{{end}}
+    </li>
+    {{- end}}
+  </ul>
+</section>
+
+</main>
+<script src="/assets/app.js"></script>
+</body>
+</html>

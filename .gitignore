@@ -1,0 +1,15 @@
+# build artifacts
+/oauthprobe
+/mcpd
+/.release/
+
+# openspec-generated agent commands/skills: regenerate with
+#   openspec init --tools claude,codex,cursor,opencode
+# They are coupled to the installed CLI version, so they are not committed.
+/.claude/
+/.codex/
+/.cursor/
+/.opencode/
+
+# local agent tooling
+/.superpowers/

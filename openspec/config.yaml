@@ -1,0 +1,57 @@
+schema: spec-driven
+
+context: |
+  mcpd is a single-binary Go daemon that fronts many MCP backends for every coding
+  agent on one machine (Claude Code, Codex, Cursor CLI, OpenCode, plus Zed over ACP).
+
+  Tech stack: Go 1.26 (go.mod requires 1.26.5, for http.CrossOriginProtection),
+  github.com/modelcontextprotocol/go-sdk v1.7.0, golang.org/x/oauth2 transitively via
+  the SDK's auth package, stdlib net/http, embed.FS for UI assets. No web framework,
+  no database, no other third-party dependencies. Keep it that way.
+
+  Runtime shape: one systemd --user daemon bound to 127.0.0.1:7420 (loopback only).
+  The port is load-bearing because it is the registered OAuth redirect URI.
+
+  Conventions:
+  - Conventional Commit subjects, no body, no AI attribution trailers.
+  - Table-driven Go tests. Concurrency tests run with -race, and the lifecycle ones
+    with -count=5, because one green run on a race test proves very little.
+  - Write the minimum tests that pin changed behaviour: one regression test per bug,
+    one test per acceptance criterion. Do not test framework behaviour or permute
+    branches already covered.
+  - Prefer existing code, then the stdlib, then installed dependencies, then minimal
+    custom code. This project reuses the SDK's OAuth client and DNS-rebinding
+    protection rather than reimplementing either.
+  - No code comments unless the "why" is non-obvious (a hidden constraint, a subtle
+    invariant, a workaround). No narrative or tombstone comments.
+  - Confirm any signature with go doc before writing code against it. During Phase 0
+    three assumed oauthex signatures were wrong; go doc is authoritative.
+
+  Non-negotiable invariants, each of which exists because a review found the bug:
+  - tools/call is at-most-once. Reconnect only when no send was attempted. A write
+    that returns an error is NOT evidence the upstream did not act, so it is never
+    replayed. The catalog reaches tools that mutate infrastructure and open pull
+    requests.
+  - A stdio child's cmd.Env is always an explicitly constructed slice, never nil.
+    nil means inherit-everything, which hands every credential the daemon holds to
+    third-party npm code.
+  - DNS-rebinding protection stays enabled, and one http.CrossOriginProtection value
+    is shared between the MCP endpoints and the web routes so the two cannot drift.
+  - Everything backend-derived reaching the browser (tool names, descriptions, errors,
+    and tool results) is escaped or set via textContent. No innerHTML anywhere.
+  - ~/.config/mcpd/config.json belongs to the user. The daemon writes it only
+    through explicit panel add and remove actions, with an atomic swap that retains
+    the displaced version; it never rewrites it as a side effect. Runtime state
+    lives under ~/.local/state/mcpd/.
+
+rules:
+  proposal:
+    - State the problem in terms of observed pain, not desired features.
+  specs:
+    - Every requirement needs at least one scenario, and scenarios use exactly four hashtags.
+    - Prefer scenarios that pin a failure mode a test can catch over restatements of the happy path.
+  design:
+    - Record why rejected alternatives were rejected, so they are not relitigated.
+  tasks:
+    - Each task ends with an independently testable deliverable and its own commit.
+    - Name the test that proves each task, not just the code to write.

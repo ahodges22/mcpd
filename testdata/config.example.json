@@ -1,0 +1,64 @@
+{
+  "backends": {
+    "platform": {
+      "command": "/usr/local/bin/platform-mcp-server",
+      "env": {
+        "PLATFORM_BIN": "/usr/local/bin/platform",
+        "PLATFORM_MCP_WORKSPACE_ROOTS": "/home/example/repos"
+      },
+      "env_passthrough": ["AWS_*", "KUBECONFIG", "VAULT_*"]
+    },
+    "flint": {
+      "command": "npx",
+      "args": ["-y", "flint-chart-mcp@latest"]
+    },
+    "datadog-mcp": {
+      "http_url": "https://mcp.datadoghq.com/api/unstable/mcp-server/mcp?toolsets=all",
+      "headers": { "Authorization": "Bearer ${DD_ACCESS_TOKEN}" },
+      "timeout": 60
+    },
+    "github": {
+      "http_url": "https://api.githubcopilot.com/mcp",
+      "headers": { "Authorization": "Bearer ${GH_PAT}" }
+    },
+    "platform-n8n": {
+      "http_url": "https://gateway.example.internal/mcp/platform-n8n",
+      "headers": { "Authorization": "Bearer ${GATEWAY_TOKEN}" }
+    },
+    "opslevel": {
+      "http_url": "https://gateway.example.internal/mcp/opslevel",
+      "headers": { "Authorization": "Bearer ${GATEWAY_TOKEN}" }
+    },
+    "pagerduty": {
+      "http_url": "https://gateway.example.internal/mcp/pagerduty",
+      "headers": { "Authorization": "Bearer ${GATEWAY_TOKEN}" }
+    },
+    "context7": {
+      "http_url": "https://gateway.example.internal/mcp/context7",
+      "headers": { "Authorization": "Bearer ${GATEWAY_TOKEN}" }
+    },
+    "knowledge_base": {
+      "http_url": "https://gateway.example.internal/mcp/knowledge_base",
+      "headers": { "Authorization": "Bearer ${GATEWAY_TOKEN}" }
+    },
+    "slack": {
+      "http_url": "https://gateway.example.internal/mcp/slack",
+      "headers": { "Authorization": "Bearer ${GATEWAY_TOKEN}" }
+    },
+    "docs": {
+      "http_url": "https://gateway.example.internal/mcp/docs",
+      "headers": { "Authorization": "Bearer ${GATEWAY_TOKEN}" }
+    },
+    "youtrack": {
+      "http_url": "https://gateway.example.internal/mcp/youtrack",
+      "headers": { "Authorization": "Bearer ${GATEWAY_TOKEN}" }
+    },
+    "metabase": {
+      "http_url": "https://gateway.example.internal/mcp/metabase"
+    },
+    "notion": {
+      "http_url": "https://mcp.notion.com/mcp",
+      "auth": "oauth"
+    }
+  }
+}
