@@ -164,6 +164,16 @@ Select a backend in the panel to filter its tools, inspect input schemas, see sa
 
 ![mcpd tool inspector showing a searchable example backend](assets/inspector.png)
 
+## Remote relogin (optional)
+
+An OAuth token can expire while you are away from the machine. The panel's "Remote relogin" toggle starts a second listener (default port 7421) that serves one thing to your local network: a page that lists OAuth-backed backends, starts an authorization, and completes the callback. It exposes no tools, no configuration, and no other panel action.
+
+- Access requires a pairing token. Enabling shows tokenized URLs; open one on the other device once and a cookie keeps you paired.
+- The listener answers private and local addresses only, and every guard on the main surface applies to it too.
+- After you approve access at the provider, your browser lands on a dead `127.0.0.1` page. Edit that address to the mcpd host and port 7421, or paste the full URL into the page's "Finish a login" box.
+- The enabled state survives a daemon restart. The token lives in the state directory, never in config, and rotates on each disable and enable.
+- The connection is plain HTTP: use this on a network where you trust every device, and keep the pairing URLs private. Anyone holding one can complete OAuth logins for this daemon.
+
 ## How it works
 
 ```text
@@ -187,7 +197,7 @@ The implementation design and acceptance scenarios are in [`openspec/changes/mcp
 - OAuth grants and runtime state live under `~/.local/state/mcpd/`. Protect that directory as user-private data.
 - State-changing web actions use guarded JSON `POST` requests. Backend-provided text is escaped before it reaches the page.
 
-Do not expose the listener to a network interface. mcpd is a local trust-boundary tool, not a multi-user MCP gateway.
+Do not expose the main listener to a network interface. mcpd is a local trust-boundary tool, not a multi-user MCP gateway. The optional remote-relogin listener is the one deliberate exception: it is off by default, token-paired, restricted to private peers, and serves only the relogin flow.
 
 ## Develop
 

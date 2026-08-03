@@ -462,3 +462,30 @@ func TestWriter_DeclaredSetTracksWrites(t *testing.T) {
 		t.Error("declared set still contains a removed backend")
 	}
 }
+
+func TestSetRemotePersistsAndPreservesBackends(t *testing.T) {
+	w, _ := newWriterAt(t, `{"backends":{"gh":{"http_url":"https://gh.example/mcp","auth":"oauth"}}}`)
+	if _, err := w.SetRemote(Remote{Enabled: true, Addr: ":7421"}); err != nil {
+		t.Fatalf("SetRemote: %v", err)
+	}
+	cfg, err := w.Reload()
+	if err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	if !cfg.Remote.Enabled || cfg.Remote.Addr != ":7421" {
+		t.Fatalf("remote not persisted: %+v", cfg.Remote)
+	}
+	if _, ok := cfg.Backends["gh"]; !ok {
+		t.Fatal("backends clobbered by SetRemote")
+	}
+	if _, err := w.SetRemote(Remote{Enabled: false, Addr: ":7421"}); err != nil {
+		t.Fatalf("SetRemote disable: %v", err)
+	}
+	cfg, err = w.Reload()
+	if err != nil {
+		t.Fatalf("Reload after disable: %v", err)
+	}
+	if cfg.Remote.Enabled {
+		t.Fatal("disable not persisted")
+	}
+}

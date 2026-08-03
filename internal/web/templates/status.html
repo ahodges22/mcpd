@@ -140,6 +140,28 @@
   </ul>
 </section>
 
+{{if .Remote.Available}}
+<section>
+  <h2>Remote relogin</h2>
+  {{if .Remote.Declared}}
+    {{if .Remote.Running}}
+    <p>Serving a relogin-only page to the local network. Anyone with a pairing URL can complete OAuth logins for this daemon, so keep them private.</p>
+    <ul class="rows">
+      {{- range .Remote.URLs}}
+      <li class="mono">{{.}}</li>
+      {{- end}}
+    </ul>
+    {{else}}
+    <p>Enabled but not running; check the log or restart the daemon.</p>
+    {{end}}
+    <button class="act" data-post="/api/remote" data-payload='{"enabled":false}' data-reload="true">Disable</button>
+  {{else}}
+    <p>Off. Enabling serves a relogin-only page to your local network, guarded by a pairing token.</p>
+    <button class="act" data-post="/api/remote" data-payload='{"enabled":true}' data-reload="true">Enable remote relogin</button>
+  {{end}}
+</section>
+{{end}}
+
 </main>
 <script src="/assets/app.js"></script>
 </body>

@@ -113,9 +113,19 @@ for (const btn of document.querySelectorAll("button.act")) {
     btn.disabled = true;
     setText(btn, "Working");
     say("");
-    const res = await post(btn.dataset.post);
+    // data-payload carries a request body for the routes that need one; the
+    // attribute is authored in the template, never derived from a backend.
+    let payload;
+    if (btn.dataset.payload) {
+      payload = JSON.parse(btn.dataset.payload);
+    }
+    const res = await post(btn.dataset.post, payload);
     btn.disabled = false;
     setText(btn, was);
+    if (res.ok && btn.dataset.reload) {
+      window.location.reload();
+      return;
+    }
     const offered = res.ok && res.body ? res.body.authorize_url : null;
     if (offered) {
       const target = safeAuthorizeURL(offered);

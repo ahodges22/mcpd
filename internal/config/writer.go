@@ -215,6 +215,43 @@ func (w *Writer) Reload() (*Config, error) {
 }
 
 func (w *Writer) mutate(apply func(map[string]json.RawMessage) error) ([]error, error) {
+	return w.mutateDoc(func(doc map[string]json.RawMessage) error {
+		backends := map[string]json.RawMessage{}
+		if b, ok := doc["backends"]; ok && string(b) != "null" {
+			if err := json.Unmarshal(b, &backends); err != nil {
+				return fmt.Errorf("parse backends: %w", err)
+			}
+		}
+		if err := apply(backends); err != nil {
+			return err
+		}
+		encoded, err := json.Marshal(backends)
+		if err != nil {
+			return fmt.Errorf("encode backends: %w", err)
+		}
+		doc["backends"] = encoded
+		return nil
+	})
+}
+
+// SetRemote persists the remote listener declaration. The token is not written
+// here and never is: config declares, the state directory holds secrets.
+func (w *Writer) SetRemote(r Remote) ([]error, error) {
+	encoded, err := json.Marshal(r)
+	if err != nil {
+		return nil, fmt.Errorf("encode remote: %w", err)
+	}
+	return w.mutateDoc(func(doc map[string]json.RawMessage) error {
+		if r == (Remote{}) {
+			delete(doc, "remote")
+			return nil
+		}
+		doc["remote"] = encoded
+		return nil
+	})
+}
+
+func (w *Writer) mutateDoc(apply func(doc map[string]json.RawMessage) error) ([]error, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
@@ -232,20 +269,9 @@ func (w *Writer) mutate(apply func(map[string]json.RawMessage) error) ([]error, 
 	if err := json.Unmarshal(raw, &doc); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
-	backends := map[string]json.RawMessage{}
-	if b, ok := doc["backends"]; ok && string(b) != "null" {
-		if err := json.Unmarshal(b, &backends); err != nil {
-			return nil, fmt.Errorf("parse backends: %w", err)
-		}
-	}
-	if err := apply(backends); err != nil {
+	if err := apply(doc); err != nil {
 		return nil, err
 	}
-	encoded, err := json.Marshal(backends)
-	if err != nil {
-		return nil, fmt.Errorf("encode backends: %w", err)
-	}
-	doc["backends"] = encoded
 	next, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
 		return nil, fmt.Errorf("encode config: %w", err)
@@ -403,6 +429,7 @@ func parse(raw []byte) (*Config, error) {
 		Backends   *map[string]Backend `json:"backends"`
 		Embeddings Embeddings          `json:"embeddings"`
 		Ranking    Ranking             `json:"ranking"`
+		Remote     Remote              `json:"remote"`
 	}
 	if err := json.Unmarshal(raw, &doc); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
@@ -410,7 +437,7 @@ func parse(raw []byte) (*Config, error) {
 	if doc.Backends == nil {
 		return nil, fmt.Errorf("config declares no backends object")
 	}
-	c := Config{Backends: map[string]Backend{}, Embeddings: doc.Embeddings, Ranking: doc.Ranking}
+	c := Config{Backends: map[string]Backend{}, Embeddings: doc.Embeddings, Ranking: doc.Ranking, Remote: doc.Remote}
 	if err := validateRanking(c); err != nil {
 		return nil, err
 	}

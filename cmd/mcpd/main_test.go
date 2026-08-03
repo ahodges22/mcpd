@@ -342,3 +342,49 @@ func TestAbstentionIsWiredOnlyWhenAGatewayCanProduceACosine(t *testing.T) {
 		t.Errorf("abstention is enabled for an uncalibrated embedding model: %+v", got)
 	}
 }
+
+func TestWireStartsRemoteFromConfig(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(cfgPath, []byte(`{"backends":{},"remote":{"enabled":true,"addr":"127.0.0.1:0"}}`), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	writer, cfg, err := config.NewWriter(cfgPath)
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	state := filepath.Join(dir, "state")
+	if err := os.MkdirAll(state, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(state, "remote-token"),
+		[]byte("00112233445566778899aabbccddeeff\n"), 0o600); err != nil {
+		t.Fatalf("write token: %v", err)
+	}
+	ov, err := backend.LoadOverrides(filepath.Join(state, "overrides.json"), writer)
+	if err != nil {
+		t.Fatalf("LoadOverrides: %v", err)
+	}
+
+	d := &daemon{state: state, writer: writer, overrides: ov}
+	if err := d.wire(cfg, "127.0.0.1:0"); err != nil {
+		t.Fatalf("wire: %v", err)
+	}
+	t.Cleanup(d.reg.Shutdown)
+	t.Cleanup(d.remote.Close)
+	if !d.remote.Running() {
+		t.Fatal("remote listener not restored from config")
+	}
+
+	// The zero-value declaration starts nothing.
+	cfg2 := &config.Config{Backends: map[string]config.Backend{}}
+	d2 := &daemon{state: state, writer: writer, overrides: ov}
+	if err := d2.wire(cfg2, "127.0.0.1:0"); err != nil {
+		t.Fatalf("wire without remote: %v", err)
+	}
+	t.Cleanup(d2.reg.Shutdown)
+	t.Cleanup(d2.remote.Close)
+	if d2.remote.Running() || d2.remote.Declared() {
+		t.Fatal("remote listener started without a declaration")
+	}
+}

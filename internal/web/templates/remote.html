@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>mcpd remote relogin</title>
+<link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+<header class="rail">
+  <p class="mark"><img class="mark-logo" src="/assets/logo.svg" alt=""><span class="mark-name">mcpd</span><span class="mark-addr">{{.Addr}}</span></p>
+</header>
+
+<p class="note" id="note" hidden></p>
+
+<main>
+  <section>
+    <h2>Relogin</h2>
+    <p>Backends that authorize with OAuth. Press Authorize, then log in at the provider.</p>
+    <ul id="remote-backends"></ul>
+  </section>
+
+  <section>
+    <h2>Finish a login</h2>
+    <p>After you approve access, the browser lands on a dead 127.0.0.1 page.
+       Either edit that address to this host and port, or paste the full URL here.</p>
+    <form id="paste-form">
+      <input id="paste-url" type="url" placeholder="http://127.0.0.1:7420/oauth/callback?code=..." required>
+      <button class="act" type="submit">Deliver</button>
+    </form>
+  </section>
+</main>
+
+<script src="/assets/remote.js"></script>
+</body>
+</html>

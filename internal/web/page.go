@@ -69,6 +69,18 @@ type statusView struct {
 	// Attention is every backend that wants something from the user, lifted out of the
 	// table so a needed action is never something to go hunting for.
 	Attention []backendStatus `json:"-"`
+	// Remote is the LAN relogin listener's state, for the panel only.
+	Remote remoteView `json:"-"`
+}
+
+// remoteView is what the panel needs to render the remote-relogin section:
+// whether the toggle exists at all, what config declares, whether a listener
+// is actually serving, and the pairing URLs when it is.
+type remoteView struct {
+	Available bool
+	Declared  bool
+	Running   bool
+	URLs      []string
 }
 
 type toolView struct {
@@ -128,6 +140,14 @@ func (s *Server) snapshot() statusView {
 		out.Backends = append(out.Backends, entry)
 	}
 	out.Segments = bus(out.Backends)
+	if s.remote != nil {
+		out.Remote = remoteView{
+			Available: true,
+			Declared:  s.remote.Declared(),
+			Running:   s.remote.Running(),
+			URLs:      s.remote.URLs(),
+		}
+	}
 	return out
 }
 

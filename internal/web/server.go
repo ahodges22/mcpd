@@ -60,6 +60,9 @@ type Server struct {
 	// unvectorized is optional: it is nil when no embedding gateway is configured, and
 	// the surface then reports nothing rather than a misleading zero.
 	unvectorized func() int
+	// remote is optional: without it the panel has no remote-relogin toggle and
+	// the /api/remote route is absent.
+	remote *Remote
 }
 
 // Manager is the part of the declaration-management layer this surface drives. Each
@@ -132,6 +135,10 @@ func (s *Server) routes() []route {
 		{method: http.MethodPost, path: "/api/reconnect-all", mutates: true, handler: s.reconnectAll},
 		{method: http.MethodPost, path: "/api/reindex", mutates: true, handler: s.reindex},
 		{method: http.MethodPost, path: "/api/invoke", mutates: true, handler: s.invoke},
+	}
+	if s.remote != nil {
+		base = append(base,
+			route{method: http.MethodPost, path: "/api/remote", mutates: true, handler: s.remoteToggle})
 	}
 	if s.manager == nil {
 		return base

@@ -127,6 +127,7 @@ type daemon struct {
 	mgr       *manage.Manager
 	pass      *mcpsrv.Passthrough
 	index     *searchindex.Index
+	remote    *web.Remote
 	handler   http.Handler
 }
 
@@ -212,6 +213,17 @@ func (d *daemon) wire(cfg *config.Config, addr string) error {
 
 	guard := web.NewGuard()
 	surface := web.New(d.reg, d.cat, guard, d.store).WithManager(d.mgr)
+	raddr := cfg.Remote.Addr
+	if raddr == "" {
+		raddr = ":7421"
+	}
+	hostname, _ := os.Hostname()
+	d.remote = web.NewRemote(surface, d.writer, filepath.Join(d.state, "remote-token"), raddr, hostname)
+	surface = surface.WithRemote(d.remote)
+	// A reload that adopts a hand-edited remote declaration must reach the live
+	// listener, or the file and the network would describe different states.
+	d.mgr.ReloadRemote = d.remote.Apply
+	d.remote.Startup(cfg.Remote.Enabled)
 	mux := http.NewServeMux()
 	// Both MCP handlers are wrapped in the same guard value the web surface uses, so the
 	// cross-origin policy cannot diverge between the two surfaces.
@@ -307,6 +319,7 @@ func (d *daemon) serve(addr string) error {
 	slog.Info("mcpd shutting down")
 	shutCtx, cancelShut := context.WithTimeout(context.Background(), shutdownBudget)
 	defer cancelShut()
+	d.remote.Close()
 	if err := srv.Shutdown(shutCtx); err != nil {
 		slog.Warn("http shutdown", "error", err)
 	}

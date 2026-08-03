@@ -44,6 +44,14 @@ type Config struct {
 	Backends   map[string]Backend `json:"backends"`
 	Embeddings Embeddings         `json:"embeddings,omitempty"`
 	Ranking    Ranking            `json:"ranking,omitempty"`
+	Remote     Remote             `json:"remote,omitempty"`
+}
+
+// Remote declares the opt-in LAN relogin listener. Only the declaration lives
+// here: the pairing token is a credential and lives in the state directory.
+type Remote struct {
+	Enabled bool   `json:"enabled,omitempty"`
+	Addr    string `json:"addr,omitempty"`
 }
 
 // Embeddings configures the gateway that vectorizes the catalog. It is optional: with no
