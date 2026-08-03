@@ -125,7 +125,7 @@
            framed buttons is sixty controls competing with the state they describe. There
            is no Inspect button because the backend's own name is already that link. -->
       <span class="row-acts">
-        {{if .OAuth}}<button class="act" data-post="/api/backends/{{.Name}}/authorize">Authorize</button>{{end}}
+        {{if .OAuth}}<button class="act" data-post="/api/backends/{{.Name}}/authorize"{{if .Serving}} disabled title="Already authorized and serving"{{end}}>Authorize</button>{{end}}
         {{if eq .Tone "off"}}
         <button class="act quiet" data-post="/api/backends/{{.Name}}/enable">Turn on</button>
         {{else}}
