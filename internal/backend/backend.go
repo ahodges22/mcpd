@@ -311,13 +311,12 @@ func (b *Backend) connect(ctx context.Context) (*mcp.ClientSession, error) {
 		b.mu.Unlock()
 		return nil, fmt.Errorf("backing off %s after: %s", wait.Round(time.Millisecond), last)
 	}
-	ctx, cancel := context.WithTimeout(ctx, b.connectTimeout())
+	ctx, cancel := context.WithTimeout(ctx, b.handshakeTimeout(b.interactive.Swap(false)))
 	b.connectAttempt = ConnectAttempt{Generation: b.gen.Load()}
 	b.connectCancel = cancel
 	b.mu.Unlock()
 	defer func() {
 		cancel()
-		b.interactive.Store(false)
 		b.mu.Lock()
 		b.connectCancel = nil
 		b.mu.Unlock()
@@ -384,19 +383,26 @@ func (b *Backend) cancelConnect() {
 func (b *Backend) ConnectTimeout() time.Duration { return b.connectTimeout() }
 
 func (b *Backend) connectTimeout() time.Duration {
+	return b.handshakeTimeout(b.interactive.Load())
+}
+
+// handshakeTimeout sizes one handshake's budget. connect consumes the
+// interactive latch with Swap at the moment it starts, so only the handshake
+// spending the budget clears it: an aborted background handshake's cleanup
+// must not eat a flag the user has just set for their own attempt.
+func (b *Backend) handshakeTimeout(interactive bool) time.Duration {
 	configured := defaultConnectTimeout
 	if b.spec.TimeoutSec > 0 {
 		configured = time.Duration(b.spec.TimeoutSec) * time.Second
 	}
-	if b.interactive.Load() {
+	if interactive {
 		return max(configured, interactiveConnectTimeout)
 	}
 	return configured
 }
 
 // ExpectAuthorization tells this backend that its next handshake is one the user asked for
-// and is waiting on in a browser, so it is given a budget a person can meet. It is cleared
-// when that handshake finishes, however it finishes.
+// and is waiting on in a browser, so it is given a budget a person can meet. It is consumed by the next handshake to start.
 func (b *Backend) ExpectAuthorization() { b.interactive.Store(true) }
 
 // teardownMode distinguishes the kill switch from a reconnect. Only the kill

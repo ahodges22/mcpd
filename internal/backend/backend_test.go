@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -84,6 +85,48 @@ func TestInteractiveBudgetSurvivesConfiguredTimeout(t *testing.T) {
 	_, _ = b.ListTools(t.Context())
 	if got := <-budget; got < 4*time.Minute {
 		t.Errorf("handshake budget = %v; a configured timeout must not cap the interactive budget", got)
+	}
+}
+
+func TestAbortedHandshakeLeavesAPendingInteractiveFlag(t *testing.T) {
+	cfg := &config.Config{Backends: map[string]config.Backend{
+		"alpha": {Name: "alpha", Command: "true"},
+	}}
+	r := NewRegistry(cfg, overridesAt(t, filepath.Join(t.TempDir(), "overrides.json")), Hooks{})
+	b, _ := r.Get("alpha")
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	budgets := make(chan time.Duration, 2)
+	var calls atomic.Int32
+	b.dial = func(ctx context.Context) (mcp.Transport, error) {
+		d, _ := ctx.Deadline()
+		budgets <- time.Until(d)
+		if calls.Add(1) == 1 {
+			close(entered)
+			<-release
+		}
+		return nil, errors.New("refused")
+	}
+
+	// A background refresh is mid-handshake when the user asks to authorize.
+	done := make(chan struct{})
+	go func() { defer close(done); _, _ = b.ListTools(t.Context()) }()
+	<-entered
+	b.ExpectAuthorization()
+	close(release)
+	<-done
+	<-budgets // the background attempt's budget is not under test
+
+	// The authorize path's reconnect clears backoff before the next handshake;
+	// done directly here to keep the test on the flag, not the backoff.
+	b.mu.Lock()
+	b.failures, b.retryAt = 0, time.Time{}
+	b.mu.Unlock()
+
+	_, _ = b.ListTools(t.Context())
+	if got := <-budgets; got < 4*time.Minute {
+		t.Errorf("the user's handshake got %v, want the interactive budget: the aborted attempt must not clear the flag", got)
 	}
 }
 
