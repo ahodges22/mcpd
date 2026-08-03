@@ -103,7 +103,15 @@ function renderBackends(list) {
     const btn = document.createElement("button");
     btn.className = "act";
     setText(btn, "Authorize");
-    btn.addEventListener("click", () => authorize(b.name, btn));
+    // A serving backend has nothing to authorize; the button stays visible
+    // but inert so the row still reads as complete. Every other state keeps
+    // it live, because authorize-after-reconnect is how a stale one is kicked.
+    if (b.state === "up") {
+      btn.disabled = true;
+      btn.title = "Already authorized and serving";
+    } else {
+      btn.addEventListener("click", () => authorize(b.name, btn));
+    }
     li.appendChild(btn);
     ul.appendChild(li);
   }
