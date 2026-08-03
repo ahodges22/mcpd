@@ -150,19 +150,33 @@ type fakeRemoteWriter struct {
 	fail       bool
 }
 
-func (f *fakeRemoteWriter) SetRemote(r config.Remote) ([]error, error) {
+func (f *fakeRemoteWriter) SetRemoteEnabled(enabled bool) ([]error, error) {
 	if f.fail {
 		return nil, config.ErrStale
 	}
 	f.calls++
-	f.lastRemote = r
+	f.lastRemote.Enabled = enabled
 	return nil, nil
 }
+
+func (f *fakeRemoteWriter) SetRemoteAdvertise(advertise string) ([]error, error) {
+	if f.fail {
+		return nil, config.ErrStale
+	}
+	f.calls++
+	f.lastRemote.Advertise = advertise
+	return nil, nil
+}
+
+func (f *fakeRemoteWriter) Remote() config.Remote { return f.lastRemote }
 
 func newTestRemote(t *testing.T, addr string) (*Remote, *fakeRemoteWriter) {
 	t.Helper()
 	h := newHarness(t)
-	w := &fakeRemoteWriter{}
+	// The fake's committed declaration names the test address, as a real
+	// file would: Apply resolves an empty address to the :7421 default,
+	// which a test must never bind.
+	w := &fakeRemoteWriter{lastRemote: config.Remote{Addr: addr}}
 	rc := NewRemote(h.server, w, filepath.Join(t.TempDir(), "remote-token"), addr, "desk")
 	t.Cleanup(rc.Close)
 	return rc, w
@@ -224,7 +238,8 @@ func TestRemoteDisableAfterFailedStartup(t *testing.T) {
 	if err := storeRemoteToken(rc.tokenPath, tok); err != nil {
 		t.Fatal(err)
 	}
-	rc.Apply(config.Remote{Enabled: true}) // cannot bind; declared stays true
+	w.lastRemote.Enabled = true
+	rc.Apply() // cannot bind; declared stays true
 	if rc.Running() {
 		t.Fatal("precondition: listener should be off")
 	}
@@ -263,22 +278,24 @@ func TestRemoteEnableRollbackKeepsPriorToken(t *testing.T) {
 }
 
 func TestRemoteStartup(t *testing.T) {
-	rc, _ := newTestRemote(t, "127.0.0.1:0")
+	rc, w := newTestRemote(t, "127.0.0.1:0")
 	tok, _ := newRemoteToken()
 	if err := storeRemoteToken(rc.tokenPath, tok); err != nil {
 		t.Fatal(err)
 	}
-	rc.Apply(config.Remote{Enabled: true})
+	w.lastRemote.Enabled = true
+	rc.Apply()
 	if !rc.Running() {
 		t.Fatal("startup did not restore the listener")
 	}
 
 	for _, bad := range []string{"", "abc", strings.Repeat("z", 32)} {
-		rc2, _ := newTestRemote(t, "127.0.0.1:0")
+		rc2, w2 := newTestRemote(t, "127.0.0.1:0")
 		if err := os.WriteFile(rc2.tokenPath, []byte(bad), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		rc2.Apply(config.Remote{Enabled: true})
+		w2.lastRemote.Enabled = true
+		rc2.Apply()
 		if rc2.Running() {
 			t.Fatalf("startup accepted token %q", bad)
 		}
@@ -308,7 +325,8 @@ func TestRemotePortOccupied(t *testing.T) {
 	if err := storeRemoteToken(rc.tokenPath, tok); err != nil {
 		t.Fatal(err)
 	}
-	rc.Apply(config.Remote{Enabled: true})
+	w.lastRemote.Enabled = true
+	rc.Apply()
 	if rc.Running() {
 		t.Fatal("startup claims running on an occupied port")
 	}
@@ -372,7 +390,12 @@ func TestRemoteToggleRetractsAfterFailedStartup(t *testing.T) {
 	if err := storeRemoteToken(rc.tokenPath, tok); err != nil {
 		t.Fatal(err)
 	}
-	rc.Apply(config.Remote{Enabled: true})
+	wr, okw := rc.writer.(*fakeRemoteWriter)
+	if !okw {
+		t.Fatal("test writer is not the fake")
+	}
+	wr.lastRemote.Enabled = true
+	rc.Apply()
 
 	req := httptest.NewRequest("POST", "http://127.0.0.1/api/remote", strings.NewReader(`{"enabled":false}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -515,5 +538,126 @@ func TestPanelRendersPairingURLSplit(t *testing.T) {
 	}
 	if !strings.Contains(body, `data-copy="`) || !strings.Contains(body, tok+`"`) {
 		t.Error("the copy button does not carry the full pairing URL")
+	}
+}
+
+// A reload's Apply reads the committed declaration at apply time, so an
+// enable that lands between the reload's file adoption and its apply is not
+// overwritten by the reload's older snapshot.
+func TestApplyReadsTheLatestDeclaration(t *testing.T) {
+	rc, w := newTestRemote(t, "127.0.0.1:0")
+	// The reload adopted enabled:false, then a toggle committed enabled:true
+	// before the reload's apply ran. Apply must honor the toggle.
+	if _, err := rc.Enable(); err != nil {
+		t.Fatalf("enable: %v", err)
+	}
+	if !w.lastRemote.Enabled {
+		t.Fatal("precondition: enable did not commit")
+	}
+	rc.Apply()
+	if !rc.Running() {
+		t.Fatal("a stale apply stopped the listener a newer toggle started")
+	}
+	if _, ok := loadRemoteToken(rc.tokenPath); !ok {
+		t.Fatal("a stale apply deleted the token of an enabled listener")
+	}
+}
+
+// SetAdvertise between a reload's commit and its apply must not resurrect the
+// enabled state the reload retracted: the write is field-scoped at the
+// writer's commit point, never a whole-struct write from the lifecycle's
+// stale cache.
+func TestAdvertiseWriteCannotResurrectARetractedEnable(t *testing.T) {
+	h := newHarness(t)
+	rc := NewRemote(h.server, h.writer, filepath.Join(t.TempDir(), "remote-token"), "127.0.0.1:0", "desk")
+	t.Cleanup(rc.Close)
+
+	if _, err := rc.Enable(); err != nil {
+		t.Fatalf("enable: %v", err)
+	}
+	// A hand edit disables it, and the writer adopts the file. The lifecycle
+	// apply has NOT run yet: this is the pause the race lives in.
+	raw, err := os.ReadFile(h.cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	doc["remote"] = json.RawMessage(`{"enabled":false,"addr":"127.0.0.1:0"}`)
+	next, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(h.cfgPath, next, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.writer.Reload(); err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+
+	if err := rc.SetAdvertise("https://mcpd.home.example"); err != nil {
+		t.Fatalf("set advertise: %v", err)
+	}
+	got := h.writer.Remote()
+	if got.Enabled {
+		t.Fatal("an advertise write resurrected the enabled state a reload retracted")
+	}
+	if got.Advertise != "https://mcpd.home.example" {
+		t.Fatalf("advertise not committed: %+v", got)
+	}
+}
+
+// A toggle between a reload's commit and its apply must not overwrite the
+// address the reload adopted: the daemon never writes addr.
+func TestToggleWriteCannotClobberAReloadedAddress(t *testing.T) {
+	h := newHarness(t)
+	rc := NewRemote(h.server, h.writer, filepath.Join(t.TempDir(), "remote-token"), "127.0.0.1:0", "desk")
+	t.Cleanup(rc.Close)
+	if _, err := rc.Enable(); err != nil {
+		t.Fatalf("enable: %v", err)
+	}
+	// A hand edit moves the address, the writer adopts it, and a toggle lands
+	// before the lifecycle apply.
+	raw, err := os.ReadFile(h.cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	doc["remote"] = json.RawMessage(`{"enabled":true,"addr":"127.0.0.1:7599"}`)
+	next, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(h.cfgPath, next, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.writer.Reload(); err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if err := rc.Disable(); err != nil {
+		t.Fatalf("disable: %v", err)
+	}
+	got := h.writer.Remote()
+	if got.Addr != "127.0.0.1:7599" {
+		t.Fatalf("a toggle write clobbered the reloaded address: %+v", got)
+	}
+	if got.Enabled {
+		t.Fatal("disable did not commit")
+	}
+}
+
+// Clearing a custom address from the file and reloading resolves back to the
+// documented default rather than keeping the old address forever.
+func TestApplyResolvesAnEmptyAddressToTheDefault(t *testing.T) {
+	rc, w := newTestRemote(t, "127.0.0.1:4567")
+	w.lastRemote = config.Remote{Enabled: false, Addr: ""}
+	rc.Apply()
+	if rc.addr != defaultRemoteAddr {
+		t.Fatalf("empty declared address resolved to %q, want %q", rc.addr, defaultRemoteAddr)
 	}
 }

@@ -464,22 +464,25 @@ func TestWriter_DeclaredSetTracksWrites(t *testing.T) {
 }
 
 func TestSetRemotePersistsAndPreservesBackends(t *testing.T) {
-	w, _ := newWriterAt(t, `{"backends":{"gh":{"http_url":"https://gh.example/mcp","auth":"oauth"}}}`)
-	if _, err := w.SetRemote(Remote{Enabled: true, Addr: ":7421"}); err != nil {
-		t.Fatalf("SetRemote: %v", err)
+	w, _ := newWriterAt(t, `{"backends":{"gh":{"http_url":"https://gh.example/mcp","auth":"oauth"}},"remote":{"addr":":7421"}}`)
+	if _, err := w.SetRemoteEnabled(true); err != nil {
+		t.Fatalf("SetRemoteEnabled: %v", err)
+	}
+	if _, err := w.SetRemoteAdvertise("https://mcpd.home.example"); err != nil {
+		t.Fatalf("SetRemoteAdvertise: %v", err)
 	}
 	cfg, err := w.Reload()
 	if err != nil {
 		t.Fatalf("Reload: %v", err)
 	}
-	if !cfg.Remote.Enabled || cfg.Remote.Addr != ":7421" {
+	if !cfg.Remote.Enabled || cfg.Remote.Addr != ":7421" || cfg.Remote.Advertise != "https://mcpd.home.example" {
 		t.Fatalf("remote not persisted: %+v", cfg.Remote)
 	}
 	if _, ok := cfg.Backends["gh"]; !ok {
 		t.Fatal("backends clobbered by SetRemote")
 	}
-	if _, err := w.SetRemote(Remote{Enabled: false, Addr: ":7421"}); err != nil {
-		t.Fatalf("SetRemote disable: %v", err)
+	if _, err := w.SetRemoteEnabled(false); err != nil {
+		t.Fatalf("SetRemoteEnabled disable: %v", err)
 	}
 	cfg, err = w.Reload()
 	if err != nil {
@@ -487,5 +490,8 @@ func TestSetRemotePersistsAndPreservesBackends(t *testing.T) {
 	}
 	if cfg.Remote.Enabled {
 		t.Fatal("disable not persisted")
+	}
+	if cfg.Remote.Advertise != "https://mcpd.home.example" || cfg.Remote.Addr != ":7421" {
+		t.Fatal("a field-scoped enable write clobbered another remote field")
 	}
 }

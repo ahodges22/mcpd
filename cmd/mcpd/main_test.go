@@ -372,6 +372,13 @@ func TestWireStartsRemoteFromConfig(t *testing.T) {
 	}
 	t.Cleanup(d.reg.Shutdown)
 	t.Cleanup(d.remote.Close)
+	// wire builds the lifecycle but must not bind it: serve starts it only
+	// after the main listener holds its own port, so an overlapping remote
+	// address can never take the daemon down.
+	if d.remote.Running() {
+		t.Fatal("wire bound the remote listener before the main listener")
+	}
+	d.remote.Apply()
 	if !d.remote.Running() {
 		t.Fatal("remote listener not restored from config")
 	}
@@ -379,9 +386,25 @@ func TestWireStartsRemoteFromConfig(t *testing.T) {
 		t.Fatalf("advertised origin not restored across restart: %q", got)
 	}
 
-	// The zero-value declaration starts nothing.
-	cfg2 := &config.Config{Backends: map[string]config.Backend{}}
-	d2 := &daemon{state: state, writer: writer, overrides: ov}
+	// A config with no remote declaration starts nothing.
+	dir2 := t.TempDir()
+	cfgPath2 := filepath.Join(dir2, "config.json")
+	if err := os.WriteFile(cfgPath2, []byte(`{"backends":{}}`), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	writer2, cfg2, err := config.NewWriter(cfgPath2)
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	state2 := filepath.Join(dir2, "state")
+	if err := os.MkdirAll(state2, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	ov2, err := backend.LoadOverrides(filepath.Join(state2, "overrides.json"), writer2)
+	if err != nil {
+		t.Fatalf("LoadOverrides: %v", err)
+	}
+	d2 := &daemon{state: state2, writer: writer2, overrides: ov2}
 	if err := d2.wire(cfg2, "127.0.0.1:0"); err != nil {
 		t.Fatalf("wire without remote: %v", err)
 	}

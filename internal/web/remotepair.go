@@ -34,6 +34,7 @@ func pairingURLs(bindHost string, port int, token string, addrs []netip.Addr, ho
 	case bindErr == nil && !bind.IsUnspecified():
 		hosts = []string{bindHost}
 	default:
+		var v4hosts, v6hosts []string
 		for _, a := range addrs {
 			if a.IsLoopback() || a.IsLinkLocalUnicast() || a.IsLinkLocalMulticast() {
 				continue
@@ -44,16 +45,21 @@ func pairingURLs(bindHost string, port int, token string, addrs []netip.Addr, ho
 			if cgnat.Contains(a.Unmap()) {
 				continue
 			}
-			// IPv6 interface addresses are advertised only when the listener
-			// serves nothing else: beside an IPv4 URL they are longer, harder
-			// to read, and reach the same daemon. The listener itself stays
-			// dual-stack, and the hostname candidate still resolves to AAAA
-			// for a device that prefers it.
 			if (a.Is4() || a.Is4In6()) && v4 {
-				hosts = append(hosts, a.Unmap().String())
-			} else if a.Is6() && !a.Is4In6() && v6 && !v4 {
-				hosts = append(hosts, a.String())
+				v4hosts = append(v4hosts, a.Unmap().String())
+			} else if a.Is6() && !a.Is4In6() && v6 {
+				v6hosts = append(v6hosts, a.String())
 			}
+		}
+		// IPv6 addresses are the fallback, not a peer of IPv4: beside an IPv4
+		// URL they are longer, harder to read, and reach the same daemon. They
+		// appear only when no IPv4 address exists to advertise, which keeps an
+		// IPv6-only host pairable. The listener itself serves both families
+		// regardless, and the hostname candidate still resolves to AAAA for a
+		// device that prefers it.
+		hosts = v4hosts
+		if len(hosts) == 0 {
+			hosts = v6hosts
 		}
 		// The resolving device picks the record family, so a hostname is only
 		// offered when the listener serves both.

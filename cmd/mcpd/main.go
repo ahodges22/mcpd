@@ -213,17 +213,15 @@ func (d *daemon) wire(cfg *config.Config, addr string) error {
 
 	guard := web.NewGuard()
 	surface := web.New(d.reg, d.cat, guard, d.store).WithManager(d.mgr)
-	raddr := cfg.Remote.Addr
-	if raddr == "" {
-		raddr = ":7421"
-	}
 	hostname, _ := os.Hostname()
-	d.remote = web.NewRemote(surface, d.writer, filepath.Join(d.state, "remote-token"), raddr, hostname)
+	d.remote = web.NewRemote(surface, d.writer, filepath.Join(d.state, "remote-token"), cfg.Remote.Addr, hostname)
 	surface = surface.WithRemote(d.remote)
 	// A reload that adopts a hand-edited remote declaration must reach the live
 	// listener, or the file and the network would describe different states.
+	// The listener itself starts in serve, after the main listener binds: a
+	// misconfigured remote address that overlaps the main one must lose that
+	// race, not win it and take the daemon down.
 	d.mgr.ReloadRemote = d.remote.Apply
-	d.remote.Apply(cfg.Remote)
 	mux := http.NewServeMux()
 	// Both MCP handlers are wrapped in the same guard value the web surface uses, so the
 	// cross-origin policy cannot diverge between the two surfaces.
@@ -286,6 +284,10 @@ func (d *daemon) serve(addr string) error {
 		return fmt.Errorf("listen on %s: %w", addr, err)
 	}
 	srv := &http.Server{Handler: d.handler}
+	// Only after the main listener holds its port: a remote declaration that
+	// names an overlapping address then fails its own bind and stays off,
+	// which is the harmless half of that mistake.
+	d.remote.Apply()
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()

@@ -64,6 +64,7 @@ type Writer struct {
 
 	declMu   sync.RWMutex
 	declared map[string]Identity
+	remote   Remote
 
 	// exchange is the atomic commit. It is a field so a test can make the syscall
 	// unavailable, which is the one case that must refuse rather than fall back.
@@ -152,7 +153,18 @@ func (w *Writer) publish(cfg *Config) {
 	}
 	w.declMu.Lock()
 	w.declared = next
+	w.remote = cfg.Remote
 	w.declMu.Unlock()
+}
+
+// Remote is the remote declaration as last committed: the initial load, the
+// last SetRemote, or the last Reload, whichever came latest. The lifecycle
+// reads this rather than a snapshot handed through a call chain, so applying
+// an adopted declaration can never overwrite a toggle that landed after it.
+func (w *Writer) Remote() Remote {
+	w.declMu.RLock()
+	defer w.declMu.RUnlock()
+	return w.remote
 }
 
 // Add declares a new backend. Everything that could invalidate the write happens before
@@ -234,17 +246,45 @@ func (w *Writer) mutate(apply func(map[string]json.RawMessage) error) ([]error, 
 	})
 }
 
-// SetRemote persists the remote listener declaration. The token is not written
-// here and never is: config declares, the state directory holds secrets.
-func (w *Writer) SetRemote(r Remote) ([]error, error) {
-	encoded, err := json.Marshal(r)
-	if err != nil {
-		return nil, fmt.Errorf("encode remote: %w", err)
-	}
+// SetRemoteEnabled and SetRemoteAdvertise each rewrite only their own fields
+// of the committed remote declaration, reading the rest from the document
+// under the write lock. The lifecycle holds cached copies of the other
+// fields, and a cached copy can be stale between a reload's commit and its
+// apply; a wider write from that cache would resurrect or destroy state the
+// reload just adopted. The daemon never writes addr at all: the address is
+// declaration-only, and the post-reload apply rebinds a running listener onto
+// whatever the file says. The token is not written here and never is: config
+// declares, the state directory holds secrets.
+func (w *Writer) SetRemoteEnabled(enabled bool) ([]error, error) {
+	return w.mutateRemote(func(r *Remote) {
+		r.Enabled = enabled
+	})
+}
+
+func (w *Writer) SetRemoteAdvertise(advertise string) ([]error, error) {
+	return w.mutateRemote(func(r *Remote) {
+		r.Advertise = advertise
+	})
+}
+
+// mutateRemote publishes through mutateDoc's commit point, so publish order
+// always matches commit order.
+func (w *Writer) mutateRemote(apply func(*Remote)) ([]error, error) {
 	return w.mutateDoc(func(doc map[string]json.RawMessage) error {
+		var r Remote
+		if raw, ok := doc["remote"]; ok && string(raw) != "null" {
+			if err := json.Unmarshal(raw, &r); err != nil {
+				return fmt.Errorf("parse remote: %w", err)
+			}
+		}
+		apply(&r)
 		if r == (Remote{}) {
 			delete(doc, "remote")
 			return nil
+		}
+		encoded, err := json.Marshal(r)
+		if err != nil {
+			return fmt.Errorf("encode remote: %w", err)
 		}
 		doc["remote"] = encoded
 		return nil

@@ -65,9 +65,15 @@ func (s *Server) remoteToggle(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// RemoteWriter is the one config mutation the remote lifecycle needs.
+// RemoteWriter is the remote lifecycle's view of the config writer: two
+// field-scoped mutations, and the committed declaration it reconciles
+// against. The mutations are field-scoped rather than whole-struct because
+// the lifecycle's cached copies of the other fields can be stale between a
+// reload's commit and its apply.
 type RemoteWriter interface {
-	SetRemote(config.Remote) ([]error, error)
+	SetRemoteEnabled(enabled bool) ([]error, error)
+	SetRemoteAdvertise(advertise string) ([]error, error)
+	Remote() config.Remote
 }
 
 // Remote owns the LAN listener's lifecycle. One mutex serializes enable,
@@ -91,7 +97,13 @@ type Remote struct {
 	declared bool
 }
 
+// defaultRemoteAddr is the documented default bind: Go's dual-stack wildcard.
+const defaultRemoteAddr = ":7421"
+
 func NewRemote(s *Server, w RemoteWriter, tokenPath, addr, hostname string) *Remote {
+	if addr == "" {
+		addr = defaultRemoteAddr
+	}
 	return &Remote{srv: s, writer: w, tokenPath: tokenPath, addr: addr, hostname: hostname}
 }
 
@@ -117,7 +129,7 @@ func (r *Remote) Enable() ([]string, error) {
 		err = storeRemoteToken(r.tokenPath, tok)
 	}
 	if err == nil {
-		_, err = r.writer.SetRemote(config.Remote{Enabled: true, Addr: r.addr, Advertise: r.advertise})
+		_, err = r.writer.SetRemoteEnabled(true)
 	}
 	if err != nil {
 		ln.Close()
@@ -146,7 +158,7 @@ func (r *Remote) Disable() error {
 	if !r.declared && r.ln == nil {
 		return nil
 	}
-	if _, err := r.writer.SetRemote(config.Remote{Enabled: false, Addr: r.addr, Advertise: r.advertise}); err != nil {
+	if _, err := r.writer.SetRemoteEnabled(false); err != nil {
 		return err
 	}
 	r.stopLocked()
@@ -155,22 +167,30 @@ func (r *Remote) Disable() error {
 	return nil
 }
 
-// Apply reconciles the live lifecycle with a declaration the daemon did not
-// write itself: startup, and a reload that adopted a hand-edited file. It
-// never fails the daemon: a missing or malformed token and an unbindable
-// address each log a token-free warning and leave only the remote listener
-// off, with the declaration standing so Disable can retract it and the next
-// restart retries. Config
-// is the source here, so nothing is written back; the token follows the same
-// rules as Disable. An empty Addr keeps the current one, which is
-// how the daemon's default survives a declaration that never named an address.
-func (r *Remote) Apply(decl config.Remote) {
+// Apply reconciles the live lifecycle with the writer's committed declaration
+// after an event the lifecycle did not initiate: startup, and a reload that
+// adopted a hand-edited file. The declaration is read here, under the
+// lifecycle mutex, rather than carried in from the caller: a snapshot taken
+// before a concurrent toggle committed would stop the very listener that
+// toggle just started. Apply never fails the daemon: a missing or malformed
+// token and an unbindable address each log a token-free warning and leave
+// only the remote listener off, with the declaration standing so Disable can
+// retract it and the next restart retries. Config is the source here, so
+// nothing is written back; the token follows the same rules as Disable. An
+// empty declared address resolves to the documented default.
+func (r *Remote) Apply() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	rebind := decl.Addr != "" && decl.Addr != r.addr
-	if rebind {
-		r.addr = decl.Addr
+	decl := r.writer.Remote()
+	// An empty declared address means the default, not "keep whatever came
+	// before": clearing a custom address from the file and reloading must
+	// land back on the documented port.
+	want := decl.Addr
+	if want == "" {
+		want = defaultRemoteAddr
 	}
+	rebind := want != r.addr
+	r.addr = want
 	adv, err := validateAdvertise(decl.Advertise)
 	if err != nil {
 		slog.Warn("ignoring an invalid advertised origin from config", "error", err)
@@ -260,7 +280,7 @@ func (r *Remote) SetAdvertise(raw string) error {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if _, err := r.writer.SetRemote(config.Remote{Enabled: r.declared, Addr: r.addr, Advertise: canonical}); err != nil {
+	if _, err := r.writer.SetRemoteAdvertise(canonical); err != nil {
 		return err
 	}
 	r.advertise = canonical

@@ -51,10 +51,12 @@ type Manager struct {
 	// production never sets it.
 	afterCommit func(op, name string)
 
-	// ReloadRemote, when set, receives the remote declaration a reload adopted,
-	// so the LAN relogin listener follows a hand-edited file instead of serving
-	// on with the state the file no longer describes.
-	ReloadRemote func(config.Remote)
+	// ReloadRemote, when set, runs after a reload adopts the file, so the LAN
+	// relogin listener follows a hand-edited declaration instead of serving on
+	// with the state the file no longer describes. It reads the committed
+	// declaration itself, which is what keeps a toggle that lands mid-reload
+	// from being overwritten by the reload's older snapshot.
+	ReloadRemote func()
 }
 
 func New(w *config.Writer, reg *backend.Registry, cat Catalog, ov *backend.Overrides, tokens Tokens) *Manager {
@@ -182,7 +184,7 @@ func (m *Manager) Reload() ([]error, error) {
 		m.cat.Trigger(name)
 	}
 	if m.ReloadRemote != nil {
-		m.ReloadRemote(cfg.Remote)
+		m.ReloadRemote()
 	}
 	return warnings, nil
 }

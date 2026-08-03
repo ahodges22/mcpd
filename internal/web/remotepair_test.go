@@ -36,6 +36,17 @@ func TestPairingURLs(t *testing.T) {
 			t.Fatalf("got %v want %v", got, want)
 		}
 	})
+	t.Run("a host with no v4 address falls back to bracketed v6", func(t *testing.T) {
+		v6only := []netip.Addr{netip.MustParseAddr("2001:db8::5"), netip.MustParseAddr("fe80::1")}
+		got := pairingURLs("", 7421, tok, v6only, "desk", "")
+		want := []string{
+			"http://[2001:db8::5]:7421/?token=" + tok,
+			"http://desk:7421/?token=" + tok,
+		}
+		if !slices.Equal(got, want) {
+			t.Fatalf("got %v want %v", got, want)
+		}
+	})
 	t.Run("v4 wildcard emits v4 only, no hostname", func(t *testing.T) {
 		got := pairingURLs("0.0.0.0", 7421, tok, addrs, "desk", "")
 		want := []string{"http://192.168.1.10:7421/?token=" + tok}

@@ -30,12 +30,19 @@ async function postJSON(path, payload) {
   return { ok: res.ok, body: parsed };
 }
 
-// safeAuthorizeURL admits only an http(s) URL, so a compromised response could
-// not hand the browser a javascript: target.
+// isLoopback and safeAuthorizeURL mirror app.js exactly: https anywhere,
+// plain http only for a loopback test provider, and nothing else - a
+// javascript: target or an interceptable http authorization endpoint from a
+// compromised backend is refused before navigation.
+function isLoopback(host) {
+  const name = host.replace(/^\[/, "").replace(/\]$/, "");
+  return name === "localhost" || name === "::1" || /^127\.\d+\.\d+\.\d+$/.test(name);
+}
+
 function safeAuthorizeURL(raw) {
   try {
     const u = new URL(raw);
-    if (u.protocol === "http:" || u.protocol === "https:") {
+    if (u.protocol === "https:" || (u.protocol === "http:" && isLoopback(u.hostname))) {
       return u.href;
     }
   } catch {}
