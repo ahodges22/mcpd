@@ -19,13 +19,19 @@ func TestPairingURLs(t *testing.T) {
 	}
 	tok := "00112233445566778899aabbccddeeff"
 
-	t.Run("dual stack emits both families plus hostname, brackets v6", func(t *testing.T) {
+	t.Run("dual stack emits v4 plus hostname; v6 addresses stay off the list", func(t *testing.T) {
 		got := pairingURLs("", 7421, tok, addrs, "desk", "")
 		want := []string{
 			"http://192.168.1.10:7421/?token=" + tok,
-			"http://[2001:db8::5]:7421/?token=" + tok,
 			"http://desk:7421/?token=" + tok,
 		}
+		if !slices.Equal(got, want) {
+			t.Fatalf("got %v want %v", got, want)
+		}
+	})
+	t.Run("a v6-only wildcard keeps v6 addresses, bracketed", func(t *testing.T) {
+		got := pairingURLs("::", 7421, tok, addrs, "desk", "")
+		want := []string{"http://[2001:db8::5]:7421/?token=" + tok}
 		if !slices.Equal(got, want) {
 			t.Fatalf("got %v want %v", got, want)
 		}

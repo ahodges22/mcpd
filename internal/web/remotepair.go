@@ -44,9 +44,14 @@ func pairingURLs(bindHost string, port int, token string, addrs []netip.Addr, ho
 			if cgnat.Contains(a.Unmap()) {
 				continue
 			}
+			// IPv6 interface addresses are advertised only when the listener
+			// serves nothing else: beside an IPv4 URL they are longer, harder
+			// to read, and reach the same daemon. The listener itself stays
+			// dual-stack, and the hostname candidate still resolves to AAAA
+			// for a device that prefers it.
 			if (a.Is4() || a.Is4In6()) && v4 {
 				hosts = append(hosts, a.Unmap().String())
-			} else if a.Is6() && !a.Is4In6() && v6 {
+			} else if a.Is6() && !a.Is4In6() && v6 && !v4 {
 				hosts = append(hosts, a.String())
 			}
 		}
