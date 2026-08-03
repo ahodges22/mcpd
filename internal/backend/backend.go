@@ -572,7 +572,18 @@ func (b *Backend) withTimeout(ctx context.Context) (context.Context, context.Can
 	if b.spec.TimeoutSec <= 0 {
 		return context.WithCancel(ctx)
 	}
-	return context.WithTimeout(ctx, time.Duration(b.spec.TimeoutSec)*time.Second)
+	budget := time.Duration(b.spec.TimeoutSec) * time.Second
+	b.mu.Lock()
+	connected := b.session != nil
+	b.mu.Unlock()
+	// A call that must first connect needs the handshake budget on top of its
+	// own: WithTimeout can only shrink a deadline, so capping here at the call
+	// budget would silently truncate the handshake that ConnectTimeout tells
+	// every external caller to allow for.
+	if !connected {
+		budget += b.connectTimeout()
+	}
+	return context.WithTimeout(ctx, budget)
 }
 
 func (b *Backend) trackDispatch(cancel context.CancelFunc) context.CancelFunc {

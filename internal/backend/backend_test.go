@@ -63,6 +63,30 @@ func TestConnectFailureIsReportedRetryable(t *testing.T) {
 	}
 }
 
+func TestInteractiveBudgetSurvivesConfiguredTimeout(t *testing.T) {
+	cfg := &config.Config{Backends: map[string]config.Backend{
+		"alpha": {Name: "alpha", Command: "true", TimeoutSec: 1},
+	}}
+	r := NewRegistry(cfg, overridesAt(t, filepath.Join(t.TempDir(), "overrides.json")), Hooks{})
+	b, _ := r.Get("alpha")
+	budget := make(chan time.Duration, 1)
+	b.dial = func(ctx context.Context) (mcp.Transport, error) {
+		d, ok := ctx.Deadline()
+		if !ok {
+			t.Error("handshake context has no deadline")
+			d = time.Now()
+		}
+		budget <- time.Until(d)
+		return nil, errors.New("refused")
+	}
+
+	b.ExpectAuthorization()
+	_, _ = b.ListTools(t.Context())
+	if got := <-budget; got < 4*time.Minute {
+		t.Errorf("handshake budget = %v; a configured timeout must not cap the interactive budget", got)
+	}
+}
+
 func TestConcurrentCallsShareOneSession(t *testing.T) {
 	fake := testfake.New("alpha", tool("kubectl_logs"))
 	release := make(chan struct{})
