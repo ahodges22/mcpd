@@ -38,6 +38,12 @@ func pairingURLs(bindHost string, port int, token string, addrs []netip.Addr, ho
 			if a.IsLoopback() || a.IsLinkLocalUnicast() || a.IsLinkLocalMulticast() {
 				continue
 			}
+			// Never advertise what the peer gate refuses: a CGNAT address
+			// (Tailscale and carrier NAT live here) yields a URL whose own
+			// connections would be turned away.
+			if cgnat.Contains(a.Unmap()) {
+				continue
+			}
 			if (a.Is4() || a.Is4In6()) && v4 {
 				hosts = append(hosts, a.Unmap().String())
 			} else if a.Is6() && !a.Is4In6() && v6 {
@@ -139,6 +145,26 @@ func prefixOf(ipn *net.IPNet) (netip.Prefix, error) {
 	}
 	ones, _ := ipn.Mask.Size()
 	return a.Unmap().Prefix(ones)
+}
+
+var cgnat = netip.MustParsePrefix("100.64.0.0/10")
+
+// virtualIfacePrefixes mark interfaces no other device can reach: container
+// bridges, VPN tunnels and their kin. Their addresses would only pad the
+// pairing list with links that cannot work, and the advertise setting is the
+// override for anything this list gets wrong.
+var virtualIfacePrefixes = []string{
+	"docker", "br-", "veth", "virbr", "podman", "lxc", "cni", "flannel",
+	"tailscale", "tun", "tap", "utun", "wg", "zt",
+}
+
+func candidateInterface(name string) bool {
+	for _, p := range virtualIfacePrefixes {
+		if strings.HasPrefix(name, p) {
+			return false
+		}
+	}
+	return true
 }
 
 func newRemoteToken() (string, error) {

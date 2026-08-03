@@ -294,15 +294,24 @@ func (r *Remote) urlsLocked() []string {
 }
 
 func interfaceAddrs() []netip.Addr {
-	addrs, err := net.InterfaceAddrs()
+	ifaces, err := net.Interfaces()
 	if err != nil {
 		return nil
 	}
 	var out []netip.Addr
-	for _, a := range addrs {
-		if ipn, ok := a.(*net.IPNet); ok {
-			if p, ok := netip.AddrFromSlice(ipn.IP); ok {
-				out = append(out, p.Unmap())
+	for _, iface := range ifaces {
+		if iface.Flags&net.FlagUp == 0 || !candidateInterface(iface.Name) {
+			continue
+		}
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, a := range addrs {
+			if ipn, ok := a.(*net.IPNet); ok {
+				if p, ok := netip.AddrFromSlice(ipn.IP); ok {
+					out = append(out, p.Unmap())
+				}
 			}
 		}
 	}

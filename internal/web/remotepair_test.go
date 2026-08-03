@@ -11,10 +11,11 @@ import (
 func TestPairingURLs(t *testing.T) {
 	addrs := []netip.Addr{
 		netip.MustParseAddr("192.168.1.10"),
-		netip.MustParseAddr("169.254.9.9"), // v4 link-local: excluded
-		netip.MustParseAddr("fe80::1"),     // v6 link-local: excluded
-		netip.MustParseAddr("2001:db8::5"), // global v6
-		netip.MustParseAddr("127.0.0.1"),   // loopback: excluded
+		netip.MustParseAddr("169.254.9.9"),   // v4 link-local: excluded
+		netip.MustParseAddr("fe80::1"),       // v6 link-local: excluded
+		netip.MustParseAddr("2001:db8::5"),   // global v6
+		netip.MustParseAddr("100.66.204.87"), // CGNAT: the peer gate refuses these, so never advertised
+		netip.MustParseAddr("127.0.0.1"),     // loopback: excluded
 	}
 	tok := "00112233445566778899aabbccddeeff"
 
@@ -136,6 +137,19 @@ func TestValidateAdvertise(t *testing.T) {
 	} {
 		if got, err := validateAdvertise(bad); err == nil {
 			t.Errorf("validateAdvertise(%q) accepted as %q", bad, got)
+		}
+	}
+}
+
+func TestCandidateInterface(t *testing.T) {
+	for name, want := range map[string]bool{
+		"eth0": true, "enp3s0": true, "wlan0": true, "wlp2s0": true, "en0": true,
+		"docker0": false, "br-9f2a11": false, "veth12ab": false, "virbr0": false,
+		"podman1": false, "tailscale0": false, "tun0": false, "tap3": false,
+		"wg0": false, "utun4": false, "cni0": false, "flannel.1": false, "lxcbr0": false,
+	} {
+		if got := candidateInterface(name); got != want {
+			t.Errorf("candidateInterface(%q) = %v, want %v", name, got, want)
 		}
 	}
 }
