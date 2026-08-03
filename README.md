@@ -22,6 +22,7 @@
 - Serves the full tool catalog to clients that have native tool search.
 - Serves a three-tool search facade to clients that would otherwise load every schema.
 - Keeps OAuth grants, health state, and the tool catalog in one local daemon.
+- Optionally serves a token-paired, relogin-only page to the local network, so an expired OAuth login can be fixed from another device.
 - Provides a status panel, backend controls, and a searchable tool inspector.
 - Rewires supported clients with a dry-run-first, reversible command.
 
@@ -172,6 +173,7 @@ An OAuth token can expire while you are away from the machine. The panel's "Remo
 - The listener answers private and local addresses only, and every guard on the main surface applies to it too.
 - After you approve access at the provider, your browser lands on a dead `127.0.0.1` page. Edit that address to the mcpd host and port 7421, or paste the full URL into the page's "Finish a login" box.
 - The enabled state survives a daemon restart. The token lives in the state directory, never in config, and rotates on each disable and enable.
+- A reverse proxy can front the listener: set the panel's "Advertised origin" (or `remote.advertise` in config) to the origin the proxy serves, and the pairing links lead with it. The bind address is `remote.addr` in config, default port 7421.
 - The connection is plain HTTP: use this on a network where you trust every device, and keep the pairing URLs private. Anyone holding one can complete OAuth logins for this daemon.
 
 ## How it works
