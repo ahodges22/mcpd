@@ -543,6 +543,20 @@ func countCalls(received []string) int {
 	return n
 }
 
+func TestLoadOverridesSurvivesNullDisabled(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "overrides.json")
+	if err := os.WriteFile(path, []byte(`{"disabled": null}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ov := overridesAt(t, path)
+	if err := ov.set("alpha", true, config.Identity{}); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	if !ov.Disabled("alpha") {
+		t.Error("alpha not recorded as disabled")
+	}
+}
+
 func overridesAt(t *testing.T, path string) *Overrides {
 	t.Helper()
 	ov, err := LoadOverrides(path, testfake.PermissiveDeclarations{})

@@ -58,6 +58,10 @@ func LoadOverrides(path string, declarations declarationGuard) (*Overrides, erro
 		return o, nil
 	}
 	if err := json.Unmarshal(doc.Disabled, &o.disabled); err == nil {
+		// Unmarshal sets a map to nil for JSON null, and set panics on a nil map.
+		if o.disabled == nil {
+			o.disabled = make(map[string]config.Identity)
+		}
 		return o, nil
 	}
 	var legacy []string
