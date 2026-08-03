@@ -99,7 +99,7 @@ function openBlankTab() {
   return tab;
 }
 
-for (const btn of document.querySelectorAll("button.act")) {
+for (const btn of document.querySelectorAll("button.act[data-post]")) {
   btn.addEventListener("click", async () => {
     const confirmReason = btn.dataset.confirm;
     // A misclick guard only, exactly as the inspector's is: the request is subject to
@@ -171,8 +171,28 @@ for (const btn of document.querySelectorAll("button.act")) {
   });
 }
 
-// A disclosure that keeps the add form out of the way until it is wanted, without
-// hiding that it exists.
+// Copy buttons for the pairing URLs. The panel is loopback, a secure context,
+// so the clipboard API is available; the fallback selects the row's text so a
+// manual copy still works if a browser refuses.
+for (const btn of document.querySelectorAll("button.pair-copy")) {
+  btn.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(btn.dataset.copy);
+      const was = btn.textContent;
+      setText(btn, "Copied");
+      setTimeout(() => setText(btn, was), 1200);
+    } catch {
+      const urlSpan = btn.parentElement.querySelector(".pair-url");
+      const range = document.createRange();
+      range.selectNodeContents(urlSpan);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+      say("Copy is unavailable here; the link is selected, copy it manually.");
+    }
+  });
+}
+
 const advertiseSave = document.getElementById("remote-advertise-save");
 if (advertiseSave) {
   advertiseSave.addEventListener("click", async () => {
@@ -189,6 +209,8 @@ if (advertiseSave) {
   });
 }
 
+// A disclosure that keeps the add form out of the way until it is wanted, without
+// hiding that it exists.
 for (const btn of document.querySelectorAll("button[data-toggle]")) {
   const panel = document.getElementById(btn.dataset.toggle);
   if (!panel) {

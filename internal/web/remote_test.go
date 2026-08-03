@@ -493,3 +493,27 @@ func TestRemoteToggleAdvertise(t *testing.T) {
 		t.Fatalf("advertise not cleared: %q", got)
 	}
 }
+
+// The panel renders a running remote section with the credential split: the
+// address readable, the token tail in its own dimmed span, and a copy button
+// carrying the whole URL.
+func TestPanelRendersPairingURLSplit(t *testing.T) {
+	s, rc := newTestServerWithRemote(t, "127.0.0.1:0")
+	if _, err := rc.Enable(); err != nil {
+		t.Fatalf("enable: %v", err)
+	}
+	req := httptest.NewRequest("GET", "http://127.0.0.1/", nil)
+	rr := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status page: %d", rr.Code)
+	}
+	tok, _ := loadRemoteToken(rc.tokenPath)
+	body := rr.Body.String()
+	if !strings.Contains(body, `<span class="pair-key">?token=`+tok+"</span>") {
+		t.Error("the token tail is not rendered in its own dimmed span")
+	}
+	if !strings.Contains(body, `data-copy="`) || !strings.Contains(body, tok+`"`) {
+		t.Error("the copy button does not carry the full pairing URL")
+	}
+}

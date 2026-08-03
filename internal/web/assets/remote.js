@@ -77,27 +77,31 @@ function renderBackends(list) {
   ul.replaceChildren();
   if (list.length === 0) {
     const li = document.createElement("li");
-    li.className = "attn-row";
-    const says = document.createElement("span");
-    says.className = "attn-says";
-    setText(says, "No OAuth-backed backends are declared.");
-    li.appendChild(says);
+    li.className = "pair-row";
+    const name = document.createElement("span");
+    name.className = "pair-state";
+    setText(name, "No OAuth-backed backends are declared.");
+    li.appendChild(name);
     ul.appendChild(li);
     return;
   }
   for (const b of list) {
     const li = document.createElement("li");
-    li.className = "attn-row";
+    li.className = "pair-row";
     const lamp = document.createElement("span");
     lamp.className = "lamp";
     lamp.dataset.tone = b.tone;
     li.appendChild(lamp);
-    const says = document.createElement("span");
-    says.className = "attn-says";
-    setText(says, b.name + " - " + b.label);
-    li.appendChild(says);
+    const name = document.createElement("span");
+    name.className = "pair-name mono";
+    setText(name, b.name);
+    li.appendChild(name);
+    const state = document.createElement("span");
+    state.className = "pair-state";
+    setText(state, b.label);
+    li.appendChild(state);
     const btn = document.createElement("button");
-    btn.className = "act attn-do";
+    btn.className = "act";
     setText(btn, "Authorize");
     btn.addEventListener("click", () => authorize(b.name, btn));
     li.appendChild(btn);

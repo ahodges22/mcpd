@@ -142,35 +142,45 @@
 
 {{if .Remote.Available}}
 <section class="block">
-  <p class="eyebrow">Remote relogin</p>
-  {{if .Remote.Declared}}
+  <div class="remote-head">
+    <p class="eyebrow">Remote relogin</p>
     {{if .Remote.Running}}
-    <p class="field-help">Serving a relogin-only page to the local network. Anyone with a pairing URL can complete OAuth logins for this daemon, so keep them private.</p>
-    <ul class="rows">
-      {{- range .Remote.URLs}}
-      <li class="row"><span class="mono">{{.}}</span></li>
-      {{- end}}
-    </ul>
+    <span class="remote-state"><span class="lamp" data-tone="up"></span>Serving</span>
+    {{else if .Remote.Declared}}
+    <span class="remote-state"><span class="lamp" data-tone="fault"></span>Enabled, not running</span>
     {{else}}
-    <ul class="attn">
-      <li class="attn-row">
-        <span class="lamp" data-tone="fault"></span>
-        <span class="attn-says">Remote relogin is enabled but its listener is not running; check the log or restart the daemon.</span>
-      </li>
-    </ul>
+    <span class="remote-state"><span class="lamp" data-tone="off"></span>Off</span>
     {{end}}
+    {{if .Remote.Declared}}
     <button class="act quiet" data-post="/api/remote" data-payload='{"enabled":false}' data-reload="true">Disable</button>
+    {{else}}
+    <button class="act" data-post="/api/remote" data-payload='{"enabled":true}' data-reload="true">Enable</button>
+    {{end}}
+  </div>
+  {{if .Remote.Running}}
+  <p class="remote-lead">Open one of these on the device you will log in from. Anyone with a link can complete logins for this daemon, so keep them private.</p>
+  <ul class="pair">
+    {{- range .Remote.URLs}}
+    <li class="pair-row">
+      <span class="pair-url mono"><span class="pair-base">{{.Base}}</span><span class="pair-key">{{.Key}}</span></span>
+      <button class="act quiet pair-copy" type="button" data-copy="{{.Full}}">Copy</button>
+    </li>
+    {{- end}}
+  </ul>
+  {{else if .Remote.Declared}}
+  <p class="remote-lead">The listener could not start. Check the log, free the port, or restart the daemon; the next start retries.</p>
   {{else}}
-    <p class="field-help">Off. Enabling serves a relogin-only page to your local network, guarded by a pairing token.</p>
-    <button class="act" data-post="/api/remote" data-payload='{"enabled":true}' data-reload="true">Enable remote relogin</button>
+  <p class="remote-lead">Serves a relogin-only page to your local network, guarded by a pairing token, so an expired OAuth login can be fixed from another device.</p>
   {{end}}
-  <label class="field">
-    <span class="field-label">Advertised origin</span>
-    <input class="mono" id="remote-advertise" autocomplete="off" spellcheck="false"
-           placeholder="https://mcpd.home.example" value="{{.Remote.Advertise}}">
-  </label>
-  <p class="field-help">Set this if a reverse proxy fronts port 7421. The pairing URLs lead with it; leave empty to advertise this machine's addresses.</p>
-  <button class="act quiet" id="remote-advertise-save" type="button">Save origin</button>
+  <div class="adv-row">
+    <label class="field adv-field">
+      <span class="field-label">Advertised origin</span>
+      <input class="mono" id="remote-advertise" autocomplete="off" spellcheck="false"
+             placeholder="https://mcpd.home.example" value="{{.Remote.Advertise}}">
+    </label>
+    <button class="act quiet" id="remote-advertise-save" type="button">Save</button>
+  </div>
+  <p class="field-help adv-help">Set when a reverse proxy fronts port 7421; the pairing links lead with it. Leave empty to advertise this machine's addresses.</p>
 </section>
 {{end}}
 

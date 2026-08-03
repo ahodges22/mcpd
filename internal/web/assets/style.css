@@ -791,3 +791,135 @@ textarea:focus {
     display: none;
   }
 }
+
+/* Remote relogin: the panel card and the phone page.
+ *
+ * A pairing URL is a credential. The row sets the address bright and the token
+ * dim, because the address is the part a person reads and the token is the
+ * part they only carry; Copy takes the whole thing. */
+
+.remote-head {
+  align-items: center;
+  display: flex;
+  gap: 0.75rem;
+}
+
+.remote-head .eyebrow {
+  flex: 1;
+  margin: 0;
+}
+
+.remote-state {
+  align-items: center;
+  color: var(--dim);
+  display: inline-flex;
+  font-size: 12px;
+  gap: 0.45rem;
+  white-space: nowrap;
+}
+
+.remote-lead {
+  color: var(--dim);
+  font-size: 13px;
+  margin: 0.75rem 0;
+  max-width: 46rem;
+}
+
+.pair {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  list-style: none;
+  margin: 0.75rem 0;
+  padding: 0;
+}
+
+.pair-row {
+  align-items: center;
+  background: var(--rail);
+  border-radius: var(--radius);
+  display: flex;
+  gap: 0.75rem;
+  min-width: 0;
+  padding: 0.45rem 0.75rem;
+}
+
+.pair-url {
+  flex: 1;
+  font-size: 12.5px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pair-key {
+  color: var(--off);
+}
+
+.adv-row {
+  align-items: flex-end;
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}
+
+.adv-field {
+  margin: 0;
+  width: 28rem;
+  max-width: 100%;
+}
+
+.adv-help {
+  margin-top: 0.4rem;
+  max-width: 46rem;
+}
+
+/* The phone page: one narrow column, because its consumer is a hand. */
+
+.relogin {
+  margin: 0 auto;
+  max-width: 30rem;
+  padding: 0 1.25rem;
+}
+
+.relogin .pair-row {
+  padding: 0.65rem 0.75rem;
+}
+
+.pair-name {
+  flex: 1;
+  font-size: 13px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pair-state {
+  color: var(--dim);
+  font-family: var(--sans);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.paste {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+
+.paste input {
+  flex: 1;
+  min-width: 0;
+}
+
+@media (max-width: 34rem) {
+  .paste {
+    flex-direction: column;
+  }
+  .adv-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}

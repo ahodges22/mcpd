@@ -8,6 +8,7 @@ import (
 	"html/template"
 	"net/http"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -80,8 +81,25 @@ type remoteView struct {
 	Available bool
 	Declared  bool
 	Running   bool
-	URLs      []string
+	URLs      []pairURL
 	Advertise string
+}
+
+// pairURL is one pairing URL split where the secret starts, so the page can
+// set the address bright and the token dim: the address is what a person
+// reads, the token is what they carry.
+type pairURL struct {
+	Full string
+	Base string
+	Key  string
+}
+
+func splitPairURL(full string) pairURL {
+	base, key, found := strings.Cut(full, "?token=")
+	if !found {
+		return pairURL{Full: full, Base: full}
+	}
+	return pairURL{Full: full, Base: base, Key: "?token=" + key}
 }
 
 type toolView struct {
@@ -142,11 +160,16 @@ func (s *Server) snapshot() statusView {
 	}
 	out.Segments = bus(out.Backends)
 	if s.remote != nil {
+		urls := s.remote.URLs()
+		pairs := make([]pairURL, 0, len(urls))
+		for _, u := range urls {
+			pairs = append(pairs, splitPairURL(u))
+		}
 		out.Remote = remoteView{
 			Available: true,
 			Declared:  s.remote.Declared(),
 			Running:   s.remote.Running(),
-			URLs:      s.remote.URLs(),
+			URLs:      pairs,
 			Advertise: s.remote.Advertise(),
 		}
 	}

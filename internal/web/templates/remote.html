@@ -13,23 +13,21 @@
 
 <p class="note" id="note" hidden></p>
 
-<main>
+<main class="relogin">
   <section class="block">
     <p class="eyebrow">Relogin</p>
-    <p class="field-help">Backends that authorize with OAuth. Press Authorize, then log in at the provider.</p>
-    <ul class="attn" id="remote-backends"></ul>
+    <p class="remote-lead">These backends log in with OAuth. Authorize one, approve access at the provider, then come back here.</p>
+    <ul class="pair" id="remote-backends"></ul>
   </section>
 
   <section class="block">
     <p class="eyebrow">Finish a login</p>
-    <p class="field-help">After you approve access, the browser lands on a dead 127.0.0.1 page.
+    <p class="remote-lead">After you approve access, the browser lands on a dead 127.0.0.1 page.
       Edit that address to <span class="mono">{{if .Advertise}}{{.Advertise}}{{else}}{{.Addr}}{{end}}</span>,
-      or paste the full URL here.</p>
-    <form id="paste-form">
-      <label class="field">
-        <span class="field-label">Callback URL</span>
-        <input class="mono" id="paste-url" type="url" placeholder="http://127.0.0.1:7420/oauth/callback?code=..." required>
-      </label>
+      or paste the whole URL here.</p>
+    <form id="paste-form" class="paste">
+      <input class="mono" id="paste-url" type="url" placeholder="http://127.0.0.1:7420/oauth/callback?code=..."
+             aria-label="Callback URL" required>
       <button class="primary" type="submit">Deliver</button>
     </form>
   </section>
