@@ -42,9 +42,20 @@ function safeAuthorizeURL(raw) {
   return "";
 }
 
-async function authorize(name) {
+// busy pauses the poll while an authorize is in flight, so the list rebuild
+// cannot wipe the button's working state from under the user.
+let busy = false;
+
+async function authorize(name, btn) {
   say("Starting authorization for " + name + "...");
+  const was = btn.textContent;
+  busy = true;
+  btn.disabled = true;
+  setText(btn, "Working");
   const res = await postJSON("/api/backends/" + encodeURIComponent(name) + "/authorize");
+  busy = false;
+  btn.disabled = false;
+  setText(btn, was);
   if (!res.body) {
     say("The authorize request failed.");
     return;
@@ -66,25 +77,38 @@ function renderBackends(list) {
   ul.replaceChildren();
   if (list.length === 0) {
     const li = document.createElement("li");
-    setText(li, "No OAuth-backed backends are declared.");
+    li.className = "attn-row";
+    const says = document.createElement("span");
+    says.className = "attn-says";
+    setText(says, "No OAuth-backed backends are declared.");
+    li.appendChild(says);
     ul.appendChild(li);
     return;
   }
   for (const b of list) {
     const li = document.createElement("li");
-    const label = document.createElement("span");
-    setText(label, b.name + " - " + (b.needs_auth ? "waiting for you to authorize it" : b.state));
-    li.appendChild(label);
+    li.className = "attn-row";
+    const lamp = document.createElement("span");
+    lamp.className = "lamp";
+    lamp.dataset.tone = b.tone;
+    li.appendChild(lamp);
+    const says = document.createElement("span");
+    says.className = "attn-says";
+    setText(says, b.name + " - " + b.label);
+    li.appendChild(says);
     const btn = document.createElement("button");
-    btn.className = "act";
+    btn.className = "act attn-do";
     setText(btn, "Authorize");
-    btn.addEventListener("click", () => authorize(b.name));
+    btn.addEventListener("click", () => authorize(b.name, btn));
     li.appendChild(btn);
     ul.appendChild(li);
   }
 }
 
 async function refresh() {
+  if (busy) {
+    return;
+  }
   try {
     const res = await fetch("/api/status");
     if (!res.ok) {

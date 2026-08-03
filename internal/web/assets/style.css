@@ -508,6 +508,7 @@ button:disabled {
 }
 
 input[type="text"],
+input[type="url"],
 input:not([type]) {
   background: var(--vault);
   border: 1px solid var(--etch);

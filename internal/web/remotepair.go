@@ -3,9 +3,11 @@ package web
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -19,7 +21,7 @@ import (
 // bind is itself the single pairing authority. Link-local addresses are
 // excluded because their zone identifier is host-relative and meaningless to
 // another device.
-func pairingURLs(bindHost string, port int, token string, addrs []netip.Addr, hostname string) []string {
+func pairingURLs(bindHost string, port int, token string, addrs []netip.Addr, hostname, advertise string) []string {
 	v4 := bindHost == "" || bindHost == "0.0.0.0"
 	v6 := bindHost == "" || bindHost == "::"
 	var hosts []string
@@ -48,11 +50,35 @@ func pairingURLs(bindHost string, port int, token string, addrs []netip.Addr, ho
 			hosts = append(hosts, hostname)
 		}
 	}
-	urls := make([]string, 0, len(hosts))
+	urls := make([]string, 0, len(hosts)+1)
+	// The advertised origin leads: it is the address a reverse proxy serves,
+	// and the interface URLs stay behind it as direct fallbacks.
+	if advertise != "" {
+		urls = append(urls, advertise+"/?token="+token)
+	}
 	for _, h := range hosts {
 		urls = append(urls, "http://"+net.JoinHostPort(h, strconv.Itoa(port))+"/?token="+token)
 	}
 	return urls
+}
+
+// validateAdvertise canonicalizes a reverse-proxy origin: scheme, host, an
+// optional port, and nothing else. Empty clears the setting and is valid.
+func validateAdvertise(raw string) (string, error) {
+	if raw == "" {
+		return "", nil
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", fmt.Errorf("not a URL: %w", err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return "", fmt.Errorf("the advertised origin must be http or https, got %q", u.Scheme)
+	}
+	if u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") {
+		return "", errors.New("the advertised origin must be scheme://host[:port] with nothing after the host")
+	}
+	return u.Scheme + "://" + u.Host, nil
 }
 
 // privatePeer reports whether a connection's remote address belongs on the

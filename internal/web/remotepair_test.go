@@ -19,7 +19,7 @@ func TestPairingURLs(t *testing.T) {
 	tok := "00112233445566778899aabbccddeeff"
 
 	t.Run("dual stack emits both families plus hostname, brackets v6", func(t *testing.T) {
-		got := pairingURLs("", 7421, tok, addrs, "desk")
+		got := pairingURLs("", 7421, tok, addrs, "desk", "")
 		want := []string{
 			"http://192.168.1.10:7421/?token=" + tok,
 			"http://[2001:db8::5]:7421/?token=" + tok,
@@ -30,22 +30,32 @@ func TestPairingURLs(t *testing.T) {
 		}
 	})
 	t.Run("v4 wildcard emits v4 only, no hostname", func(t *testing.T) {
-		got := pairingURLs("0.0.0.0", 7421, tok, addrs, "desk")
+		got := pairingURLs("0.0.0.0", 7421, tok, addrs, "desk", "")
 		want := []string{"http://192.168.1.10:7421/?token=" + tok}
 		if !slices.Equal(got, want) {
 			t.Fatalf("got %v want %v", got, want)
 		}
 	})
 	t.Run("specific bind IP is the only candidate with the bound port", func(t *testing.T) {
-		got := pairingURLs("192.168.1.10", 9999, tok, addrs, "desk")
+		got := pairingURLs("192.168.1.10", 9999, tok, addrs, "desk", "")
 		want := []string{"http://192.168.1.10:9999/?token=" + tok}
 		if !slices.Equal(got, want) {
 			t.Fatalf("got %v want %v", got, want)
 		}
 	})
 	t.Run("hostname bind is the only candidate", func(t *testing.T) {
-		got := pairingURLs("desk.local", 7421, tok, addrs, "desk")
+		got := pairingURLs("desk.local", 7421, tok, addrs, "desk", "")
 		want := []string{"http://desk.local:7421/?token=" + tok}
+		if !slices.Equal(got, want) {
+			t.Fatalf("got %v want %v", got, want)
+		}
+	})
+	t.Run("advertised origin leads and the fallbacks follow", func(t *testing.T) {
+		got := pairingURLs("192.168.1.10", 9999, tok, addrs, "desk", "https://mcpd.home.example")
+		want := []string{
+			"https://mcpd.home.example/?token=" + tok,
+			"http://192.168.1.10:9999/?token=" + tok,
+		}
 		if !slices.Equal(got, want) {
 			t.Fatalf("got %v want %v", got, want)
 		}
@@ -100,5 +110,32 @@ func TestRemoteTokenFile(t *testing.T) {
 	os.Remove(path)
 	if _, ok := loadRemoteToken(path); ok {
 		t.Fatal("missing file accepted")
+	}
+}
+
+func TestValidateAdvertise(t *testing.T) {
+	for raw, want := range map[string]string{
+		"https://mcpd.home.example":  "https://mcpd.home.example",
+		"https://mcpd.home.example/": "https://mcpd.home.example",
+		"http://mcpd.lan:8443":       "http://mcpd.lan:8443",
+		"":                           "",
+	} {
+		got, err := validateAdvertise(raw)
+		if err != nil || got != want {
+			t.Errorf("validateAdvertise(%q) = %q, %v; want %q", raw, got, err, want)
+		}
+	}
+	for _, bad := range []string{
+		"mcpd.home.example",         // no scheme
+		"ftp://mcpd.home.example",   // wrong scheme
+		"https://",                  // no host
+		"https://mcpd.example/path", // path
+		"https://mcpd.example?x=1",  // query
+		"https://user@mcpd.example", // userinfo
+		"https://mcpd.example#frag", // fragment
+	} {
+		if got, err := validateAdvertise(bad); err == nil {
+			t.Errorf("validateAdvertise(%q) accepted as %q", bad, got)
+		}
 	}
 }

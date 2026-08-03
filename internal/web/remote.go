@@ -25,7 +25,10 @@ func (s *Server) WithRemote(rc *Remote) *Server {
 }
 
 type remoteToggleRequest struct {
-	Enabled bool `json:"enabled"`
+	// Both optional: a request can set the advertised origin, change the
+	// lifecycle, or both. Advertise applies first.
+	Enabled   *bool   `json:"enabled"`
+	Advertise *string `json:"advertise"`
 }
 
 // remoteToggle drives the lifecycle from the loopback panel. The response
@@ -37,20 +40,29 @@ func (s *Server) remoteToggle(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body: " + err.Error()})
 		return
 	}
-	if in.Enabled {
-		urls, err := s.remote.Enable()
-		if err != nil {
+	if in.Advertise != nil {
+		if err := s.remote.SetAdvertise(*in.Advertise); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+	}
+	if in.Enabled != nil {
+		if *in.Enabled {
+			if _, err := s.remote.Enable(); err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+				return
+			}
+		} else if err := s.remote.Disable(); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"declared": true, "running": true, "urls": urls})
-		return
 	}
-	if err := s.remote.Disable(); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"declared": false, "running": false})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"declared":  s.remote.Declared(),
+		"running":   s.remote.Running(),
+		"urls":      s.remote.URLs(),
+		"advertise": s.remote.Advertise(),
+	})
 }
 
 // RemoteWriter is the one config mutation the remote lifecycle needs.
@@ -68,10 +80,11 @@ type Remote struct {
 	addr      string
 	hostname  string
 
-	mu    sync.Mutex
-	ln    net.Listener
-	hsrv  *http.Server
-	token string
+	mu        sync.Mutex
+	ln        net.Listener
+	hsrv      *http.Server
+	token     string
+	advertise string
 	// declared is what config last said. It can be true while ln is nil: a
 	// startup that could not bind or found no valid token leaves the
 	// declaration standing, and Disable must still be able to retract it.
@@ -104,7 +117,7 @@ func (r *Remote) Enable() ([]string, error) {
 		err = storeRemoteToken(r.tokenPath, tok)
 	}
 	if err == nil {
-		_, err = r.writer.SetRemote(config.Remote{Enabled: true, Addr: r.addr})
+		_, err = r.writer.SetRemote(config.Remote{Enabled: true, Addr: r.addr, Advertise: r.advertise})
 	}
 	if err != nil {
 		ln.Close()
@@ -133,7 +146,7 @@ func (r *Remote) Disable() error {
 	if !r.declared && r.ln == nil {
 		return nil
 	}
-	if _, err := r.writer.SetRemote(config.Remote{Enabled: false, Addr: r.addr}); err != nil {
+	if _, err := r.writer.SetRemote(config.Remote{Enabled: false, Addr: r.addr, Advertise: r.advertise}); err != nil {
 		return err
 	}
 	r.stopLocked()
@@ -142,18 +155,14 @@ func (r *Remote) Disable() error {
 	return nil
 }
 
-// Startup restores the listener a restart interrupted. It never fails the
-// daemon: a missing or malformed token and an unbindable address each log a
-// token-free warning and leave only the remote listener off, with the
-// declaration standing so Disable can retract it and the next restart retries.
-func (r *Remote) Startup(enabled bool) {
-	r.Apply(config.Remote{Enabled: enabled})
-}
-
 // Apply reconciles the live lifecycle with a declaration the daemon did not
-// write itself: startup, and a reload that adopted a hand-edited file. Config
+// write itself: startup, and a reload that adopted a hand-edited file. It
+// never fails the daemon: a missing or malformed token and an unbindable
+// address each log a token-free warning and leave only the remote listener
+// off, with the declaration standing so Disable can retract it and the next
+// restart retries. Config
 // is the source here, so nothing is written back; the token follows the same
-// rules as Disable and Startup. An empty Addr keeps the current one, which is
+// rules as Disable. An empty Addr keeps the current one, which is
 // how the daemon's default survives a declaration that never named an address.
 func (r *Remote) Apply(decl config.Remote) {
 	r.mu.Lock()
@@ -162,6 +171,12 @@ func (r *Remote) Apply(decl config.Remote) {
 	if rebind {
 		r.addr = decl.Addr
 	}
+	adv, err := validateAdvertise(decl.Advertise)
+	if err != nil {
+		slog.Warn("ignoring an invalid advertised origin from config", "error", err)
+		adv = ""
+	}
+	r.advertise = adv
 	r.declared = decl.Enabled
 	if !decl.Enabled {
 		r.stopLocked()
@@ -236,6 +251,29 @@ func (r *Remote) Declared() bool {
 	return r.declared
 }
 
+// SetAdvertise validates, persists and adopts a reverse-proxy origin. An
+// empty value clears it. Nothing is persisted when validation refuses.
+func (r *Remote) SetAdvertise(raw string) error {
+	canonical, err := validateAdvertise(raw)
+	if err != nil {
+		return err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, err := r.writer.SetRemote(config.Remote{Enabled: r.declared, Addr: r.addr, Advertise: canonical}); err != nil {
+		return err
+	}
+	r.advertise = canonical
+	return nil
+}
+
+// Advertise is the canonical reverse-proxy origin, empty when unset.
+func (r *Remote) Advertise() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.advertise
+}
+
 // URLs are the pairing URLs of a running listener, empty otherwise.
 func (r *Remote) URLs() []string {
 	r.mu.Lock()
@@ -252,7 +290,7 @@ func (r *Remote) urlsLocked() []string {
 		bindHost = h
 	}
 	port := r.ln.Addr().(*net.TCPAddr).Port
-	return pairingURLs(bindHost, port, r.token, interfaceAddrs(), r.hostname)
+	return pairingURLs(bindHost, port, r.token, interfaceAddrs(), r.hostname, r.advertise)
 }
 
 func interfaceAddrs() []netip.Addr {
@@ -347,6 +385,10 @@ type remoteBackend struct {
 	Name      string `json:"name"`
 	NeedsAuth bool   `json:"needs_auth"`
 	State     string `json:"state"`
+	// Label and Tone are the state as the main panel renders it, from the same
+	// classifier, so the two pages never describe one backend differently.
+	Label string `json:"label"`
+	Tone  string `json:"tone"`
 }
 
 // remoteStatus lists only what the relogin page needs: OAuth-backed backends
@@ -360,11 +402,14 @@ func (s *Server) remoteStatus(w http.ResponseWriter, _ *http.Request) {
 		if !ok || !b.UsesOAuth() {
 			continue
 		}
-		state := b.Health().State
+		h := b.Health()
+		label, tone := classify(h)
 		out = append(out, remoteBackend{
 			Name:      name,
-			NeedsAuth: state == backend.StateNeedsAuth,
-			State:     string(state),
+			NeedsAuth: h.State == backend.StateNeedsAuth,
+			State:     string(h.State),
+			Label:     label,
+			Tone:      tone,
 		})
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -399,5 +444,9 @@ func (s *Server) remotePastedCallback(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) remotePage(w http.ResponseWriter, r *http.Request) {
-	render(w, "remote.html", struct{ Addr string }{r.Host})
+	adv := ""
+	if s.remote != nil {
+		adv = s.remote.Advertise()
+	}
+	render(w, "remote.html", struct{ Addr, Advertise string }{r.Host, adv})
 }

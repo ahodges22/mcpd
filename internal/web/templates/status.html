@@ -141,24 +141,36 @@
 </section>
 
 {{if .Remote.Available}}
-<section>
-  <h2>Remote relogin</h2>
+<section class="block">
+  <p class="eyebrow">Remote relogin</p>
   {{if .Remote.Declared}}
     {{if .Remote.Running}}
-    <p>Serving a relogin-only page to the local network. Anyone with a pairing URL can complete OAuth logins for this daemon, so keep them private.</p>
+    <p class="field-help">Serving a relogin-only page to the local network. Anyone with a pairing URL can complete OAuth logins for this daemon, so keep them private.</p>
     <ul class="rows">
       {{- range .Remote.URLs}}
-      <li class="mono">{{.}}</li>
+      <li class="row"><span class="mono">{{.}}</span></li>
       {{- end}}
     </ul>
     {{else}}
-    <p>Enabled but not running; check the log or restart the daemon.</p>
+    <ul class="attn">
+      <li class="attn-row">
+        <span class="lamp" data-tone="fault"></span>
+        <span class="attn-says">Remote relogin is enabled but its listener is not running; check the log or restart the daemon.</span>
+      </li>
+    </ul>
     {{end}}
-    <button class="act" data-post="/api/remote" data-payload='{"enabled":false}' data-reload="true">Disable</button>
+    <button class="act quiet" data-post="/api/remote" data-payload='{"enabled":false}' data-reload="true">Disable</button>
   {{else}}
-    <p>Off. Enabling serves a relogin-only page to your local network, guarded by a pairing token.</p>
+    <p class="field-help">Off. Enabling serves a relogin-only page to your local network, guarded by a pairing token.</p>
     <button class="act" data-post="/api/remote" data-payload='{"enabled":true}' data-reload="true">Enable remote relogin</button>
   {{end}}
+  <label class="field">
+    <span class="field-label">Advertised origin</span>
+    <input class="mono" id="remote-advertise" autocomplete="off" spellcheck="false"
+           placeholder="https://mcpd.home.example" value="{{.Remote.Advertise}}">
+  </label>
+  <p class="field-help">Set this if a reverse proxy fronts port 7421. The pairing URLs lead with it; leave empty to advertise this machine's addresses.</p>
+  <button class="act quiet" id="remote-advertise-save" type="button">Save origin</button>
 </section>
 {{end}}
 

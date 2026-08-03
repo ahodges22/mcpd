@@ -52,6 +52,9 @@ type Config struct {
 type Remote struct {
 	Enabled bool   `json:"enabled,omitempty"`
 	Addr    string `json:"addr,omitempty"`
+	// Advertise is the origin a reverse proxy serves the listener on. It leads
+	// the pairing URLs and names the host in the relogin page's instructions.
+	Advertise string `json:"advertise,omitempty"`
 }
 
 // Embeddings configures the gateway that vectorizes the catalog. It is optional: with no

@@ -346,7 +346,7 @@ func TestAbstentionIsWiredOnlyWhenAGatewayCanProduceACosine(t *testing.T) {
 func TestWireStartsRemoteFromConfig(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.json")
-	if err := os.WriteFile(cfgPath, []byte(`{"backends":{},"remote":{"enabled":true,"addr":"127.0.0.1:0"}}`), 0o600); err != nil {
+	if err := os.WriteFile(cfgPath, []byte(`{"backends":{},"remote":{"enabled":true,"addr":"127.0.0.1:0","advertise":"https://mcpd.home.example"}}`), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 	writer, cfg, err := config.NewWriter(cfgPath)
@@ -374,6 +374,9 @@ func TestWireStartsRemoteFromConfig(t *testing.T) {
 	t.Cleanup(d.remote.Close)
 	if !d.remote.Running() {
 		t.Fatal("remote listener not restored from config")
+	}
+	if got := d.remote.Advertise(); got != "https://mcpd.home.example" {
+		t.Fatalf("advertised origin not restored across restart: %q", got)
 	}
 
 	// The zero-value declaration starts nothing.

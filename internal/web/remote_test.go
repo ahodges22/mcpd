@@ -224,7 +224,7 @@ func TestRemoteDisableAfterFailedStartup(t *testing.T) {
 	if err := storeRemoteToken(rc.tokenPath, tok); err != nil {
 		t.Fatal(err)
 	}
-	rc.Startup(true) // cannot bind; declared stays true
+	rc.Apply(config.Remote{Enabled: true}) // cannot bind; declared stays true
 	if rc.Running() {
 		t.Fatal("precondition: listener should be off")
 	}
@@ -268,7 +268,7 @@ func TestRemoteStartup(t *testing.T) {
 	if err := storeRemoteToken(rc.tokenPath, tok); err != nil {
 		t.Fatal(err)
 	}
-	rc.Startup(true)
+	rc.Apply(config.Remote{Enabled: true})
 	if !rc.Running() {
 		t.Fatal("startup did not restore the listener")
 	}
@@ -278,7 +278,7 @@ func TestRemoteStartup(t *testing.T) {
 		if err := os.WriteFile(rc2.tokenPath, []byte(bad), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		rc2.Startup(true)
+		rc2.Apply(config.Remote{Enabled: true})
 		if rc2.Running() {
 			t.Fatalf("startup accepted token %q", bad)
 		}
@@ -308,7 +308,7 @@ func TestRemotePortOccupied(t *testing.T) {
 	if err := storeRemoteToken(rc.tokenPath, tok); err != nil {
 		t.Fatal(err)
 	}
-	rc.Startup(true)
+	rc.Apply(config.Remote{Enabled: true})
 	if rc.Running() {
 		t.Fatal("startup claims running on an occupied port")
 	}
@@ -372,7 +372,7 @@ func TestRemoteToggleRetractsAfterFailedStartup(t *testing.T) {
 	if err := storeRemoteToken(rc.tokenPath, tok); err != nil {
 		t.Fatal(err)
 	}
-	rc.Startup(true)
+	rc.Apply(config.Remote{Enabled: true})
 
 	req := httptest.NewRequest("POST", "http://127.0.0.1/api/remote", strings.NewReader(`{"enabled":false}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -432,5 +432,64 @@ func TestReloadAppliesRemoteDeclaration(t *testing.T) {
 	}
 	if !rc.Running() {
 		t.Fatal("reload did not start the enabled listener")
+	}
+}
+
+// Acceptance 1 of the polish spec: advertise round-trips through the toggle
+// route, leads the URL list, and an invalid value persists nothing.
+func TestRemoteToggleAdvertise(t *testing.T) {
+	s, rc := newTestServerWithRemote(t, "127.0.0.1:0")
+	h := s.Handler()
+	post := func(body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest("POST", "http://127.0.0.1/api/remote", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rr := httptest.NewRecorder()
+		h.ServeHTTP(rr, req)
+		return rr
+	}
+
+	if rr := post(`{"advertise":"https://mcpd.home.example/"}`); rr.Code != http.StatusOK {
+		t.Fatalf("set advertise: %d %s", rr.Code, rr.Body)
+	}
+	if got := rc.Advertise(); got != "https://mcpd.home.example" {
+		t.Fatalf("advertise not adopted: %q", got)
+	}
+	rr := post(`{"enabled":true}`)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("enable: %d %s", rr.Code, rr.Body)
+	}
+	var out struct {
+		URLs      []string `json:"urls"`
+		Advertise string   `json:"advertise"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.URLs) == 0 || !strings.HasPrefix(out.URLs[0], "https://mcpd.home.example/?token=") {
+		t.Fatalf("advertised origin does not lead the URLs: %v", out.URLs)
+	}
+	if out.Advertise != "https://mcpd.home.example" {
+		t.Fatalf("response advertise = %q", out.Advertise)
+	}
+
+	if rr := post(`{"advertise":"not an origin"}`); rr.Code != http.StatusBadRequest {
+		t.Fatalf("invalid advertise: %d %s", rr.Code, rr.Body)
+	}
+	if got := rc.Advertise(); got != "https://mcpd.home.example" {
+		t.Fatalf("invalid advertise overwrote the good one: %q", got)
+	}
+	// An enabled-only request must not clear the advertise value.
+	if rr := post(`{"enabled":false}`); rr.Code != http.StatusOK {
+		t.Fatalf("disable: %d", rr.Code)
+	}
+	if got := rc.Advertise(); got != "https://mcpd.home.example" {
+		t.Fatalf("disable cleared advertise: %q", got)
+	}
+	// Empty string clears it.
+	if rr := post(`{"advertise":""}`); rr.Code != http.StatusOK {
+		t.Fatalf("clear advertise: %d", rr.Code)
+	}
+	if got := rc.Advertise(); got != "" {
+		t.Fatalf("advertise not cleared: %q", got)
 	}
 }

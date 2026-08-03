@@ -81,6 +81,7 @@ type remoteView struct {
 	Declared  bool
 	Running   bool
 	URLs      []string
+	Advertise string
 }
 
 type toolView struct {
@@ -146,6 +147,7 @@ func (s *Server) snapshot() statusView {
 			Declared:  s.remote.Declared(),
 			Running:   s.remote.Running(),
 			URLs:      s.remote.URLs(),
+			Advertise: s.remote.Advertise(),
 		}
 	}
 	return out

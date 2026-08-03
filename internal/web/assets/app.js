@@ -173,6 +173,22 @@ for (const btn of document.querySelectorAll("button.act")) {
 
 // A disclosure that keeps the add form out of the way until it is wanted, without
 // hiding that it exists.
+const advertiseSave = document.getElementById("remote-advertise-save");
+if (advertiseSave) {
+  advertiseSave.addEventListener("click", async () => {
+    const input = document.getElementById("remote-advertise");
+    advertiseSave.disabled = true;
+    say("");
+    const res = await post("/api/remote", { advertise: input.value.trim() });
+    advertiseSave.disabled = false;
+    if (res.ok) {
+      window.location.reload();
+      return;
+    }
+    say(reason(res));
+  });
+}
+
 for (const btn of document.querySelectorAll("button[data-toggle]")) {
   const panel = document.getElementById(btn.dataset.toggle);
   if (!panel) {

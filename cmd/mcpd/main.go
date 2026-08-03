@@ -223,7 +223,7 @@ func (d *daemon) wire(cfg *config.Config, addr string) error {
 	// A reload that adopts a hand-edited remote declaration must reach the live
 	// listener, or the file and the network would describe different states.
 	d.mgr.ReloadRemote = d.remote.Apply
-	d.remote.Startup(cfg.Remote.Enabled)
+	d.remote.Apply(cfg.Remote)
 	mux := http.NewServeMux()
 	// Both MCP handlers are wrapped in the same guard value the web surface uses, so the
 	// cross-origin policy cannot diverge between the two surfaces.
