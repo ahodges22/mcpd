@@ -381,8 +381,12 @@ func (s *Server) remoteHandler(token func() string, trusted []netip.Prefix) http
 
 func requirePrivatePeer(next http.Handler, trusted []netip.Prefix) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		peer, ok := effectivePeer(r, trusted)
-		if !ok || !privateAddr(peer, localPrefixes()) {
+		peer, refusal := effectivePeer(r, trusted)
+		if refusal != "" {
+			deny(w, refusal)
+			return
+		}
+		if !privateAddr(peer, localPrefixes()) {
 			deny(w, "the remote surface serves the local network only")
 			return
 		}

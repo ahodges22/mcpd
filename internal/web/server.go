@@ -350,9 +350,7 @@ func (s *Server) authorize(w http.ResponseWriter, r *http.Request) {
 		if attempt > 0 {
 			s.oauth.DiscardStoredGrant(name)
 		}
-		// Set per attempt, because it is cleared when a handshake ends: this handshake
-		// cannot finish until the user has logged in to the provider and consented, so it
-		// needs a budget sized for a person rather than for a dial.
+		// Set per attempt, because the next handshake to start consumes it.
 		b.ExpectAuthorization()
 		var generation uint64
 		finished, err := awaitTransition(transitionTimeout, func() error {

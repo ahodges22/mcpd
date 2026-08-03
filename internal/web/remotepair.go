@@ -129,21 +129,21 @@ func privateAddr(a netip.Addr, local []netip.Prefix) bool {
 // means an unconfigured proxy whose clients this gate cannot see. For a
 // trusted proxy the peer is the rightmost X-Forwarded-For hop that is not
 // itself trusted, and a trusted proxy reporting no client refuses too.
-func effectivePeer(r *http.Request, trusted []netip.Prefix) (netip.Addr, bool) {
+func effectivePeer(r *http.Request, trusted []netip.Prefix) (netip.Addr, string) {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
-		return netip.Addr{}, false
+		return netip.Addr{}, "the remote surface serves the local network only"
 	}
 	direct, err := netip.ParseAddr(host)
 	if err != nil {
-		return netip.Addr{}, false
+		return netip.Addr{}, "the remote surface serves the local network only"
 	}
 	forwarded := r.Header.Values("X-Forwarded-For")
 	if !trustedProxy(direct, trusted) {
 		if len(forwarded) > 0 || r.Header.Get("Forwarded") != "" {
-			return netip.Addr{}, false
+			return netip.Addr{}, "a forwarding header from an unlisted source is refused; declare the proxy in remote.trusted_proxies"
 		}
-		return direct, true
+		return direct, ""
 	}
 	var hops []string
 	for _, v := range forwarded {
@@ -152,14 +152,14 @@ func effectivePeer(r *http.Request, trusted []netip.Prefix) (netip.Addr, bool) {
 	for i := len(hops) - 1; i >= 0; i-- {
 		a, err := netip.ParseAddr(strings.TrimSpace(hops[i]))
 		if err != nil {
-			return netip.Addr{}, false
+			return netip.Addr{}, "the trusted proxy did not report a judgeable client address"
 		}
 		if trustedProxy(a, trusted) {
 			continue
 		}
-		return a, true
+		return a, ""
 	}
-	return netip.Addr{}, false
+	return netip.Addr{}, "the trusted proxy did not report a judgeable client address"
 }
 
 func trustedProxy(a netip.Addr, trusted []netip.Prefix) bool {

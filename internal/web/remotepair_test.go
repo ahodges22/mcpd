@@ -90,17 +90,20 @@ func TestEffectivePeer(t *testing.T) {
 		fwd        string
 		trusted    []netip.Prefix
 		want       string // "" means refused
+		refusal    string
 	}{
 		{name: "direct peer with no forwarding headers", remoteAddr: "192.168.1.9:5000", trusted: trusted, want: "192.168.1.9"},
-		{name: "X-Forwarded-For from an untrusted peer refuses", remoteAddr: "192.168.1.9:5000", xff: "192.168.1.20", trusted: trusted, want: ""},
-		{name: "Forwarded from an untrusted peer refuses", remoteAddr: "192.168.1.9:5000", fwd: "for=192.168.1.20", trusted: trusted, want: ""},
-		{name: "an unconfigured proxy cannot void the gate", remoteAddr: "127.0.0.1:9", xff: "203.0.113.7", trusted: nil, want: ""},
+		{name: "X-Forwarded-For from an untrusted peer refuses", remoteAddr: "192.168.1.9:5000", xff: "192.168.1.20", trusted: trusted, want: "", refusal: "a forwarding header from an unlisted source is refused; declare the proxy in remote.trusted_proxies"},
+		{name: "Forwarded from an untrusted peer refuses", remoteAddr: "192.168.1.9:5000", fwd: "for=192.168.1.20", trusted: trusted, want: "", refusal: "a forwarding header from an unlisted source is refused; declare the proxy in remote.trusted_proxies"},
+		{name: "an unconfigured proxy cannot void the gate", remoteAddr: "127.0.0.1:9", xff: "203.0.113.7", trusted: nil, want: "", refusal: "a forwarding header from an unlisted source is refused; declare the proxy in remote.trusted_proxies"},
 		{name: "a trusted proxy's private client passes through", remoteAddr: "127.0.0.1:9", xff: "192.168.1.20", trusted: trusted, want: "192.168.1.20"},
 		{name: "a trusted proxy's public client is resolved for the gate to refuse", remoteAddr: "127.0.0.1:9", xff: "203.0.113.7", trusted: trusted, want: "203.0.113.7"},
 		{name: "the rightmost untrusted hop wins", remoteAddr: "127.0.0.1:9", xff: "203.0.113.7, 192.168.1.20, 10.1.2.3", trusted: trusted, want: "192.168.1.20"},
-		{name: "a trusted proxy reporting no client refuses", remoteAddr: "127.0.0.1:9", trusted: trusted, want: ""},
-		{name: "an unparseable forwarded client refuses", remoteAddr: "127.0.0.1:9", xff: "not-an-ip", trusted: trusted, want: ""},
-		{name: "a malformed remote address refuses", remoteAddr: "nonsense", trusted: trusted, want: ""},
+		{name: "a trusted proxy reporting no client refuses", remoteAddr: "127.0.0.1:9", trusted: trusted, want: "", refusal: "the trusted proxy did not report a judgeable client address"},
+		{name: "an unparseable forwarded client refuses", remoteAddr: "127.0.0.1:9", xff: "not-an-ip", trusted: trusted, want: "", refusal: "the trusted proxy did not report a judgeable client address"},
+		{name: "a forwarded client with a port refuses", remoteAddr: "127.0.0.1:9", xff: "192.168.1.20:5000", trusted: trusted, want: "", refusal: "the trusted proxy did not report a judgeable client address"},
+		{name: "a bracketed forwarded client refuses", remoteAddr: "127.0.0.1:9", xff: "[fd00::1]", trusted: trusted, want: "", refusal: "the trusted proxy did not report a judgeable client address"},
+		{name: "a malformed remote address refuses", remoteAddr: "nonsense", trusted: trusted, want: "", refusal: "the remote surface serves the local network only"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := httptest.NewRequest("GET", "/", nil)
@@ -111,15 +114,18 @@ func TestEffectivePeer(t *testing.T) {
 			if tc.fwd != "" {
 				r.Header.Set("Forwarded", tc.fwd)
 			}
-			got, ok := effectivePeer(r, tc.trusted)
+			got, refusal := effectivePeer(r, tc.trusted)
 			if tc.want == "" {
-				if ok {
+				if got.IsValid() {
 					t.Fatalf("resolved %v, want refused", got)
+				}
+				if refusal != tc.refusal {
+					t.Fatalf("refusal %q, want %q", refusal, tc.refusal)
 				}
 				return
 			}
-			if !ok || got != netip.MustParseAddr(tc.want) {
-				t.Fatalf("resolved %v (ok=%v), want %s", got, ok, tc.want)
+			if refusal != "" || got != netip.MustParseAddr(tc.want) {
+				t.Fatalf("resolved %v (refusal=%q), want %s", got, refusal, tc.want)
 			}
 		})
 	}
