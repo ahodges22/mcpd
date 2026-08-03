@@ -278,7 +278,7 @@ func (w *Writer) mutateRemote(apply func(*Remote)) ([]error, error) {
 			}
 		}
 		apply(&r)
-		if r == (Remote{}) {
+		if reflect.DeepEqual(r, Remote{}) {
 			delete(doc, "remote")
 			return nil
 		}

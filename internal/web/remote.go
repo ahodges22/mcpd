@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"slices"
 	"sync"
 	"time"
 
@@ -91,6 +92,7 @@ type Remote struct {
 	hsrv      *http.Server
 	token     string
 	advertise string
+	proxies   []netip.Prefix
 	// declared is what config last said. It can be true while ln is nil: a
 	// startup that could not bind or found no valid token leaves the
 	// declaration standing, and Disable must still be able to retract it.
@@ -197,6 +199,11 @@ func (r *Remote) Apply() {
 		adv = ""
 	}
 	r.advertise = adv
+	proxies := parseTrustedProxies(decl.TrustedProxies)
+	if !slices.Equal(proxies, r.proxies) {
+		rebind = true
+	}
+	r.proxies = proxies
 	r.declared = decl.Enabled
 	if !decl.Enabled {
 		r.stopLocked()
@@ -225,7 +232,7 @@ func (r *Remote) Apply() {
 func (r *Remote) serveLocked(ln net.Listener, tok string) {
 	r.ln, r.token = ln, tok
 	r.hsrv = &http.Server{
-		Handler: r.srv.remoteHandler(func() string { return tok }),
+		Handler: r.srv.remoteHandler(func() string { return tok }, r.proxies),
 		// This listener is reachable before authentication, so slow or idle
 		// connections are bounded; the loopback server has no such exposure.
 		ReadHeaderTimeout: 10 * time.Second,
@@ -357,7 +364,7 @@ func (s *Server) remoteRoutes() []route {
 // private-peer gate (a public source sees 403 for every path, callback
 // included), the shared cross-origin policy, then per-route token auth and the
 // method-plus-JSON rule.
-func (s *Server) remoteHandler(token func() string) http.Handler {
+func (s *Server) remoteHandler(token func() string, trusted []netip.Prefix) http.Handler {
 	mux := http.NewServeMux()
 	for _, rt := range s.remoteRoutes() {
 		if rt.nonceGuarded {
@@ -369,12 +376,13 @@ func (s *Server) remoteHandler(token func() string) http.Handler {
 		}
 		mux.Handle(rt.path, requireRemoteToken(token, guardMethod(s.guard, rt, rt.handler)))
 	}
-	return requirePrivatePeer(s.guard.Protect(mux))
+	return requirePrivatePeer(s.guard.Protect(mux), trusted)
 }
 
-func requirePrivatePeer(next http.Handler) http.Handler {
+func requirePrivatePeer(next http.Handler, trusted []netip.Prefix) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !privatePeer(r.RemoteAddr, localPrefixes()) {
+		peer, ok := effectivePeer(r, trusted)
+		if !ok || !privateAddr(peer, localPrefixes()) {
 			deny(w, "the remote surface serves the local network only")
 			return
 		}

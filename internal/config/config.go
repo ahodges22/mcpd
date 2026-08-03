@@ -55,6 +55,11 @@ type Remote struct {
 	// Advertise is the origin a reverse proxy serves the listener on. It leads
 	// the pairing URLs and names the host in the relogin page's instructions.
 	Advertise string `json:"advertise,omitempty"`
+	// TrustedProxies names the sources allowed to speak for their clients via
+	// X-Forwarded-For: each entry is an IP or CIDR prefix. The peer gate judges
+	// the forwarded client address for these sources, and refuses a forwarding
+	// header from any other source outright.
+	TrustedProxies []string `json:"trusted_proxies,omitempty"`
 }
 
 // Embeddings configures the gateway that vectorizes the catalog. It is optional: with no

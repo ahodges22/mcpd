@@ -1,6 +1,7 @@
 package web
 
 import (
+	"net/http/httptest"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -80,23 +81,77 @@ func TestPairingURLs(t *testing.T) {
 	})
 }
 
-func TestPrivatePeer(t *testing.T) {
+func TestEffectivePeer(t *testing.T) {
+	trusted := parseTrustedProxies([]string{"127.0.0.1", "10.0.0.0/8"})
+	for _, tc := range []struct {
+		name       string
+		remoteAddr string
+		xff        string
+		fwd        string
+		trusted    []netip.Prefix
+		want       string // "" means refused
+	}{
+		{name: "direct peer with no forwarding headers", remoteAddr: "192.168.1.9:5000", trusted: trusted, want: "192.168.1.9"},
+		{name: "X-Forwarded-For from an untrusted peer refuses", remoteAddr: "192.168.1.9:5000", xff: "192.168.1.20", trusted: trusted, want: ""},
+		{name: "Forwarded from an untrusted peer refuses", remoteAddr: "192.168.1.9:5000", fwd: "for=192.168.1.20", trusted: trusted, want: ""},
+		{name: "an unconfigured proxy cannot void the gate", remoteAddr: "127.0.0.1:9", xff: "203.0.113.7", trusted: nil, want: ""},
+		{name: "a trusted proxy's private client passes through", remoteAddr: "127.0.0.1:9", xff: "192.168.1.20", trusted: trusted, want: "192.168.1.20"},
+		{name: "a trusted proxy's public client is resolved for the gate to refuse", remoteAddr: "127.0.0.1:9", xff: "203.0.113.7", trusted: trusted, want: "203.0.113.7"},
+		{name: "the rightmost untrusted hop wins", remoteAddr: "127.0.0.1:9", xff: "203.0.113.7, 192.168.1.20, 10.1.2.3", trusted: trusted, want: "192.168.1.20"},
+		{name: "a trusted proxy reporting no client refuses", remoteAddr: "127.0.0.1:9", trusted: trusted, want: ""},
+		{name: "an unparseable forwarded client refuses", remoteAddr: "127.0.0.1:9", xff: "not-an-ip", trusted: trusted, want: ""},
+		{name: "a malformed remote address refuses", remoteAddr: "nonsense", trusted: trusted, want: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := httptest.NewRequest("GET", "/", nil)
+			r.RemoteAddr = tc.remoteAddr
+			if tc.xff != "" {
+				r.Header.Set("X-Forwarded-For", tc.xff)
+			}
+			if tc.fwd != "" {
+				r.Header.Set("Forwarded", tc.fwd)
+			}
+			got, ok := effectivePeer(r, tc.trusted)
+			if tc.want == "" {
+				if ok {
+					t.Fatalf("resolved %v, want refused", got)
+				}
+				return
+			}
+			if !ok || got != netip.MustParseAddr(tc.want) {
+				t.Fatalf("resolved %v (ok=%v), want %s", got, ok, tc.want)
+			}
+		})
+	}
+}
+
+func TestParseTrustedProxies(t *testing.T) {
+	got := parseTrustedProxies([]string{"127.0.0.1", "10.0.0.0/8", "fd00::1", "not-an-ip", ""})
+	want := []netip.Prefix{
+		netip.MustParsePrefix("127.0.0.1/32"),
+		netip.MustParsePrefix("10.0.0.0/8"),
+		netip.MustParsePrefix("fd00::1/128"),
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("got %v want %v", got, want)
+	}
+}
+
+func TestPrivateAddr(t *testing.T) {
 	local := []netip.Prefix{
 		netip.MustParsePrefix("2001:db8:aa::/64"),
 		netip.MustParsePrefix("203.0.113.0/24"), // public v4 on a local interface
 	}
 	for addr, want := range map[string]bool{
-		"192.168.1.9:5000": true, "10.1.2.3:80": true, "172.20.0.2:1": true,
-		"127.0.0.1:9": true, "[::1]:9": true, "[fd00::5]:9": true, "[fe80::1]:9": true,
-		"[2001:db8:aa::7]:443": true,  // global v6 inside a connected prefix: the LAN
-		"[2001:db8:bb::7]:443": false, // global v6 off-prefix: not the LAN
-		"203.0.113.7:443":      false, // public v4 stays refused even inside a local prefix
-		"8.8.8.8:53":           false,
-		"nonsense":             false,
-		"":                     false,
+		"192.168.1.9": true, "10.1.2.3": true, "172.20.0.2": true,
+		"127.0.0.1": true, "::1": true, "fd00::5": true, "fe80::1": true,
+		"2001:db8:aa::7": true,  // global v6 inside a connected prefix: the LAN
+		"2001:db8:bb::7": false, // global v6 off-prefix: not the LAN
+		"203.0.113.7":    false, // public v4 stays refused even inside a local prefix
+		"8.8.8.8":        false,
 	} {
-		if got := privatePeer(addr, local); got != want {
-			t.Errorf("privatePeer(%q) = %v, want %v", addr, got, want)
+		if got := privateAddr(netip.MustParseAddr(addr), local); got != want {
+			t.Errorf("privateAddr(%q) = %v, want %v", addr, got, want)
 		}
 	}
 }

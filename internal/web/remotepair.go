@@ -5,7 +5,9 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
+	"net/http"
 	"net/netip"
 	"net/url"
 	"os"
@@ -98,23 +100,15 @@ func validateAdvertise(raw string) (string, error) {
 	return u.Scheme + "://" + u.Host, nil
 }
 
-// privatePeer reports whether a connection's remote address belongs on the
-// local network. Private, loopback and link-local ranges qualify outright; a
-// global IPv6 address qualifies only inside a directly connected prefix,
-// because a home LAN using ISP-delegated global IPv6 is still the LAN. The
-// prefix exception never applies to IPv4: a public IPv4 subnet neighbour
-// shares a connected prefix without being anyone's home network. Everything
-// else is refused, which is what keeps a wildcard bind from serving past the
-// LAN on a host that also has a public address.
-func privatePeer(remoteAddr string, local []netip.Prefix) bool {
-	host, _, err := net.SplitHostPort(remoteAddr)
-	if err != nil {
-		return false
-	}
-	a, err := netip.ParseAddr(host)
-	if err != nil {
-		return false
-	}
+// privateAddr reports whether a peer address belongs on the local network.
+// Private, loopback and link-local ranges qualify outright; a global IPv6
+// address qualifies only inside a directly connected prefix, because a home
+// LAN using ISP-delegated global IPv6 is still the LAN. The prefix exception
+// never applies to IPv4: a public IPv4 subnet neighbour shares a connected
+// prefix without being anyone's home network. Everything else is refused,
+// which is what keeps a wildcard bind from serving past the LAN on a host
+// that also has a public address.
+func privateAddr(a netip.Addr, local []netip.Prefix) bool {
 	if a.IsLoopback() || a.IsPrivate() || a.IsLinkLocalUnicast() {
 		return true
 	}
@@ -127,6 +121,74 @@ func privatePeer(remoteAddr string, local []netip.Prefix) bool {
 		}
 	}
 	return false
+}
+
+// effectivePeer resolves the address the peer gate judges. For a direct
+// connection that is the remote address itself, and a forwarding header from
+// such a peer refuses outright: a browser never sends one, so its presence
+// means an unconfigured proxy whose clients this gate cannot see. For a
+// trusted proxy the peer is the rightmost X-Forwarded-For hop that is not
+// itself trusted, and a trusted proxy reporting no client refuses too.
+func effectivePeer(r *http.Request, trusted []netip.Prefix) (netip.Addr, bool) {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return netip.Addr{}, false
+	}
+	direct, err := netip.ParseAddr(host)
+	if err != nil {
+		return netip.Addr{}, false
+	}
+	forwarded := r.Header.Values("X-Forwarded-For")
+	if !trustedProxy(direct, trusted) {
+		if len(forwarded) > 0 || r.Header.Get("Forwarded") != "" {
+			return netip.Addr{}, false
+		}
+		return direct, true
+	}
+	var hops []string
+	for _, v := range forwarded {
+		hops = append(hops, strings.Split(v, ",")...)
+	}
+	for i := len(hops) - 1; i >= 0; i-- {
+		a, err := netip.ParseAddr(strings.TrimSpace(hops[i]))
+		if err != nil {
+			return netip.Addr{}, false
+		}
+		if trustedProxy(a, trusted) {
+			continue
+		}
+		return a, true
+	}
+	return netip.Addr{}, false
+}
+
+func trustedProxy(a netip.Addr, trusted []netip.Prefix) bool {
+	for _, p := range trusted {
+		if p.Contains(a.Unmap()) {
+			return true
+		}
+	}
+	return false
+}
+
+// parseTrustedProxies canonicalizes the declared reverse-proxy sources: each
+// entry an IP or a CIDR prefix. An invalid entry is dropped with a warning,
+// which fails closed: an untrusted source cannot speak for its clients.
+func parseTrustedProxies(raw []string) []netip.Prefix {
+	var out []netip.Prefix
+	for _, s := range raw {
+		if p, err := netip.ParsePrefix(s); err == nil {
+			out = append(out, p.Masked())
+			continue
+		}
+		if a, err := netip.ParseAddr(s); err == nil {
+			a = a.Unmap()
+			out = append(out, netip.PrefixFrom(a, a.BitLen()))
+			continue
+		}
+		slog.Warn("ignoring an invalid trusted proxy entry", "entry", s)
+	}
+	return out
 }
 
 // localPrefixes snapshots the directly connected networks. Called per request:

@@ -32,7 +32,7 @@ const testToken = "00112233445566778899aabbccddeeff"
 
 func TestRemoteAuthTokenGate(t *testing.T) {
 	h := newHarness(t)
-	rh := h.server.remoteHandler(func() string { return testToken })
+	rh := h.server.remoteHandler(func() string { return testToken }, nil)
 
 	// No cookie, no token: 403.
 	rr := httptest.NewRecorder()
@@ -77,7 +77,7 @@ func TestRemoteAuthTokenGate(t *testing.T) {
 // delivery success path is owned by the oauthstore flow tests.
 func TestRemoteCallbackMatchesLoopbackBehavior(t *testing.T) {
 	h := newHarness(t)
-	rh := h.server.remoteHandler(func() string { return testToken })
+	rh := h.server.remoteHandler(func() string { return testToken }, nil)
 
 	loop := h.get(t, "/oauth/callback?state=x&code=y")
 	rr := httptest.NewRecorder()
@@ -92,7 +92,7 @@ func TestRemoteCallbackMatchesLoopbackBehavior(t *testing.T) {
 
 func TestRemotePastedCallback(t *testing.T) {
 	h := newHarness(t)
-	rh := h.server.remoteHandler(func() string { return testToken })
+	rh := h.server.remoteHandler(func() string { return testToken }, nil)
 	post := func(body string) *httptest.ResponseRecorder {
 		req := remoteReq("POST", "/api/callback", strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
@@ -121,7 +121,7 @@ func TestRemotePastedCallback(t *testing.T) {
 // of an accidentally mounted handler.
 func TestRemoteForbiddenRoutesAbsent(t *testing.T) {
 	h := newHarness(t, testfake.New("x", tool("kubectl_logs")))
-	rh := h.server.remoteHandler(func() string { return testToken })
+	rh := h.server.remoteHandler(func() string { return testToken }, nil)
 	forbidden := []struct{ method, path string }{
 		{"POST", "/mcp/passthrough"}, {"POST", "/mcp/search"},
 		{"POST", "/api/invoke"}, {"POST", "/api/backends"},
