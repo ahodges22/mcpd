@@ -8,7 +8,7 @@
 
 <p align="center">
   <a href="https://github.com/ahodges22/mcpd/actions/workflows/ci.yml"><img src="https://github.com/ahodges22/mcpd/actions/workflows/ci.yml/badge.svg" alt="CI status"></a>
-  <a href="https://github.com/ahodges22/mcpd/releases"><img src="https://img.shields.io/github/v/release/ahodges22/mcpd?display_name=tag" alt="Latest release"></a>
+  <a href="https://github.com/ahodges22/mcpd/releases"><img src="https://img.shields.io/github/v/release/ahodges22/mcpd?display_name=tag&sort=semver" alt="Latest release"></a>
   <img src="https://img.shields.io/badge/Go-1.26.5-00ADD8?logo=go&logoColor=white" alt="Go 1.26.5">
 </p>
 
