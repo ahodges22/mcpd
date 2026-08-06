@@ -50,6 +50,25 @@ func TestNoMarkupInsertionAPIInTheAssets(t *testing.T) {
 	}
 }
 
+func TestEveryPageLinksTheFavicon(t *testing.T) {
+	err := fs.WalkDir(templateFS, "templates", func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		raw, err := fs.ReadFile(templateFS, path)
+		if err != nil {
+			return err
+		}
+		if !strings.Contains(string(raw), `<link rel="icon" type="image/svg+xml" href="/assets/logo.svg">`) {
+			t.Errorf("%s does not link the favicon", path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk templates: %v", err)
+	}
+}
+
 // assertNoInlineCode keeps script and style in the asset files. Inline script would
 // be invisible to the ban above, which is what would make this gate unsound.
 func assertNoInlineCode(t *testing.T, path, body string) {
