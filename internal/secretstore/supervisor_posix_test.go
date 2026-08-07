@@ -108,6 +108,10 @@ func TestPOSIXSupervisorProcessHelper(t *testing.T) {
 		_ = WriteHelperResponse(os.Stdout, HelperResponse{Result: Result{Value: os.Getenv(nativeHelperIDEnv), Present: true}})
 		os.Exit(0)
 	}
+	if os.Getenv("MCPD_RETURN_MARKER_DIR") == "1" {
+		_ = WriteHelperResponse(os.Stdout, HelperResponse{Result: Result{Value: os.Getenv(nativeMarkerDirEnv), Present: true}})
+		os.Exit(0)
+	}
 	if os.Getenv("MCPD_EXIT_WITHOUT_RESPONSE") == "1" {
 		os.Exit(2)
 	}
@@ -221,6 +225,23 @@ func TestGeneratedHelperIDReplacesParentValue(t *testing.T) {
 	}
 	if result.Value == "parent-value" || len(result.Value) != 32 {
 		t.Fatalf("helper instance id = %q", result.Value)
+	}
+}
+
+func TestPOSIXSupervisorProvidesMarkerDirectory(t *testing.T) {
+	supervisor, err := NewPOSIXSupervisor(filepath.Join(stateSandbox(t), "state"), os.Args[0], "-test.run=^TestPOSIXSupervisorProcessHelper$")
+	if err != nil {
+		t.Fatalf("NewPOSIXSupervisor: %v", err)
+	}
+	supervisor.extraEnv = append(supervisor.extraEnv, "MCPD_RETURN_MARKER_DIR=1")
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	result, err := supervisor.Run(ctx, HelperRequest{Operation: OperationGet, Name: "TOKEN", Deadline: time.Now().Add(2 * time.Second)}, "")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !result.Present || result.Value != supervisor.dir {
+		t.Fatalf("marker directory = %#v, want %q", result, supervisor.dir)
 	}
 }
 

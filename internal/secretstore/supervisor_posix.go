@@ -20,6 +20,7 @@ import (
 )
 
 const nativeHelperIDEnv = "MCPD_NATIVE_HELPER_ID"
+const nativeMarkerDirEnv = "MCPD_NATIVE_MARKER_DIR"
 const nativeHelperMarkerName = "native-helper.json"
 const nativeHelperArg = "--mcpd-native-helper"
 
@@ -31,19 +32,25 @@ const (
 )
 
 type helperMarker struct {
-	Version             int         `json:"version"`
-	Phase               helperPhase `json:"phase"`
-	InstanceID          string      `json:"instance_id"`
-	DaemonInstanceID    string      `json:"daemon_instance_id"`
-	OwnerPID            int         `json:"owner_pid"`
-	OwnerStartIdentity  string      `json:"owner_start_identity"`
-	HelperPID           int         `json:"helper_pid"`
-	SessionID           int         `json:"session_id"`
-	ProcessGroupID      int         `json:"process_group_id"`
-	Executable          string      `json:"executable"`
-	HelperStartIdentity string      `json:"helper_start_identity"`
-	OperationDeadline   time.Time   `json:"operation_deadline"`
-	TerminationDeadline time.Time   `json:"termination_deadline"`
+	Version                   int         `json:"version"`
+	Phase                     helperPhase `json:"phase"`
+	InstanceID                string      `json:"instance_id"`
+	DaemonInstanceID          string      `json:"daemon_instance_id"`
+	OwnerPID                  int         `json:"owner_pid"`
+	OwnerStartIdentity        string      `json:"owner_start_identity"`
+	HelperPID                 int         `json:"helper_pid"`
+	SessionID                 int         `json:"session_id"`
+	ProcessGroupID            int         `json:"process_group_id"`
+	Executable                string      `json:"executable"`
+	HelperStartIdentity       string      `json:"helper_start_identity"`
+	NativeChildPID            int         `json:"native_child_pid,omitempty"`
+	NativeChildParentPID      int         `json:"native_child_parent_pid,omitempty"`
+	NativeChildSessionID      int         `json:"native_child_session_id,omitempty"`
+	NativeChildProcessGroupID int         `json:"native_child_process_group_id,omitempty"`
+	NativeChildExecutable     string      `json:"native_child_executable,omitempty"`
+	NativeChildStartIdentity  string      `json:"native_child_start_identity,omitempty"`
+	OperationDeadline         time.Time   `json:"operation_deadline"`
+	TerminationDeadline       time.Time   `json:"termination_deadline"`
 }
 
 type POSIXSupervisor struct {
@@ -125,7 +132,7 @@ func (s *POSIXSupervisor) Run(ctx context.Context, request HelperRequest, setVal
 
 	cmdArgs := append(append([]string(nil), s.args...), "--", nativeHelperArg, instance)
 	cmd := exec.Command(s.executable, cmdArgs...)
-	cmd.Env = append(append(os.Environ(), s.extraEnv...), nativeHelperIDEnv+"="+instance)
+	cmd.Env = append(append(os.Environ(), s.extraEnv...), nativeHelperIDEnv+"="+instance, nativeMarkerDirEnv+"="+s.dir)
 	cmd.Stdin = requestRead
 	cmd.Stdout = responseWrite
 	cmd.Stderr = io.Discard
@@ -222,6 +229,11 @@ func (s *POSIXSupervisor) Run(ctx context.Context, request HelperRequest, setVal
 			return s.timeoutOperation(operationCtx.Err(), request, marker, waitCh, gotWait)
 		}
 	}
+	current, err := s.currentMarker(marker)
+	if err != nil {
+		return Result{}, operationCleanupError(request, err)
+	}
+	marker = current
 	terminated, terminateErr := s.boundedTerminateMarker(marker)
 	if terminateErr != nil {
 		marker.Phase = helperPhaseWedged
@@ -254,6 +266,11 @@ func (s *POSIXSupervisor) Run(ctx context.Context, request HelperRequest, setVal
 }
 
 func (s *POSIXSupervisor) timeoutOperation(cause error, request HelperRequest, marker helperMarker, waitCh <-chan error, alreadyWaited bool) (Result, error) {
+	current, err := s.currentMarker(marker)
+	if err != nil {
+		return Result{}, operationCleanupError(request, err)
+	}
+	marker = current
 	terminated, terminateErr := s.boundedTerminateMarker(marker)
 	if terminateErr != nil {
 		marker.Phase = helperPhaseWedged
@@ -283,6 +300,23 @@ func (s *POSIXSupervisor) timeoutOperation(cause error, request HelperRequest, m
 		condition = ConditionIndeterminate
 	}
 	return Result{}, nativeSlotError(request.Operation, request.Name, condition, cause)
+}
+
+func (s *POSIXSupervisor) currentMarker(expected helperMarker) (helperMarker, error) {
+	current, err := s.readMarker()
+	if errors.Is(err, os.ErrNotExist) {
+		return expected, nil
+	}
+	if err != nil {
+		return expected, err
+	}
+	if current.Version != expected.Version ||
+		current.InstanceID != expected.InstanceID ||
+		current.HelperPID != expected.HelperPID ||
+		current.HelperStartIdentity != expected.HelperStartIdentity {
+		return expected, nativeSlotError(OperationHealth, "", ConditionUnexpected, fmt.Errorf("native helper marker identity changed during operation"))
+	}
+	return current, nil
 }
 
 func operationCleanupError(request HelperRequest, cause error) error {
@@ -438,7 +472,11 @@ func (s *POSIXSupervisor) boundedTerminateMarker(marker helperMarker) (bool, err
 	if !deadline.After(now) || deadline.After(maximumDeadline) {
 		deadline = maximumDeadline
 	}
-	_, err := s.signalMarkerGroup(marker, unix.SIGTERM)
+	_, err := s.signalNativeChild(marker, unix.SIGTERM)
+	if err != nil {
+		return false, err
+	}
+	_, err = s.signalMarkerGroup(marker, unix.SIGTERM)
 	if err != nil {
 		return false, err
 	}
@@ -448,7 +486,7 @@ func (s *POSIXSupervisor) boundedTerminateMarker(marker helperMarker) (bool, err
 		grace = 100 * time.Millisecond
 	}
 	if grace > 0 {
-		exited, err := waitForPOSIXGroupExit(marker.ProcessGroupID, time.Now().Add(grace))
+		exited, err := waitForMarkerGroupsExit(marker, time.Now().Add(grace))
 		if err != nil {
 			return false, err
 		}
@@ -456,21 +494,35 @@ func (s *POSIXSupervisor) boundedTerminateMarker(marker helperMarker) (bool, err
 			return true, nil
 		}
 	}
+	_, err = s.signalNativeChild(marker, unix.SIGKILL)
+	if err != nil {
+		return false, err
+	}
 	_, err = s.signalMarkerGroup(marker, unix.SIGKILL)
 	if err != nil {
 		return false, err
 	}
-	return waitForPOSIXGroupExit(marker.ProcessGroupID, deadline)
+	return waitForMarkerGroupsExit(marker, deadline)
 }
 
-func waitForPOSIXGroupExit(pgid int, deadline time.Time) (bool, error) {
+func waitForMarkerGroupsExit(marker helperMarker, deadline time.Time) (bool, error) {
+	groups := []int{marker.ProcessGroupID}
+	if marker.NativeChildProcessGroupID > 1 && marker.NativeChildProcessGroupID != marker.ProcessGroupID {
+		groups = append(groups, marker.NativeChildProcessGroupID)
+	}
 	for {
-		members, err := inspectPOSIXGroup(pgid)
-		if err == nil && len(members) == 0 {
-			return true, nil
+		allExited := true
+		for _, pgid := range groups {
+			members, err := inspectPOSIXGroup(pgid)
+			if err != nil && !errors.Is(err, errProcessIdentityTransient) {
+				return false, err
+			}
+			if err != nil || len(members) != 0 {
+				allExited = false
+			}
 		}
-		if err != nil && !errors.Is(err, errProcessIdentityTransient) {
-			return false, err
+		if allExited {
+			return true, nil
 		}
 		if !time.Now().Before(deadline) {
 			return false, nil

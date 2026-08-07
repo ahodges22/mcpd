@@ -17,6 +17,11 @@ type Provider interface {
 	Delete(context.Context, string) error
 }
 
+type NativeProvider interface {
+	Provider
+	Retry()
+}
+
 type Result struct {
 	Value   string
 	Present bool

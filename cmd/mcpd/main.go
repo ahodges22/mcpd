@@ -28,6 +28,7 @@ import (
 	"github.com/ahodges22/mcpd/internal/oauthstore"
 	"github.com/ahodges22/mcpd/internal/rank"
 	"github.com/ahodges22/mcpd/internal/searchindex"
+	"github.com/ahodges22/mcpd/internal/secretstore"
 	"github.com/ahodges22/mcpd/internal/version"
 	"github.com/ahodges22/mcpd/internal/web"
 )
@@ -68,6 +69,9 @@ func main() {
 }
 
 func run() error {
+	if handled, err := secretstore.ServeNativeHelperIfRequested(context.Background(), os.Args, os.Stdin, os.Stdout); handled {
+		return err
+	}
 	// One subcommand, and it is not the default: mcpd with no arguments serves, which is
 	// what the systemd unit invokes.
 	if len(os.Args) > 1 && os.Args[1] == "install" {

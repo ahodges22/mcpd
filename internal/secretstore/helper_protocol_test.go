@@ -245,3 +245,26 @@ func TestServeHelperOnceNeverReturnsSetValue(t *testing.T) {
 		t.Fatal("set response disclosed the set value")
 	}
 }
+
+func TestNativeHelperInvocationRequiresMatchingInstance(t *testing.T) {
+	const instance = "0123456789abcdef0123456789abcdef"
+	tests := []struct {
+		name string
+		args []string
+		env  string
+		want bool
+	}{
+		{name: "exact", args: []string{"mcpd", "--", nativeHelperArg, instance}, env: instance, want: true},
+		{name: "ordinary command", args: []string{"mcpd", "install"}, env: instance},
+		{name: "missing separator", args: []string{"mcpd", nativeHelperArg, instance}, env: instance},
+		{name: "mismatched environment", args: []string{"mcpd", "--", nativeHelperArg, instance}, env: "different"},
+		{name: "extra argument", args: []string{"mcpd", "--", nativeHelperArg, instance, "extra"}, env: instance},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := nativeHelperInvocation(test.args, test.env); got != test.want {
+				t.Fatalf("nativeHelperInvocation = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
