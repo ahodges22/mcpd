@@ -1,0 +1,5 @@
+schema: spec-driven
+created: 2026-08-06
+goal: Let mcpd resolve explicitly allowlisted secret references from secure
+  native credential stores or an explicitly configured managed file, while
+  preserving legacy environment-only behavior by default.
