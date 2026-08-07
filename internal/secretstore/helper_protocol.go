@@ -59,7 +59,7 @@ func WriteHelperRequest(w io.Writer, request HelperRequest, setValue string) err
 
 func ReadHelperRequest(r io.Reader) (HelperRequest, string, error) {
 	var frame helperRequestFrame
-	if err := decodeHelperFrame(r, &frame); err != nil {
+	if err := decodeHelperFrame(r, &frame, false); err != nil {
 		return HelperRequest{}, "", fmt.Errorf("decode helper request: %w", err)
 	}
 	if frame.Version != helperProtocolVersion {
@@ -83,7 +83,7 @@ func WriteHelperResponse(w io.Writer, response HelperResponse) error {
 
 func ReadHelperResponse(r io.Reader) (HelperResponse, error) {
 	var frame helperResponseFrame
-	if err := decodeHelperFrame(r, &frame); err != nil {
+	if err := decodeHelperFrame(r, &frame, true); err != nil {
 		return HelperResponse{}, fmt.Errorf("decode helper response: %w", err)
 	}
 	if frame.Version != helperProtocolVersion {
@@ -185,13 +185,17 @@ func validateHelperRequest(request HelperRequest, setValue string) error {
 	return nil
 }
 
-func decodeHelperFrame(r io.Reader, dst any) error {
+func decodeHelperFrame(r io.Reader, dst any, requireEOF bool) error {
 	limited := &io.LimitedReader{R: r, N: helperFrameLimit + 1}
 	decoder := json.NewDecoder(limited)
 	if err := decoder.Decode(dst); err != nil {
 		return err
 	}
-	buffered, err := io.ReadAll(decoder.Buffered())
+	remainder := io.Reader(decoder.Buffered())
+	if requireEOF {
+		remainder = io.MultiReader(remainder, limited)
+	}
+	buffered, err := io.ReadAll(remainder)
 	if err != nil {
 		return err
 	}

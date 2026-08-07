@@ -56,7 +56,7 @@ At most one native helper operation SHALL run across daemon and offline CLI proc
 - **THEN** the operation returns a typed contention error and starts no helper
 
 ### Requirement: Native helper recovery proves process identity
-mcpd SHALL record a restrictive, atomic, non-secret helper marker after process-tree isolation is confirmed and before it sends an operation request. Recovery SHALL signal only a helper whose executable, instance identifier, process start identity, and process group match the marker.
+mcpd SHALL record a restrictive, atomic, non-secret helper marker after private-session process-tree isolation is confirmed and before it sends an operation request. Recovery SHALL signal only a helper whose executable, instance identifier, process start identity, session, and process group match the marker. A macOS restricted native command SHALL run as a directly spawned process-group leader inside the helper's private session and SHALL have its identity recorded before the native operation proceeds.
 
 #### Scenario: Marker names an unrelated process
 - **WHEN** a stale marker names a live same-user process that fails helper identity proof
@@ -65,6 +65,14 @@ mcpd SHALL record a restrictive, atomic, non-secret helper marker after process-
 #### Scenario: POSIX marker names the caller process group
 - **WHEN** a marker process-group identifier matches the recovering process group
 - **THEN** mcpd refuses the group signal and treats the marker as invalid
+
+#### Scenario: POSIX marker names the caller session
+- **WHEN** a marker session identifier matches the recovering process session
+- **THEN** mcpd refuses the group signal and treats the marker as invalid
+
+#### Scenario: macOS hides a restricted command environment
+- **WHEN** normal SIP policy prevents mcpd from reading the inherited instance tag from `/usr/bin/security`
+- **THEN** mcpd proves the directly spawned command by its durable PID, start, executable, parent, session, and process-group identities without requiring a private entitlement or SIP change
 
 #### Scenario: Proven helper cannot be terminated
 - **WHEN** bounded termination cannot confirm exit of an identity-proven helper tree

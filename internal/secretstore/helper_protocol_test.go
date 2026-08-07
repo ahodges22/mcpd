@@ -43,6 +43,20 @@ func TestHelperProtocolRoundTrip(t *testing.T) {
 	}
 }
 
+func TestHelperResponseRejectsDelayedTrailingData(t *testing.T) {
+	reader, writer := io.Pipe()
+	go func() {
+		_ = WriteHelperResponse(writer, HelperResponse{Result: Result{Value: "value", Present: true}})
+		time.Sleep(20 * time.Millisecond)
+		_, _ = io.WriteString(writer, "trailing")
+		_ = writer.Close()
+	}()
+	defer reader.Close()
+	if _, err := ReadHelperResponse(reader); err == nil {
+		t.Fatal("ReadHelperResponse accepted delayed trailing data")
+	}
+}
+
 func TestSetValueUsesPipeOnly(t *testing.T) {
 	const secret = "do-not-place-in-process-metadata"
 	request := HelperRequest{
