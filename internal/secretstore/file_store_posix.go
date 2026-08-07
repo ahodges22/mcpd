@@ -278,25 +278,33 @@ func (s *FileStore) writeSnapshot(ctx context.Context, operation Operation, name
 }
 
 func validateFileArtifact(name string, file *os.File) error {
+	return validatePOSIXArtifact("file", name, file)
+}
+
+func validatePOSIXArtifact(provider, name string, file *os.File) error {
 	info, err := file.Stat()
 	if err != nil {
-		return fileStoreError(OperationValidate, name, ConditionPermission, err)
+		return artifactPermissionError(provider, name, err)
 	}
 	if !info.Mode().IsRegular() {
-		return fileStoreError(OperationValidate, name, ConditionPermission, fmt.Errorf("artifact is not a regular file"))
+		return artifactPermissionError(provider, name, fmt.Errorf("artifact is not a regular file"))
 	}
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	if !ok {
-		return fileStoreError(OperationValidate, name, ConditionPermission, fmt.Errorf("POSIX ownership is unavailable"))
+		return artifactPermissionError(provider, name, fmt.Errorf("POSIX ownership is unavailable"))
 	}
 	if int(stat.Uid) != effectiveUID() {
-		return fileStoreError(OperationValidate, name, ConditionPermission, fmt.Errorf("owned by uid %d, current uid is %d", stat.Uid, effectiveUID()))
+		return artifactPermissionError(provider, name, fmt.Errorf("owned by uid %d, current uid is %d", stat.Uid, effectiveUID()))
 	}
 	mode := info.Mode().Perm()
 	if mode&0o077 != 0 || mode&0o600 != 0o600 {
-		return fileStoreError(OperationValidate, name, ConditionPermission, fmt.Errorf("mode %04o is not owner-only read-write", mode))
+		return artifactPermissionError(provider, name, fmt.Errorf("mode %04o is not owner-only read-write", mode))
 	}
 	return nil
+}
+
+func artifactPermissionError(provider, name string, cause error) error {
+	return &Error{Operation: OperationValidate, Provider: provider, Name: name, Condition: ConditionPermission, Cause: cause}
 }
 
 func fileStoreError(operation Operation, name string, condition Condition, cause error) error {

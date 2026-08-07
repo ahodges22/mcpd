@@ -10,7 +10,7 @@
 
 ## 3. Native helper boundary
 
-- [ ] 3.1 Add the hidden one-operation helper protocol, pipe-only set input, structured redacted output, global in-process slot, and bounded cross-process `native-helper.lock`; prove it with `TestHelperProtocolRoundTrip`, `TestSetValueUsesPipeOnly`, `TestNativeSlotSerializesProcesses`, and `TestNativeBusyIsNotHealth`; commit as `feat(secretstore): isolate native operations`.
+- [x] 3.1 Add the hidden one-operation helper protocol, pipe-only set input, structured redacted output, global in-process slot, and bounded cross-process `native-helper.lock`; prove it with `TestHelperProtocolRoundTrip`, `TestSetValueUsesPipeOnly`, `TestNativeSlotSerializesProcesses`, and `TestNativeBusyIsNotHealth`; commit as `feat(secretstore): isolate native operations`.
 - [ ] 3.2 Add POSIX process-group creation, pre-request isolation proof, durable phased markers, full helper identity checks, bounded tree termination, and wedged self-recovery; prove it with `TestPOSIXHelperIsProcessGroupLeader`, `TestPreMarkerFailureSendsNoRequest`, `TestRecoveryNeverSignalsUnrelatedProcess`, `TestRecoveryNeverSignalsOwnGroup`, and `TestWedgedHelperSelfRecovers`; run the lifecycle tests with `-race -count=5`; commit as `feat(secretstore): supervise posix native helper`.
 
 ## 4. Native platform adapters

@@ -102,6 +102,27 @@ func ConditionOf(err error) (Condition, bool) {
 	return condition, true
 }
 
+func IsProviderHealthError(err error) bool {
+	condition, ok := ConditionOf(err)
+	if !ok {
+		return false
+	}
+	switch condition {
+	case ConditionUnavailable,
+		ConditionLocked,
+		ConditionDenied,
+		ConditionTimedOut,
+		ConditionWedged,
+		ConditionCorrupt,
+		ConditionPermission,
+		ConditionInteraction,
+		ConditionUnexpected:
+		return true
+	default:
+		return false
+	}
+}
+
 func ValidateValue(value string) error {
 	if value == "" {
 		return invalidValue("value is empty")
