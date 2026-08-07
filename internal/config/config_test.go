@@ -223,3 +223,116 @@ func TestExpansion_WarnsOnUnsetVariables(t *testing.T) {
 		}
 	}
 }
+
+func TestSecretsConfigIsOptIn(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		secrets  string
+		wantNil  bool
+		provider SecretProvider
+		wantErr  bool
+	}{
+		{name: "omitted", wantNil: true},
+		{name: "native", secrets: `,"secrets":{"provider":"native"}`, provider: SecretProviderNative},
+		{name: "file", secrets: `,"secrets":{"provider":"file"}`, provider: SecretProviderFile},
+		{name: "empty block", secrets: `,"secrets":{}`, wantErr: true},
+		{name: "unknown provider", secrets: `,"secrets":{"provider":"vault"}`, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := Load(writeConfig(t, `{"backends":{}`+tc.secrets+`}`))
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("Load accepted an invalid secrets block")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if tc.wantNil {
+				if cfg.Secrets != nil {
+					t.Fatalf("omitted secrets block became %#v", cfg.Secrets)
+				}
+				return
+			}
+			if cfg.Secrets == nil || cfg.Secrets.Provider != tc.provider {
+				t.Fatalf("provider = %#v, want %q", cfg.Secrets, tc.provider)
+			}
+		})
+	}
+}
+
+func TestSecretReferencesAreAllowlisted(t *testing.T) {
+	cfg := Config{
+		Backends: map[string]Backend{
+			"stdio": {
+				Name:    "stdio",
+				Command: "${COMMAND_SECRET}",
+				Args:    []string{"${ARG_SECRET}"},
+				Env: map[string]string{
+					"TOKEN": "prefix-${STDIO_TOKEN}-${SHARED}",
+				},
+				Headers: map[string]string{"X-Unused": "${UNUSED_STDIO_HEADER}"},
+			},
+			"http": {
+				Name:    "http",
+				HTTPURL: "https://${URL_SECRET}/mcp",
+				Env:     map[string]string{"UNUSED": "${UNUSED_HTTP_ENV}"},
+				Headers: map[string]string{
+					"Authorization": "Bearer ${HTTP_TOKEN}",
+					"X-Shared":      "${SHARED}",
+				},
+			},
+		},
+		Embeddings: Embeddings{URL: "https://example.test", APIKeyEnv: "EMBEDDINGS_TOKEN"},
+		Remote:     Remote{Advertise: "https://${REMOTE_SECRET}"},
+		Secrets:    &Secrets{Provider: SecretProviderNative},
+	}
+
+	got := cfg.SecretConsumers()
+	want := []SecretConsumer{
+		{Kind: ConsumerBackend, Name: "http", References: []string{"HTTP_TOKEN", "SHARED"}},
+		{Kind: ConsumerBackend, Name: "stdio", References: []string{"SHARED", "STDIO_TOKEN"}},
+		{Kind: ConsumerEmbeddings, Name: "embeddings", References: []string{"EMBEDDINGS_TOKEN"}},
+	}
+	if !slices.EqualFunc(got, want, func(a, b SecretConsumer) bool {
+		return a.Kind == b.Kind && a.Name == b.Name && slices.Equal(a.References, b.References)
+	}) {
+		t.Fatalf("SecretConsumers() = %#v, want %#v", got, want)
+	}
+	for _, forbidden := range []string{
+		"COMMAND_SECRET", "ARG_SECRET", "URL_SECRET", "REMOTE_SECRET",
+		"UNUSED_STDIO_HEADER", "UNUSED_HTTP_ENV",
+	} {
+		for _, consumer := range got {
+			if slices.Contains(consumer.References, forbidden) {
+				t.Errorf("non-allowlisted reference %q was inventoried", forbidden)
+			}
+		}
+	}
+}
+
+func TestEnvironmentPresenceWins(t *testing.T) {
+	var logs strings.Builder
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	defer slog.SetDefault(prev)
+
+	b := Backend{
+		Name:    "github",
+		Command: "server",
+		Env:     map[string]string{"TOKEN": "${TOKEN}"},
+		Headers: map[string]string{"Authorization": "Bearer ${TOKEN}"},
+	}
+	parent := []string{"PATH=/usr/bin", "TOKEN="}
+
+	if got := b.ExpandHeaders(parent)["Authorization"]; got != "Bearer " {
+		t.Fatalf("header = %q, want present empty environment value", got)
+	}
+	if got := b.ChildEnv(parent); !slices.Contains(got, "TOKEN=") {
+		t.Fatalf("child environment does not contain present empty TOKEN: %v", got)
+	}
+	if strings.Contains(logs.String(), "variable=TOKEN") {
+		t.Fatalf("present empty TOKEN was reported missing: %s", logs.String())
+	}
+}

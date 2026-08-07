@@ -470,6 +470,7 @@ func parse(raw []byte) (*Config, error) {
 		Embeddings Embeddings          `json:"embeddings"`
 		Ranking    Ranking             `json:"ranking"`
 		Remote     Remote              `json:"remote"`
+		Secrets    *Secrets            `json:"secrets"`
 	}
 	if err := json.Unmarshal(raw, &doc); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
@@ -477,7 +478,10 @@ func parse(raw []byte) (*Config, error) {
 	if doc.Backends == nil {
 		return nil, fmt.Errorf("config declares no backends object")
 	}
-	c := Config{Backends: map[string]Backend{}, Embeddings: doc.Embeddings, Ranking: doc.Ranking, Remote: doc.Remote}
+	c := Config{Backends: map[string]Backend{}, Embeddings: doc.Embeddings, Ranking: doc.Ranking, Remote: doc.Remote, Secrets: doc.Secrets}
+	if err := validateSecrets(c.Secrets); err != nil {
+		return nil, err
+	}
 	if err := validateRanking(c); err != nil {
 		return nil, err
 	}

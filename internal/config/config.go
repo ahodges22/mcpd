@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 )
@@ -45,6 +46,76 @@ type Config struct {
 	Embeddings Embeddings         `json:"embeddings,omitempty"`
 	Ranking    Ranking            `json:"ranking,omitempty"`
 	Remote     Remote             `json:"remote,omitempty"`
+	Secrets    *Secrets           `json:"secrets,omitempty"`
+}
+
+type SecretProvider string
+
+const (
+	SecretProviderNative SecretProvider = "native"
+	SecretProviderFile   SecretProvider = "file"
+)
+
+type Secrets struct {
+	Provider SecretProvider `json:"provider"`
+}
+
+func (s *Secrets) Enabled() bool { return s != nil }
+
+type ConsumerKind string
+
+const (
+	ConsumerBackend    ConsumerKind = "backend"
+	ConsumerEmbeddings ConsumerKind = "embeddings"
+)
+
+type SecretConsumer struct {
+	Kind       ConsumerKind
+	Name       string
+	References []string
+}
+
+func (c Config) SecretConsumers() []SecretConsumer {
+	backendNames := make([]string, 0, len(c.Backends))
+	for name := range c.Backends {
+		backendNames = append(backendNames, name)
+	}
+	sort.Strings(backendNames)
+
+	out := make([]SecretConsumer, 0, len(c.Backends)+1)
+	for _, name := range backendNames {
+		b := c.Backends[name]
+		refs := map[string]struct{}{}
+		fields := b.Headers
+		if b.IsStdio() {
+			fields = b.Env
+		}
+		for _, value := range fields {
+			for _, match := range envRef.FindAllStringSubmatch(value, -1) {
+				refs[match[1]] = struct{}{}
+			}
+		}
+		if names := sortedReferenceNames(refs); len(names) > 0 {
+			out = append(out, SecretConsumer{Kind: ConsumerBackend, Name: name, References: names})
+		}
+	}
+	if c.Embeddings.APIKeyEnv != "" {
+		out = append(out, SecretConsumer{
+			Kind:       ConsumerEmbeddings,
+			Name:       "embeddings",
+			References: []string{c.Embeddings.APIKeyEnv},
+		})
+	}
+	return out
+}
+
+func sortedReferenceNames(refs map[string]struct{}) []string {
+	names := make([]string, 0, len(refs))
+	for name := range refs {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // Remote declares the opt-in LAN relogin listener. Only the declaration lives
@@ -203,4 +274,16 @@ func validateRanking(c Config) error {
 		return fmt.Errorf("ranking rerank_timeout_ms must be positive")
 	}
 	return nil
+}
+
+func validateSecrets(s *Secrets) error {
+	if s == nil {
+		return nil
+	}
+	switch s.Provider {
+	case SecretProviderNative, SecretProviderFile:
+		return nil
+	default:
+		return fmt.Errorf("secrets provider %q must be %q or %q", s.Provider, SecretProviderNative, SecretProviderFile)
+	}
 }
