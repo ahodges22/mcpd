@@ -1,7 +1,7 @@
 ## 1. Configuration and contracts
 
 - [x] 1.1 Add the optional provider configuration, exact allowlisted reference inventory, legacy environment behavior, and present-empty precedence in `internal/config`; prove it with `TestSecretsConfigIsOptIn`, `TestSecretReferencesAreAllowlisted`, and `TestEnvironmentPresenceWins`; commit as `feat(config): declare secret resolution`.
-- [ ] 1.2 Add the `internal/secretstore` provider interface, typed conditions, result metadata, portable value validation, and in-memory fake; prove it with `TestValidateValuePortableContract`, `TestProviderConditionsDoNotExposeValues`, and `TestSetGetRoundTripsPrintableCorpus`; commit as `feat(secretstore): define provider contract`.
+- [x] 1.2 Add the `internal/secretstore` provider interface, typed conditions, result metadata, portable value validation, and in-memory fake; prove it with `TestValidateValuePortableContract`, `TestProviderConditionsDoNotExposeValues`, and `TestSetGetRoundTripsPrintableCorpus`; commit as `feat(secretstore): define provider contract`.
 
 ## 2. Secure state and managed-file provider
 
