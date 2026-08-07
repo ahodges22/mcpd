@@ -8,10 +8,6 @@ import (
 	"sync"
 )
 
-type nativeOperationRunner interface {
-	Run(context.Context, HelperRequest, string) (Result, error)
-}
-
 type darwinStore struct {
 	runner nativeOperationRunner
 	gate   chan struct{}

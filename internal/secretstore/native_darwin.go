@@ -21,8 +21,6 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-const darwinServiceName = "io.mcpd.secrets"
-
 var darwinReturnedStatus = regexp.MustCompile("returned (-?[0-9]+)")
 
 type darwinSecurityResult struct {
@@ -194,11 +192,11 @@ func (a *darwinAdapter) Execute(ctx context.Context, request HelperRequest, setV
 	var command string
 	switch request.Operation {
 	case OperationGet:
-		command = fmt.Sprintf("find-generic-password -a %s -s %s -w\n", request.Name, darwinServiceName)
+		command = fmt.Sprintf("find-generic-password -a %s -s %s -w\n", request.Name, nativeServiceName)
 	case OperationSet:
-		command = fmt.Sprintf("add-generic-password -a %s -s %s -U -X %s\n", request.Name, darwinServiceName, hex.EncodeToString([]byte(setValue)))
+		command = fmt.Sprintf("add-generic-password -a %s -s %s -U -X %s\n", request.Name, nativeServiceName, hex.EncodeToString([]byte(setValue)))
 	case OperationDelete:
-		command = fmt.Sprintf("delete-generic-password -a %s -s %s\n", request.Name, darwinServiceName)
+		command = fmt.Sprintf("delete-generic-password -a %s -s %s\n", request.Name, nativeServiceName)
 	default:
 		return Result{}, &Error{
 			Operation: request.Operation,

@@ -16,7 +16,7 @@
 ## 4. Native platform adapters
 
 - [x] 4.1 Add the macOS no-cgo Keychain adapter with bounded default-keychain preflight, a durably recorded direct `/usr/bin/security` child in its own private-session process group, stdin-safe item operations, exact not-found mapping, interaction-required latching, and explicit retry; prove it with `TestDarwinErrorMapping`, `TestDarwinInteractionSuspendsAutomaticReads`, `TestDarwinRetryAllowsOneAttempt`, and the platform-gated `TestDarwinNativeRoundTrip`; inspect the complete helper descendant tree during set; commit as `feat(secretstore): add macos keychain provider`.
-- [ ] 4.2 Add the Linux Secret Service adapter and non-interactive session D-Bus, service-owner, collection, and unlock health checks; prove it with `TestLinuxHealthMapping`, `TestLinuxCreateItemReplacesAtomically`, and the platform-gated `TestLinuxNativeRoundTrip`; commit as `feat(secretstore): add linux secret service provider`.
+- [x] 4.2 Add the Linux Secret Service adapter and non-interactive session D-Bus, service-owner, collection, and unlock health checks; prove it with `TestLinuxHealthMapping`, `TestLinuxCreateItemReplacesAtomically`, and the platform-gated `TestLinuxNativeRoundTrip`; commit as `feat(secretstore): add linux secret service provider`.
 
 ## 5. Resolution lifecycle
 

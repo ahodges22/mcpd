@@ -9,7 +9,10 @@ import (
 	"unicode/utf8"
 )
 
-const MaxValueBytes = 2048
+const (
+	MaxValueBytes     = 2048
+	nativeServiceName = "io.mcpd.secrets"
+)
 
 type Provider interface {
 	Get(context.Context, string) (Result, error)
@@ -20,6 +23,10 @@ type Provider interface {
 type NativeProvider interface {
 	Provider
 	Retry()
+}
+
+type nativeOperationRunner interface {
+	Run(context.Context, HelperRequest, string) (Result, error)
 }
 
 type Result struct {
