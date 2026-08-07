@@ -60,7 +60,7 @@ The CLI SHALL attempt the daemon local API first so a successful mutation and ta
 - **THEN** the CLI may use the selected provider directly after state-directory and identity validation, then makes one best-effort local notification
 
 ### Requirement: Offline access matches the daemon identity
-Before offline provider mutation, the CLI SHALL require its effective POSIX user or Windows SID to match the owner identity of an existing state directory. A newly created state directory SHALL establish and report the invoking identity as the expected daemon identity.
+Before offline provider mutation, the CLI SHALL require its effective user to match the owner identity of an existing state directory. A newly created state directory SHALL establish and report the invoking identity as the expected daemon identity.
 
 #### Scenario: Existing owner does not match
 - **WHEN** an offline CLI invocation uses an identity other than the validated state-directory owner
@@ -78,7 +78,7 @@ Offline native operations SHALL identify the current credential namespace and re
 - **THEN** the CLI names the credential identity and states that environment shadowing cannot be determined until daemon startup
 
 #### Scenario: Service account lacks session storage
-- **WHEN** a Windows service account or headless POSIX identity has no usable native credential session
+- **WHEN** a headless POSIX identity has no usable native credential session
 - **THEN** the CLI reports the limitation and points to explicit file-provider configuration without selecting it automatically
 
 ### Requirement: Environment shadowing is visible at mutation time

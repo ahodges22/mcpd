@@ -78,7 +78,7 @@ mcpd SHALL apply an aggregate deadline to startup secret resolution. A provider 
 mcpd SHALL process pending consumer groups serially in the background. Busy contention SHALL use a separate paced retry schedule and SHALL not become cached provider failure.
 
 #### Scenario: Provider recovers non-interactively
-- **WHEN** a Linux or Windows provider-health check later succeeds
+- **WHEN** a Linux provider-health check later succeeds
 - **THEN** mcpd requeues pending groups and connects each group after full resolution without a daemon restart
 
 #### Scenario: Provider is busy

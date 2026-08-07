@@ -13,7 +13,7 @@ environment-only installations must keep their current behavior unless the user 
 - Add an opt-in secret resolver for backend environment values, HTTP headers, and the embeddings
   API key. A present process environment variable, including a present empty value, continues to
   take precedence.
-- Add a native credential-store provider for macOS, Linux, and Windows. Native operations run
+- Add a native credential-store provider for macOS and Linux. Native operations run
   behind a bounded helper-process boundary so an operating-system credential prompt or backend
   hang cannot stop the daemon indefinitely.
 - Add an explicit managed-file provider for headless systems that cannot use a session credential
@@ -53,7 +53,7 @@ None. This repository does not yet contain archived base specifications.
 - State under the configured mcpd state directory gains provider locks, helper markers, and, only
   for the explicit file provider, a credential document protected by operating-system file
   permissions.
-- Native providers integrate with macOS Keychain, Linux Secret Service, and Windows Credential
-  Manager. Any third-party adapter must pass platform-specific adoption tests before use.
+- Native providers integrate with macOS Keychain and Linux Secret Service. Any third-party
+  adapter must pass platform-specific adoption tests before use.
 - The existing `mcpd-supervision` change remains separate. Grafana LiteLLM upstream host-policy
   work and client-specific `node_repl` behavior remain out of scope.

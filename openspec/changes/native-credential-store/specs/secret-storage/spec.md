@@ -1,6 +1,6 @@
 ## Purpose
 
-Defines secure, bounded, and cross-platform storage behavior for native user credential stores and the explicit managed-file alternative.
+Defines secure and bounded storage behavior on macOS and Linux for native user credential stores and the explicit managed-file alternative.
 
 ## ADDED Requirements
 
@@ -29,10 +29,6 @@ Both providers SHALL use a common state directory that is owned by the daemon id
 - **WHEN** the state directory or a relevant parent has group or other write access, or the directory is owned by another user
 - **THEN** mcpd disables provider access with a typed permission-validation condition before reading a provider lock or marker
 
-#### Scenario: Unsafe Windows state directory
-- **WHEN** the state directory DACL grants an unapproved principal access or cannot be verified
-- **THEN** mcpd fails provider access instead of relying on synthesized file mode bits
-
 ### Requirement: Native operations are isolated and bounded
 Each native get, set, delete, retry, and health operation SHALL run in a short-lived helper process with a caller deadline. Set values SHALL travel only through inherited pipes. Secret material SHALL not appear in arguments, environment variables, logs, diagnostics, or status data.
 
@@ -60,7 +56,7 @@ At most one native helper operation SHALL run across daemon and offline CLI proc
 - **THEN** the operation returns a typed contention error and starts no helper
 
 ### Requirement: Native helper recovery proves process identity
-mcpd SHALL record a restrictive, atomic, non-secret helper marker after process-tree isolation is confirmed and before it sends an operation request. Recovery SHALL signal only a helper whose executable, instance identifier, process start identity, and process group or Job Object match the marker.
+mcpd SHALL record a restrictive, atomic, non-secret helper marker after process-tree isolation is confirmed and before it sends an operation request. Recovery SHALL signal only a helper whose executable, instance identifier, process start identity, and process group match the marker.
 
 #### Scenario: Marker names an unrelated process
 - **WHEN** a stale marker names a live same-user process that fails helper identity proof
@@ -118,10 +114,6 @@ The file provider SHALL store one immutable snapshot in the validated state dire
 #### Scenario: Reader observes replacement
 - **WHEN** a POSIX reader opens the data file during replacement
 - **THEN** it reads one complete old or new snapshot
-
-#### Scenario: Windows destination is shared
-- **WHEN** a Windows reader or external handle prevents replacement
-- **THEN** the writer waits within its deadline or returns a typed retryable error without an ambiguous successful result
 
 ### Requirement: External file changes are detected safely
 mcpd SHALL watch the state directory rather than the replaceable data-file inode and SHALL use a periodic metadata check as fallback. It SHALL suppress duplicate reconnects for its own writes without persisting or logging a content digest.
