@@ -5,7 +5,7 @@
 
 ## 2. Secure state and managed-file provider
 
-- [ ] 2.1 Add common POSIX state-directory ownership and permission validation plus restrictive artifact creation; prove it with `TestValidateStateDirPOSIX`, `TestUnsafeParentFailsBeforeArtifactRead`, and `TestRestrictedTempPrecedesSecretWrite`; commit as `feat(secretstore): secure posix state`.
+- [x] 2.1 Add common POSIX state-directory ownership and permission validation plus restrictive artifact creation; prove it with `TestValidateStateDirPOSIX`, `TestUnsafeParentFailsBeforeArtifactRead`, and `TestRestrictedTempPrecedesSecretWrite`; commit as `feat(secretstore): secure posix state`.
 - [ ] 2.2 Add the POSIX managed-file snapshot, never-replaced sidecar lock, bounded non-blocking writers, lock-free readers, durable replacement, and corruption refusal; prove it with `TestFileStoreRoundTrip`, `TestFileStoreConcurrentWritersPreserveBothNames`, `TestFileStoreLockDeadline`, `TestFileStoreReaderSeesCompleteSnapshot`, and `TestFileStoreRejectsCorruptSnapshot`; commit as `feat(secretstore): add posix file provider`.
 - [ ] 2.3 Add Windows state-directory DACL validation, shared and exclusive `LockFileEx` access, first-write and replacement primitives, and sharing-violation deadline behavior; prove it with `TestValidateStateDirWindows`, `TestFileStoreWindowsReaderBlocksReplacement`, and `TestFileStoreWindowsSharingDeadline`, plus `GOOS=windows go test -c ./internal/secretstore`; commit as `feat(secretstore): add windows file provider`.
 

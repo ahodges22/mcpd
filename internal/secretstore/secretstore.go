@@ -25,10 +25,11 @@ type Result struct {
 type Operation string
 
 const (
-	OperationGet    Operation = "get"
-	OperationSet    Operation = "set"
-	OperationDelete Operation = "delete"
-	OperationHealth Operation = "health"
+	OperationGet      Operation = "get"
+	OperationSet      Operation = "set"
+	OperationDelete   Operation = "delete"
+	OperationHealth   Operation = "health"
+	OperationValidate Operation = "validate"
 )
 
 type Condition string
