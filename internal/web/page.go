@@ -15,6 +15,7 @@ import (
 
 	"github.com/ahodges22/mcpd/internal/backend"
 	"github.com/ahodges22/mcpd/internal/catalog"
+	"github.com/ahodges22/mcpd/internal/secretstore"
 )
 
 //go:embed templates
@@ -22,7 +23,33 @@ var templateFS embed.FS
 
 // pages are the only path a backend-derived string takes into markup, and
 // html/template's contextual escaping is what makes that safe.
-var pages = template.Must(template.ParseFS(templateFS, "templates/*.html"))
+var pages = template.Must(template.New("pages").Funcs(template.FuncMap{
+	"secretGuidance": secretGuidance,
+	"secretShadowed": secretShadowed,
+}).ParseFS(templateFS, "templates/*.html"))
+
+func secretGuidance(condition secretstore.Condition) string {
+	switch condition {
+	case secretstore.ConditionInteraction, secretstore.ConditionLocked, secretstore.ConditionUnavailable:
+		return "Use the intended unlocked login session, then retry. If this identity has no native credential session, explicitly configure the file provider."
+	case secretstore.ConditionBusy, secretstore.ConditionLockContended:
+		return "Another credential operation is active. Wait briefly, then refresh status."
+	case secretstore.ConditionTimedOut, secretstore.ConditionWedged, secretstore.ConditionRetryable:
+		return "The credential provider did not complete normally. Retry provider access, then refresh status."
+	case secretstore.ConditionPermission:
+		return "Repair the daemon state owner and permissions before retrying provider access."
+	case secretstore.ConditionCorrupt:
+		return "Preserve the corrupt managed file for diagnosis, move it aside, then reinitialize the configured provider."
+	case secretstore.ConditionDenied:
+		return "Credential access was denied in this login session. Correct the provider permission, then retry."
+	default:
+		return ""
+	}
+}
+
+func secretShadowed(source secretstore.EffectiveSource) bool {
+	return source == secretstore.EffectiveSourceEnvironment
+}
 
 // namedShare is the share of the catalog a bus segment must hold before it carries its
 // own name. Below it the label would not fit, and clipping a name reads as corruption.
@@ -71,7 +98,9 @@ type statusView struct {
 	// table so a needed action is never something to go hunting for.
 	Attention []backendStatus `json:"-"`
 	// Remote is the LAN relogin listener's state, for the panel only.
-	Remote remoteView `json:"-"`
+	Remote           remoteView                 `json:"-"`
+	SecretsAvailable bool                       `json:"-"`
+	Secrets          []secretstore.SecretStatus `json:"-"`
 }
 
 // remoteView is what the panel needs to render the remote-relogin section:
@@ -332,6 +361,10 @@ func classify(h backend.Health) (label, tone string) {
 
 func (s *Server) statusPage(w http.ResponseWriter, r *http.Request) {
 	view := s.snapshot()
+	if s.secrets != nil {
+		view.SecretsAvailable = true
+		view.Secrets = s.secrets.Status(r.Context())
+	}
 	// The Host header, already checked against the loopback rule by the guard this
 	// handler sits behind, so the page can name the endpoint without being told it.
 	view.Addr = r.Host

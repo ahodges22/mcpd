@@ -50,6 +50,25 @@ func TestNoMarkupInsertionAPIInTheAssets(t *testing.T) {
 	}
 }
 
+func TestSecretFormUsesWriteOnlyPOST(t *testing.T) {
+	app, err := fs.ReadFile(assetFS, "assets/app.js")
+	if err != nil {
+		t.Fatalf("read app.js: %v", err)
+	}
+	body := string(app)
+	for _, want := range []string{
+		`document.querySelectorAll("form.secret-set-form")`,
+		`form.addEventListener("submit"`,
+		`event.preventDefault();`,
+		`input.value = "";`,
+		`post("/api/secrets/" + encodeURIComponent(form.dataset.secretName), { value: value })`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("app.js does not implement the write-only secret form behavior %q", want)
+		}
+	}
+}
+
 func TestEveryPageLinksTheFavicon(t *testing.T) {
 	err := fs.WalkDir(templateFS, "templates", func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {

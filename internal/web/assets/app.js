@@ -171,6 +171,29 @@ for (const btn of document.querySelectorAll("button.act[data-post]")) {
   });
 }
 
+for (const form of document.querySelectorAll("form.secret-set-form")) {
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const input = form.querySelector("input.secret-value");
+    const btn = form.querySelector("button.secret-set");
+    const value = input.value;
+    input.value = "";
+    btn.disabled = true;
+    say("");
+    const res = await post("/api/secrets/" + encodeURIComponent(form.dataset.secretName), { value: value });
+    btn.disabled = false;
+    if (!res.ok) {
+      say(reason(res));
+      return;
+    }
+    if (res.body && res.body.warning) {
+      say(res.body.warning);
+      return;
+    }
+    window.location.reload();
+  });
+}
+
 // Copy buttons for the pairing URLs. The panel is loopback, a secure context,
 // so the clipboard API is available; the fallback selects the row's text so a
 // manual copy still works if a browser refuses.

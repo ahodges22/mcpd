@@ -509,6 +509,7 @@ button:disabled {
 
 input[type="text"],
 input[type="url"],
+input[type="password"],
 input:not([type]) {
   background: var(--vault);
   border: 1px solid var(--etch);
@@ -622,6 +623,87 @@ code {
   border-radius: 2px;
   font-size: 11px;
   padding: 0.1rem 0.3rem;
+}
+
+/* Secrets ------------------------------------------------------------------- */
+
+.secret-head-actions,
+.secret-set-form {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.secret-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  list-style: none;
+  margin: 1rem 0 0;
+  padding: 0;
+}
+
+.secret-row {
+  align-items: center;
+  background: var(--rail);
+  display: grid;
+  gap: 0.45rem 0.75rem;
+  grid-template-columns: minmax(8rem, 1fr) auto auto minmax(12rem, 1fr) auto;
+  padding: 0.75rem 1rem;
+}
+
+.secret-name {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.secret-source,
+.secret-condition,
+.secret-consumers {
+  color: var(--dim);
+  font-size: 11px;
+}
+
+.secret-warning,
+.secret-guidance,
+.secret-consumers {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+
+.secret-warning {
+  color: var(--wait);
+}
+
+.secret-guidance {
+  color: var(--dim);
+}
+
+.secret-set-form {
+  min-width: 0;
+}
+
+.secret-value {
+  min-width: 8rem;
+}
+
+@media (max-width: 60rem) {
+  .secret-row {
+    grid-template-columns: 1fr auto;
+  }
+
+  .secret-source,
+  .secret-condition {
+    grid-column: 1;
+  }
+
+  .secret-set-form {
+    grid-column: 1 / -1;
+  }
+
+  .secret-remove {
+    grid-column: 2;
+    grid-row: 1;
+  }
 }
 
 /* Inspector ----------------------------------------------------------------- */
@@ -915,6 +997,16 @@ textarea:focus {
 }
 
 @media (max-width: 34rem) {
+  .secret-head-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .secret-set-form {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
   .paste {
     flex-direction: column;
   }

@@ -141,6 +141,40 @@
   </ul>
 </section>
 
+{{if .SecretsAvailable}}
+<section class="block" id="secrets">
+  <div class="block-head">
+    <p class="eyebrow">Secrets <span class="tally">{{len .Secrets}}</span></p>
+    <span class="secret-head-actions">
+      <button class="act quiet" data-post="/api/secrets/-/status/refresh" data-reload="true">Refresh status</button>
+      <button class="act quiet" data-post="/api/secrets/-/retry" data-reload="true">Retry provider</button>
+    </span>
+  </div>
+  <p class="field-help">Stored values are write-only. Status comes only from names referenced by the loaded configuration.</p>
+  {{if .Secrets}}
+  <ul class="secret-rows">
+    {{- range .Secrets}}
+    <li class="secret-row" data-secret-name="{{.Name}}">
+      <span class="secret-name mono">{{.Name}}</span>
+      <span class="secret-source mono">{{.Source}}</span>
+      {{if .Condition}}<span class="secret-condition mono" data-condition="{{.Condition}}">{{.Condition}}</span>{{end}}
+      {{if secretShadowed .Source}}<p class="secret-warning">The daemon environment continues to win. Remove the variable from the launch environment and restart mcpd to use the stored value.</p>{{end}}
+      {{with secretGuidance .Condition}}<p class="secret-guidance">{{.}}</p>{{end}}
+      {{if .Consumers}}<p class="secret-consumers">Used by {{range $i, $consumer := .Consumers}}{{if $i}}, {{end}}<span class="mono">{{$consumer.Kind}}/{{$consumer.Name}}</span>{{end}}</p>{{end}}
+      <form class="secret-set-form" data-secret-name="{{.Name}}">
+        <input class="mono secret-value" type="password" autocomplete="new-password" aria-label="New value for {{.Name}}">
+        <button class="act secret-set" type="submit">Set</button>
+      </form>
+      <button class="act quiet danger secret-remove" type="button" data-post="/api/secrets/{{.Name}}/remove" data-confirm="remove {{.Name}} from the configured secret provider" data-reload="true">Remove</button>
+    </li>
+    {{- end}}
+  </ul>
+  {{else}}
+  <p class="allclear">No secret references are configured.</p>
+  {{end}}
+</section>
+{{end}}
+
 {{if .Remote.Available}}
 <section class="block">
   <div class="remote-head">

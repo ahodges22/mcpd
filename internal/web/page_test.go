@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,10 +15,97 @@ import (
 
 	"github.com/ahodges22/mcpd/internal/backend"
 	"github.com/ahodges22/mcpd/internal/catalog"
+	"github.com/ahodges22/mcpd/internal/config"
+	"github.com/ahodges22/mcpd/internal/secretstore"
+	"github.com/ahodges22/mcpd/internal/secretstore/secretstoretest"
 	"github.com/ahodges22/mcpd/internal/testfake"
 )
 
 const scriptPayload = `<script>alert("pwned")</script>`
+
+func TestSecretPanelRendersNoStoredValues(t *testing.T) {
+	h := newHarness(t)
+	provider := secretstoretest.NewMemory()
+	const stored = "must-never-reach-the-page"
+	if err := provider.Set(t.Context(), "TOKEN", stored); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	h.server.secrets = secretstore.NewResolutionCoordinator(
+		&config.Config{
+			Backends: map[string]config.Backend{
+				"alpha": {HTTPURL: "https://alpha.example/mcp", Headers: map[string]string{"Authorization": "Bearer ${TOKEN}"}},
+			},
+			Secrets: &config.Secrets{Provider: config.SecretProviderFile},
+		},
+		provider,
+		nil,
+		secretstore.ResolutionTuning{},
+		nil,
+	)
+
+	res := h.get(t, "/")
+	if res.status != http.StatusOK {
+		t.Fatalf("status page = %d (%s), want %d", res.status, res.body, http.StatusOK)
+	}
+	if !strings.Contains(res.body, "TOKEN") || !strings.Contains(res.body, `type="password"`) || !strings.Contains(res.body, "provider-present") {
+		t.Fatalf("secret panel omitted redacted status or write-only input: %s", res.body)
+	}
+	if strings.Contains(res.body, stored) {
+		t.Fatalf("secret panel disclosed the stored value: %s", res.body)
+	}
+}
+
+func TestSecretPanelEscapesNamesAndErrors(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	render(recorder, "status.html", statusView{
+		SecretsAvailable: true,
+		Secrets: []secretstore.SecretStatus{{
+			Name:      scriptPayload,
+			Source:    secretstore.EffectiveSourceCondition,
+			Condition: secretstore.Condition(scriptPayload),
+		}},
+	})
+	body := recorder.Body.String()
+	if strings.Contains(body, scriptPayload) {
+		t.Fatalf("secret panel rendered active markup: %s", body)
+	}
+	if !strings.Contains(body, "&lt;script&gt;") || !strings.Contains(body, `data-condition=`) {
+		t.Fatalf("secret name or typed condition was not escaped into its intended context: %s", body)
+	}
+}
+
+func TestSecretPanelShowsProviderGuidanceAndShadowWarnings(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	render(recorder, "status.html", statusView{
+		SecretsAvailable: true,
+		Secrets: []secretstore.SecretStatus{
+			{
+				Name:      "SHADOWED_TOKEN",
+				Source:    secretstore.EffectiveSourceEnvironment,
+				Consumers: []secretstore.ConsumerIdentity{{Kind: config.ConsumerBackend, Name: "alpha"}},
+			},
+			{
+				Name:      "LOCKED_TOKEN",
+				Source:    secretstore.EffectiveSourceCondition,
+				Condition: secretstore.ConditionInteraction,
+			},
+		},
+	})
+	body := recorder.Body.String()
+	for _, want := range []string{
+		"environment continues to win",
+		"unlocked login session",
+		"file provider",
+		`data-post="/api/secrets/-/retry"`,
+		`data-post="/api/secrets/-/status/refresh"`,
+		`data-post="/api/secrets/SHADOWED_TOKEN/remove"`,
+		"backend/alpha",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("secret panel omitted %q: %s", want, body)
+		}
+	}
+}
 
 // TestAMaliciousToolResultIsCarriedAsEscapedJSON pins the transport half of "a
 // malicious tool result is inert" and nothing more: the payload leaves the daemon as
