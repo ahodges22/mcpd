@@ -4,7 +4,7 @@ package secretstore
 
 import (
 	"context"
-	"encoding/hex"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -78,6 +78,10 @@ type recordingDarwinRunner struct {
 
 func (r *recordingDarwinRunner) Run(_ context.Context, command string) darwinSecurityResult {
 	r.commands = append(r.commands, command)
+	return r.next()
+}
+
+func (r *recordingDarwinRunner) next() darwinSecurityResult {
 	if len(r.results) == 0 {
 		return darwinSecurityResult{}
 	}
@@ -104,7 +108,8 @@ func TestDarwinAdapterUsesStdinSafeAtomicCommands(t *testing.T) {
 		t.Fatalf("preflight command = %q", runner.commands[0])
 	}
 	setCommand := runner.commands[1]
-	if !strings.Contains(setCommand, "add-generic-password -a API_TOKEN -s io.mcpd.secrets -U -X ") {
+	stored := darwinValueEnvelope + base64.RawURLEncoding.EncodeToString([]byte(value))
+	if setCommand != "add-generic-password -a API_TOKEN -s io.mcpd.secrets -U -w "+stored+"\n" {
 		t.Fatalf("set command = %q", setCommand)
 	}
 	if strings.Contains(setCommand, value) || strings.Contains(setCommand, "delete-generic-password") {
@@ -112,6 +117,34 @@ func TestDarwinAdapterUsesStdinSafeAtomicCommands(t *testing.T) {
 	}
 }
 
+func TestDarwinAdapterRoundTripsHexLikeAndUnicodeValues(t *testing.T) {
+	for _, value := range []string{"c3a9", "  café 雪  ", strings.Repeat("x", MaxValueBytes)} {
+		runner := &recordingDarwinRunner{results: []darwinSecurityResult{
+			{stdout: []byte("\"/Users/test/Library/Keychains/login.keychain-db\"\n")},
+			{},
+		}}
+		adapter := darwinAdapter{runner: runner}
+		if _, err := adapter.Execute(context.Background(), HelperRequest{Operation: OperationSet, Name: "API_TOKEN"}, value); err != nil {
+			t.Fatalf("Execute set %q: %v", value, err)
+		}
+		fields := strings.Fields(runner.commands[1])
+		stored := darwinValueEnvelope + base64.RawURLEncoding.EncodeToString([]byte(value))
+		if len(fields) == 0 || fields[len(fields)-1] != stored {
+			t.Fatalf("password input does not preserve %q", value)
+		}
+		runner.results = append(runner.results,
+			darwinSecurityResult{stdout: []byte("\"/Users/test/Library/Keychains/login.keychain-db\"\n")},
+			darwinSecurityResult{stdout: append([]byte(stored), '\n')},
+		)
+		got, err := adapter.Execute(context.Background(), HelperRequest{Operation: OperationGet, Name: "API_TOKEN"}, "")
+		if err != nil {
+			t.Fatalf("Execute get %q: %v", value, err)
+		}
+		if !got.Present || got.Value != value {
+			t.Fatalf("Get = %#v, want %q", got, value)
+		}
+	}
+}
 func TestDarwinAdapterGetAndDeleteTreatOnlyItemNotFoundAsCleanMiss(t *testing.T) {
 	missing := darwinSecurityResult{stderr: []byte("find-generic-password: returned -25300"), exitCode: 44, err: errors.New("exit status 44")}
 	runner := &recordingDarwinRunner{results: []darwinSecurityResult{
@@ -371,16 +404,16 @@ func TestDarwinNativeRoundTrip(t *testing.T) {
 		_ = store.Delete(cleanupCtx, name)
 	})
 	values := []string{"quotes ' \" slash \\ dollar $ tick \x60", "  café 雪  ", strings.Repeat("x", MaxValueBytes)}
-	for _, want := range values {
+	for i, want := range values {
 		if err := store.Set(ctx, name, want); err != nil {
-			t.Fatalf("Set: %v", err)
+			t.Fatalf("Set value %d: %v", i, err)
 		}
 		got, err := store.Get(ctx, name)
 		if err != nil {
-			t.Fatalf("Get: %v", err)
+			t.Fatalf("Get value %d: %v", i, err)
 		}
 		if !got.Present || got.Value != want {
-			t.Fatalf("Get = %#v, want %q", got, want)
+			t.Fatalf("Get present = %t, bytes = %d; want present with %d bytes", got.Present, len(got.Value), len(want))
 		}
 	}
 }
@@ -460,7 +493,12 @@ func TestDarwinFakeSecurity(t *testing.T) {
 		os.Exit(2)
 	}
 	command := append(first, remainder...)
-	if err := os.WriteFile(os.Getenv("MCPD_TEST_SECURITY_RECEIVED"), command, 0o600); err != nil {
+	isSet := strings.HasPrefix(string(command), "add-generic-password ")
+	recorded := command
+	if isSet {
+		recorded = []byte("set input received")
+	}
+	if err := os.WriteFile(os.Getenv("MCPD_TEST_SECURITY_RECEIVED"), recorded, 0o600); err != nil {
 		os.Exit(2)
 	}
 	if os.Getenv("MCPD_TEST_SECURITY_STOP_HELPER") == "1" {
@@ -479,10 +517,16 @@ func TestDarwinFakeSecurity(t *testing.T) {
 			time.Sleep(time.Hour)
 		}
 	}
-	if os.Getenv("MCPD_TEST_SECURITY_INSPECT_TREE") == "1" && strings.HasPrefix(string(command), "add-generic-password ") {
+	if os.Getenv("MCPD_TEST_SECURITY_INSPECT_TREE") == "1" && isSet {
 		fields := strings.Fields(string(command))
-		encoded := fields[len(fields)-1]
-		secret, err := hex.DecodeString(encoded)
+		if len(fields) == 0 {
+			os.Exit(2)
+		}
+		encoded, ok := strings.CutPrefix(fields[len(fields)-1], darwinValueEnvelope)
+		if !ok {
+			os.Exit(2)
+		}
+		secret, err := base64.RawURLEncoding.DecodeString(encoded)
 		if err != nil {
 			os.Exit(2)
 		}

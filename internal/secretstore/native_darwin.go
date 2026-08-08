@@ -5,7 +5,7 @@ package secretstore
 import (
 	"bytes"
 	"context"
-	"encoding/hex"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -22,6 +22,8 @@ import (
 )
 
 var darwinReturnedStatus = regexp.MustCompile("returned (-?[0-9]+)")
+
+const darwinValueEnvelope = "mcpd:v1:"
 
 type darwinSecurityResult struct {
 	stdout   []byte
@@ -194,7 +196,8 @@ func (a *darwinAdapter) Execute(ctx context.Context, request HelperRequest, setV
 	case OperationGet:
 		command = fmt.Sprintf("find-generic-password -a %s -s %s -w\n", request.Name, nativeServiceName)
 	case OperationSet:
-		command = fmt.Sprintf("add-generic-password -a %s -s %s -U -X %s\n", request.Name, nativeServiceName, hex.EncodeToString([]byte(setValue)))
+		stored := darwinValueEnvelope + base64.RawURLEncoding.EncodeToString([]byte(setValue))
+		command = fmt.Sprintf("add-generic-password -a %s -s %s -U -w %s\n", request.Name, nativeServiceName, stored)
 	case OperationDelete:
 		command = fmt.Sprintf("delete-generic-password -a %s -s %s\n", request.Name, nativeServiceName)
 	default:
@@ -224,6 +227,19 @@ func (a *darwinAdapter) Execute(ctx context.Context, request HelperRequest, setV
 	}
 	value := bytes.TrimSuffix(result.stdout, []byte("\n"))
 	value = bytes.TrimSuffix(value, []byte("\r"))
+	if encoded, ok := bytes.CutPrefix(value, []byte(darwinValueEnvelope)); ok {
+		decoded, err := base64.RawURLEncoding.DecodeString(string(encoded))
+		if err != nil {
+			return Result{}, &Error{
+				Operation: OperationGet,
+				Provider:  "native",
+				Name:      request.Name,
+				Condition: ConditionInvalidValue,
+				Cause:     err,
+			}
+		}
+		value = decoded
+	}
 	if err := ValidateValue(string(value)); err != nil {
 		return Result{}, &Error{
 			Operation: OperationGet,
