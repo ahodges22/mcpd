@@ -22,6 +22,7 @@
 - Serves the full tool catalog to clients that have native tool search.
 - Serves a three-tool search facade to clients that would otherwise load every schema.
 - Keeps OAuth grants, health state, and the tool catalog in one local daemon.
+- Can resolve allowlisted credential references from the macOS Keychain, Linux Secret Service, or an explicit managed file.
 - Optionally serves a token-paired, relogin-only page to the local network, so an expired OAuth login can be fixed from another device.
 - Provides a status panel, backend controls, and a searchable tool inspector.
 - Rewires supported clients with a dry-run-first, reversible command.
@@ -111,6 +112,12 @@ The daemon reloads declarations through the panel. Panel add and remove actions 
 
 Each backend also accepts an optional `timeout` (whole seconds) that bounds a single `tools/call` to that backend.
 
+## Credential providers (optional)
+
+Existing configurations stay environment-only. To use stored credentials, select a provider explicitly and set each referenced name through the hidden CLI prompt or local panel. Native storage is recommended for an interactive user session. File storage is available for headless identities that do not have a usable native credential session.
+
+See the [credential provider guide](docs/credential-providers.md) for configuration, input rules, environment precedence, native-session limitations, file permissions, recovery, migration, and rollback.
+
 ## Semantic search (optional)
 
 Without extra configuration, `search_tools` ranks lexically. Point mcpd at an OpenAI-compatible embeddings endpoint to add hybrid semantic ranking, query expansion, and low-confidence abstention:
@@ -196,7 +203,7 @@ The implementation design and acceptance scenarios are in [`openspec/changes/mcp
 - mcpd listens on loopback and has no user authentication. Any process running as the same user can call every connected tool.
 - A stdio backend runs as the same user. Its declared environment is least privilege, but the process is not sandboxed.
 - Host and browser-origin checks protect the web and MCP routes from cross-site requests and DNS rebinding.
-- OAuth grants and runtime state live under `~/.local/state/mcpd/`. Protect that directory as user-private data.
+- OAuth grants, managed credentials, and runtime state live under `~/.local/state/mcpd/`. Protect that directory as user-private data.
 - State-changing web actions use guarded JSON `POST` requests. Backend-provided text is escaped before it reaches the page.
 
 Do not expose the main listener to a network interface. mcpd is a local trust-boundary tool, not a multi-user MCP gateway. The optional remote-relogin listener is the one deliberate exception: it is off by default, token-paired, restricted to private peers, judged through `X-Forwarded-For` only for proxies listed in `remote.trusted_proxies`, and serves only the relogin flow.

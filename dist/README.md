@@ -4,10 +4,10 @@ Four clients are pointed at `127.0.0.1:7420`. If the daemon is not running, ever
 has no MCP servers at all, and the symptom is silence rather than an error. Supervise it.
 
 Both platforms start the daemon **with the login session**, not at boot. This is deliberate.
-The daemon holds the credentials its declarations reference through `${VAR}`, and those exist
-only once a login session has established them. A boot-time start would come up with no tokens
-and every backend behind a bearer header would fail its handshake while the daemon itself
-looked healthy. Nothing needs a local MCP proxy when nobody is logged in.
+Environment credentials and native credential stores depend on that session. A boot-time start
+can have the correct UID but no imported environment, macOS Keychain authorization, or Linux
+session D-Bus. See the [credential provider guide](../docs/credential-providers.md) for the
+explicit managed-file option for headless identities.
 
 ## Linux, systemd user unit
 
@@ -24,8 +24,10 @@ the daemon would start at boot with no credentials. Lingering is often already o
 unrelated service, and telling someone to turn it off to fix this daemon is the wrong trade.
 Binding to the session sidesteps it entirely.
 
-On a headless machine there is no graphical session, so use `WantedBy=default.target` there
-and either leave lingering off or accept one `systemctl --user restart mcpd` after boot.
+On a headless machine there is no graphical session, so use `WantedBy=default.target` there.
+Use environment delivery that is available to the user manager, or explicitly configure the
+file credential provider. Native Secret Service access requires a usable session D-Bus and an
+unlocked default collection.
 
 `PassEnvironment` carries variables from the user manager's environment. Edit the unit before
 you install it and name every variable that a declaration references. A variable that is not
