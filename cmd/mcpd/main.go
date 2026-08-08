@@ -77,6 +77,9 @@ func run() error {
 	if len(os.Args) > 1 && os.Args[1] == "install" {
 		return runInstall(os.Args[2:])
 	}
+	if len(os.Args) > 1 && os.Args[1] == "secret" {
+		return runSecret(os.Args[2:], defaultSecretCommandDeps())
+	}
 	var (
 		addr        = flag.String("addr", "127.0.0.1:7420", "loopback address to serve on")
 		cfgPath     = flag.String("config", defaultPath("XDG_CONFIG_HOME", ".config", "config.json"), "declaration file")
@@ -136,6 +139,7 @@ type daemon struct {
 	index        daemonSearchIndex
 	liveIndex    *searchindex.Live
 	secrets      *secretstore.ResolutionCoordinator
+	secretAuth   *secretstore.ControlAuthenticator
 	secretCancel context.CancelFunc
 	remote       *web.Remote
 	handler      http.Handler
@@ -166,6 +170,12 @@ func (d *daemon) wire(cfg *config.Config, addr string) error {
 	var resolveSecrets func(context.Context, config.SecretConsumer) (map[string]string, error)
 	var retrySecrets func()
 	if cfg.Secrets != nil {
+		authenticator, err := secretstore.EnsureControlAuthenticator(d.state)
+		if err != nil {
+			slog.Warn("initialize secret control key", "error", err)
+		} else {
+			d.secretAuth = authenticator
+		}
 		provider := configuredSecretProvider(d.state, cfg.Secrets)
 		if cfg.Embeddings.Enabled() {
 			d.liveIndex = searchindex.NewLive(d.state, cfg.Embeddings, cfg.Ranking)
@@ -320,23 +330,7 @@ func (d *daemon) wire(cfg *config.Config, addr string) error {
 }
 
 func configuredSecretProvider(state string, declaration *config.Secrets) secretstore.Provider {
-	var (
-		provider secretstore.Provider
-		err      error
-	)
-	switch declaration.Provider {
-	case config.SecretProviderFile:
-		provider, err = secretstore.NewFileStore(state)
-	case config.SecretProviderNative:
-		executable, executableErr := os.Executable()
-		if executableErr != nil {
-			err = executableErr
-		} else {
-			provider, err = secretstore.NewNativeStore(state, executable)
-		}
-	default:
-		err = fmt.Errorf("unsupported secret provider %q", declaration.Provider)
-	}
+	provider, err := openSecretProvider(state, declaration)
 	if err != nil {
 		slog.Warn("initialize secret provider", "provider", declaration.Provider, "error", err)
 		return secretstore.NewFailedProvider(err)

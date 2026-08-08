@@ -67,6 +67,43 @@ func wireDaemon(t *testing.T, tools ...*mcp.Tool) (*daemon, *httptest.Server) {
 	return d, ts
 }
 
+func TestWireDegradesSecretControlAuthenticatorFailure(t *testing.T) {
+	dir := t.TempDir()
+	state := filepath.Join(dir, "state")
+	if err := os.Mkdir(state, 0o700); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+	if err := os.Symlink(filepath.Join(dir, "missing-control-key"), filepath.Join(state, secretstore.ControlKeyFile)); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+	cfgPath := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(cfgPath, []byte(`{"backends":{},"secrets":{"provider":"file"}}`), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	writer, cfg, err := config.NewWriter(cfgPath)
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	overrides, err := backend.LoadOverrides(filepath.Join(state, "overrides.json"), writer)
+	if err != nil {
+		t.Fatalf("LoadOverrides: %v", err)
+	}
+
+	d := &daemon{state: state, writer: writer, overrides: overrides}
+	if err := d.wire(cfg, "127.0.0.1:0"); err != nil {
+		t.Fatalf("wire: %v", err)
+	}
+	t.Cleanup(func() {
+		if d.secretCancel != nil {
+			d.secretCancel()
+		}
+		d.reg.Shutdown()
+	})
+	if d.secretAuth != nil {
+		t.Fatal("secret control authenticator initialized from an unsafe artifact")
+	}
+}
+
 func rpc(t *testing.T, ts *httptest.Server, path, method string) string {
 	t.Helper()
 	body := strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"` + method + `","params":{}}`)
