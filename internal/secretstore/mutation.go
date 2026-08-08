@@ -44,18 +44,35 @@ func (c *ResolutionCoordinator) Delete(ctx context.Context, name string) ([]Cons
 func (c *ResolutionCoordinator) refreshAfterMutation(ctx context.Context, name string) []ConsumerIdentity {
 	c.InvalidatePresence(name)
 	c.noteSuccess()
-	return c.refreshConsumers(ctx, name)
+	return c.refreshConsumers(ctx, []string{name})
 }
 
 func (c *ResolutionCoordinator) RefreshConsumers(ctx context.Context, name string) []ConsumerIdentity {
 	c.mutationMu.Lock()
 	defer c.mutationMu.Unlock()
 	c.InvalidatePresence(name)
-	return c.refreshConsumers(ctx, name)
+	return c.refreshConsumers(ctx, []string{name})
 }
 
-func (c *ResolutionCoordinator) refreshConsumers(ctx context.Context, name string) []ConsumerIdentity {
-	groups, dependents := c.dependentGroups(name)
+func (c *ResolutionCoordinator) refreshExternalChanges(ctx context.Context, names []string) {
+	c.mutationMu.Lock()
+	defer c.mutationMu.Unlock()
+	providerNames := make([]string, 0, len(names))
+	for _, name := range names {
+		c.InvalidatePresence(name)
+		if _, shadowed := c.lookup(name); !shadowed {
+			providerNames = append(providerNames, name)
+		}
+	}
+	if len(providerNames) == 0 {
+		return
+	}
+	c.noteSuccess()
+	c.refreshConsumers(ctx, providerNames)
+}
+
+func (c *ResolutionCoordinator) refreshConsumers(ctx context.Context, names []string) []ConsumerIdentity {
+	groups, dependents := c.dependentGroups(names)
 	for _, group := range groups {
 		if c.mutationHooks.Reset != nil && !c.mutationHooks.Reset(group) {
 			continue
@@ -83,16 +100,25 @@ func (c *ResolutionCoordinator) Dependents(name string) []ConsumerIdentity {
 	return append([]ConsumerIdentity(nil), c.references[name]...)
 }
 
-func (c *ResolutionCoordinator) dependentGroups(name string) ([]config.SecretConsumer, []ConsumerIdentity) {
+func (c *ResolutionCoordinator) dependentGroups(names []string) ([]config.SecretConsumer, []ConsumerIdentity) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	groups := make([]config.SecretConsumer, 0, len(c.references[name]))
+	selected := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		selected[name] = struct{}{}
+	}
+	var groups []config.SecretConsumer
+	var dependents []ConsumerIdentity
 	for _, group := range c.groups {
-		if slices.Contains(group.References, name) {
-			groups = append(groups, cloneConsumer(group))
+		for _, name := range group.References {
+			if _, ok := selected[name]; ok {
+				groups = append(groups, cloneConsumer(group))
+				dependents = append(dependents, ConsumerIdentity{Kind: group.Kind, Name: group.Name})
+				break
+			}
 		}
 	}
-	return groups, append([]ConsumerIdentity(nil), c.references[name]...)
+	return groups, dependents
 }
 
 func (c *ResolutionCoordinator) UpdateBackend(name string, spec *config.Backend) {

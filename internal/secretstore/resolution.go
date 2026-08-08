@@ -18,17 +18,21 @@ const (
 	defaultFailureBackoff          = time.Second
 	defaultFailureBackoffMax       = 5 * time.Minute
 	defaultPresenceTTL             = 5 * time.Minute
+	defaultFileWatchDebounce       = 100 * time.Millisecond
+	defaultFileWatchPollInterval   = 30 * time.Second
 )
 
 type ResolutionTuning struct {
-	StartupBudget     time.Duration
-	CallTimeout       time.Duration
-	BusyBackoffBase   time.Duration
-	BusyBackoffMax    time.Duration
-	FailureBackoff    time.Duration
-	FailureBackoffMax time.Duration
-	PresenceTTL       time.Duration
-	StatusBudget      time.Duration
+	StartupBudget         time.Duration
+	CallTimeout           time.Duration
+	BusyBackoffBase       time.Duration
+	BusyBackoffMax        time.Duration
+	FailureBackoff        time.Duration
+	FailureBackoffMax     time.Duration
+	PresenceTTL           time.Duration
+	StatusBudget          time.Duration
+	FileWatchDebounce     time.Duration
+	FileWatchPollInterval time.Duration
 }
 
 type ResolvedConsumer struct {
@@ -121,6 +125,12 @@ func NewResolutionCoordinator(
 	if tuning.StatusBudget <= 0 {
 		tuning.StatusBudget = defaultStatusBudget
 	}
+	if tuning.FileWatchDebounce <= 0 {
+		tuning.FileWatchDebounce = defaultFileWatchDebounce
+	}
+	if tuning.FileWatchPollInterval <= 0 {
+		tuning.FileWatchPollInterval = defaultFileWatchPollInterval
+	}
 	var groups []config.SecretConsumer
 	if cfg != nil {
 		groups = cfg.SecretConsumers()
@@ -181,6 +191,9 @@ func (c *ResolutionCoordinator) Start(ctx context.Context) {
 			c.deliver(group, values)
 		}
 		go c.run(ctx)
+		if store, ok := c.provider.(*FileStore); ok {
+			store.startWatching(ctx, c.tuning.FileWatchDebounce, c.tuning.FileWatchPollInterval, c.refreshExternalChanges)
+		}
 	})
 }
 

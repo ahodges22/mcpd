@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 
@@ -24,7 +25,10 @@ const (
 )
 
 type FileStore struct {
-	dir string
+	dir                string
+	observeMu          sync.Mutex
+	observed           fileObservation
+	disableWatchEvents bool
 }
 
 func NewFileStore(stateDir string) (*FileStore, error) {
@@ -33,9 +37,12 @@ func NewFileStore(stateDir string) (*FileStore, error) {
 		return nil, err
 	}
 	store := &FileStore{dir: dir}
-	if _, err := store.readSnapshot(OperationGet, ""); err != nil {
+	values, data, metadata, err := store.loadSnapshot(OperationGet, "")
+	if err != nil {
 		return nil, err
 	}
+	store.observed = observeFileSnapshot(data, values, metadata)
+	clear(values)
 	lock, err := store.openLock()
 	if err != nil {
 		return nil, err
@@ -170,32 +177,41 @@ func (s *FileStore) openLock() (*os.File, error) {
 }
 
 func (s *FileStore) readSnapshot(operation Operation, name string) (map[string]string, error) {
+	values, _, _, err := s.loadSnapshot(operation, name)
+	return values, err
+}
+
+func (s *FileStore) loadSnapshot(operation Operation, name string) (map[string]string, []byte, fileMetadata, error) {
 	path := filepath.Join(s.dir, fileStoreDataName)
 	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0)
 	if errors.Is(err, unix.ENOENT) {
-		return make(map[string]string), nil
+		return make(map[string]string), nil, fileMetadata{}, nil
 	}
 	if err != nil {
 		condition := ConditionUnexpected
 		if errors.Is(err, unix.ELOOP) || errors.Is(err, unix.EACCES) {
 			condition = ConditionPermission
 		}
-		return nil, fileStoreError(operation, name, condition, err)
+		return nil, nil, fileMetadata{}, fileStoreError(operation, name, condition, err)
 	}
 	file := os.NewFile(uintptr(fd), path)
 	defer file.Close()
 	if err := validateFileArtifact(fileStoreDataName, file); err != nil {
-		return nil, err
+		return nil, nil, fileMetadata{}, err
+	}
+	info, err := file.Stat()
+	if err != nil {
+		return nil, nil, fileMetadata{}, fileStoreError(operation, name, ConditionUnexpected, err)
 	}
 	data, err := io.ReadAll(file)
 	if err != nil {
-		return nil, fileStoreError(operation, name, ConditionUnexpected, err)
+		return nil, nil, fileMetadata{}, fileStoreError(operation, name, ConditionUnexpected, err)
 	}
 	values, err := decodeSnapshot(data)
 	if err != nil {
-		return nil, fileStoreError(operation, name, ConditionCorrupt, err)
+		return nil, nil, fileMetadata{}, fileStoreError(operation, name, ConditionCorrupt, err)
 	}
-	return values, nil
+	return values, data, metadataFromFileInfo(info), nil
 }
 
 func decodeSnapshot(data []byte) (map[string]string, error) {
@@ -252,6 +268,10 @@ func (s *FileStore) writeSnapshot(ctx context.Context, operation Operation, name
 	if err := tmp.Sync(); err != nil {
 		return fileStoreError(operation, name, ConditionUnexpected, err)
 	}
+	info, err := tmp.Stat()
+	if err != nil {
+		return fileStoreError(operation, name, ConditionUnexpected, err)
+	}
 	if err := tmp.Close(); err != nil {
 		closed = true
 		return fileStoreError(operation, name, ConditionUnexpected, err)
@@ -260,6 +280,8 @@ func (s *FileStore) writeSnapshot(ctx context.Context, operation Operation, name
 	if err := ctx.Err(); err != nil {
 		return fileStoreError(operation, name, ConditionTimedOut, err)
 	}
+	s.observeMu.Lock()
+	defer s.observeMu.Unlock()
 	if err := os.Rename(tmpName, filepath.Join(s.dir, fileStoreDataName)); err != nil {
 		return fileStoreError(operation, name, ConditionUnexpected, err)
 	}
@@ -274,6 +296,7 @@ func (s *FileStore) writeSnapshot(ctx context.Context, operation Operation, name
 	if err := dir.Close(); err != nil {
 		return fileStoreError(operation, name, ConditionIndeterminate, err)
 	}
+	s.observed = observeFileSnapshot(data, values, metadataFromFileInfo(info))
 	return nil
 }
 

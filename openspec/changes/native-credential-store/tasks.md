@@ -33,6 +33,6 @@
 
 ## 7. External changes, documentation, and release evidence
 
-- [ ] 7.1 Add managed-file directory watching, metadata fallback, debounce, content-digest self-write suppression, and exact-consumer refresh; prove it with `TestExternalAtomicReplacementReloadsFinalSnapshot`, `TestMetadataFallbackDetectsChange`, and `TestDaemonWriteTriggersOneReconnect`; commit as `feat(secretstore): watch managed file changes`.
+- [x] 7.1 Add managed-file directory watching, metadata fallback, debounce, content-digest self-write suppression, and exact-consumer refresh; prove it with `TestExternalAtomicReplacementReloadsFinalSnapshot`, `TestMetadataFallbackDetectsChange`, and `TestDaemonWriteTriggersOneReconnect`; commit as `feat(secretstore): watch managed file changes`.
 - [ ] 7.2 Document provider configuration, accepted input bytes, environment precedence, native session and headless limitations, corrupt-file recovery, POSIX ownership repair, migration, and rollback; prove examples with configuration parsing tests and scan documentation for secret literals; commit as `docs: explain credential providers`.
 - [ ] 7.3 Run `gofmt`, focused package tests, `go test -race -count=5` for lifecycle packages, `go test ./...`, `go vet ./...`, `govulncheck ./...`, clean `CGO_ENABLED=0` builds for supported macOS and Linux targets, platform-gated native integration tests where credential services exist, and the current macOS LaunchAgent Context7 smoke test; record exact evidence in the change and commit any test-only corrections as `test: verify credential providers`.
