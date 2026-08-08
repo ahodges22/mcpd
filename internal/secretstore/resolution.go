@@ -2,6 +2,7 @@ package secretstore
 
 import (
 	"context"
+	"sort"
 	"sync"
 	"time"
 
@@ -11,10 +12,12 @@ import (
 const (
 	defaultStartupResolutionBudget = 5 * time.Second
 	defaultProviderCallTimeout     = 5 * time.Second
+	defaultStatusBudget            = 5 * time.Second
 	defaultBusyBackoffBase         = 250 * time.Millisecond
 	defaultBusyBackoffMax          = 2 * time.Second
 	defaultFailureBackoff          = time.Second
 	defaultFailureBackoffMax       = 5 * time.Minute
+	defaultPresenceTTL             = 5 * time.Minute
 )
 
 type ResolutionTuning struct {
@@ -24,6 +27,8 @@ type ResolutionTuning struct {
 	BusyBackoffMax    time.Duration
 	FailureBackoff    time.Duration
 	FailureBackoffMax time.Duration
+	PresenceTTL       time.Duration
+	StatusBudget      time.Duration
 }
 
 type ResolvedConsumer struct {
@@ -51,20 +56,26 @@ type providerHealth struct {
 }
 
 type ResolutionCoordinator struct {
-	provider Provider
-	lookup   func(string) (string, bool)
-	tuning   ResolutionTuning
-	resolved func(ResolvedConsumer)
-	groups   []config.SecretConsumer
+	provider       Provider
+	lookup         func(string) (string, bool)
+	tuning         ResolutionTuning
+	resolved       func(ResolvedConsumer)
+	groups         []config.SecretConsumer
+	references     map[string][]ConsumerIdentity
+	referenceNames []string
 
 	startOnce sync.Once
 	wake      chan struct{}
+	statusMu  sync.Mutex
 
-	mu          sync.Mutex
-	pending     map[string]*pendingResolution
-	order       []string
-	health      *providerHealth
-	busyBackoff time.Duration
+	mu            sync.Mutex
+	pending       map[string]*pendingResolution
+	order         []string
+	health        *providerHealth
+	busyBackoff   time.Duration
+	busyUntil     time.Time
+	busyCondition Condition
+	presence      map[string]presenceEntry
 }
 
 func NewResolutionCoordinator(
@@ -101,19 +112,45 @@ func NewResolutionCoordinator(
 	if tuning.FailureBackoffMax < tuning.FailureBackoff {
 		tuning.FailureBackoffMax = tuning.FailureBackoff
 	}
+	if tuning.PresenceTTL <= 0 {
+		tuning.PresenceTTL = defaultPresenceTTL
+	}
+	if tuning.StatusBudget <= 0 {
+		tuning.StatusBudget = defaultStatusBudget
+	}
 	var groups []config.SecretConsumer
+	references := map[string][]ConsumerIdentity{}
 	if cfg != nil {
 		groups = cfg.SecretConsumers()
+		if cfg.Secrets == nil || !cfg.Secrets.Enabled() {
+			provider = nil
+		}
+		for _, group := range groups {
+			consumer := ConsumerIdentity{Kind: group.Kind, Name: group.Name}
+			for _, name := range group.References {
+				references[name] = append(references[name], consumer)
+			}
+		}
+	} else {
+		provider = nil
 	}
+	referenceNames := make([]string, 0, len(references))
+	for name := range references {
+		referenceNames = append(referenceNames, name)
+	}
+	sort.Strings(referenceNames)
 	return &ResolutionCoordinator{
-		provider:    provider,
-		lookup:      lookup,
-		tuning:      tuning,
-		resolved:    resolved,
-		groups:      groups,
-		wake:        make(chan struct{}, 1),
-		pending:     map[string]*pendingResolution{},
-		busyBackoff: tuning.BusyBackoffBase,
+		provider:       provider,
+		lookup:         lookup,
+		tuning:         tuning,
+		resolved:       resolved,
+		groups:         groups,
+		references:     references,
+		referenceNames: referenceNames,
+		wake:           make(chan struct{}, 1),
+		pending:        map[string]*pendingResolution{},
+		busyBackoff:    tuning.BusyBackoffBase,
+		presence:       map[string]presenceEntry{},
 	}
 }
 
@@ -179,6 +216,8 @@ func (c *ResolutionCoordinator) ProviderHealth() (Condition, bool) {
 }
 
 func (c *ResolutionCoordinator) Retry() {
+	c.statusMu.Lock()
+	defer c.statusMu.Unlock()
 	if native, ok := c.provider.(NativeProvider); ok {
 		native.Retry()
 	}
@@ -191,12 +230,19 @@ func (c *ResolutionCoordinator) Retry() {
 	for _, entry := range c.pending {
 		entry.nextAt = now
 	}
+	c.busyBackoff = c.tuning.BusyBackoffBase
+	c.busyUntil = time.Time{}
+	c.busyCondition = ""
+	clear(c.presence)
 	c.mu.Unlock()
 	c.signal()
 }
 
 func (c *ResolutionCoordinator) run(ctx context.Context) {
 	for {
+		if ctx.Err() != nil {
+			return
+		}
 		entry, wait, ok := c.nextPending()
 		if !ok {
 			select {
@@ -250,9 +296,11 @@ func (c *ResolutionCoordinator) resolveGroup(ctx context.Context, group config.S
 		result, err := c.provider.Get(callCtx, name)
 		cancel()
 		if err != nil {
+			c.recordPresenceError(name, err)
 			clear(values)
 			return nil, err
 		}
+		c.recordPresence(name, result.Present)
 		if result.Present {
 			values[name] = result.Value
 		} else {
@@ -302,9 +350,11 @@ func (c *ResolutionCoordinator) noteFailure(group config.SecretConsumer, err err
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if condition == ConditionBusy {
+	if condition == ConditionBusy || condition == ConditionLockContended {
 		delay := c.busyBackoff
 		c.busyBackoff = minDuration(c.busyBackoff*2, c.tuning.BusyBackoffMax)
+		c.busyUntil = time.Now().Add(delay)
+		c.busyCondition = condition
 		return condition, delay, 0
 	}
 	c.busyBackoff = c.tuning.BusyBackoffBase
@@ -322,6 +372,7 @@ func (c *ResolutionCoordinator) noteFailure(group config.SecretConsumer, err err
 		}
 		return condition, delay, 0
 	}
+	c.health = nil
 	failures := 1
 	if entry, ok := c.pending[consumerKey(group)]; ok {
 		failures = entry.failures + 1
@@ -333,6 +384,8 @@ func (c *ResolutionCoordinator) noteSuccess() {
 	c.mu.Lock()
 	c.health = nil
 	c.busyBackoff = c.tuning.BusyBackoffBase
+	c.busyUntil = time.Time{}
+	c.busyCondition = ""
 	c.mu.Unlock()
 }
 
