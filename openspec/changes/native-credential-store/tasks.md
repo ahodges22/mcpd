@@ -28,7 +28,7 @@
 ## 6. Local management surfaces
 
 - [x] 6.1 Add `mcpd secret set`, `status`, `retry`, and `remove` with daemon-first transport, hidden prompt or EOF input, exact one-terminator removal, offline owner-identity checks, shadow warnings, and best-effort notification; prove it with `TestSecretSetNeverUsesArgument`, `TestSecretInputLineEndingRules`, `TestSecretCLIUsesDaemonFirst`, `TestOfflineSecretSetRejectsWrongOwner`, and `TestOfflineNativeSetReportsNamespace`; commit as `feat(cli): manage stored secrets`.
-- [ ] 6.2 Add guarded loopback API routes for write-only set, status, refresh, retry, and remove; prove it with `TestSecretAPINeverReturnsValues`, `TestSecretAPIUsesSharedOriginGuard`, `TestSecretAPIRemoveReportsDependents`, and `TestRemoteSurfaceExcludesSecretRoutes`; commit as `feat(web): add secret management api`.
+- [x] 6.2 Add guarded loopback API routes for write-only set, status, refresh, retry, and remove; prove it with `TestSecretAPINeverReturnsValues`, `TestSecretAPIUsesSharedOriginGuard`, `TestSecretAPIRemoveReportsDependents`, and `TestRemoteSurfaceExcludesSecretRoutes`; commit as `feat(web): add secret management api`.
 - [ ] 6.3 Add the status-page secret panel with write-only inputs, typed conditions, provider guidance, retry controls, and environment-shadow warnings using escaped templates and `textContent`; prove it with `TestSecretPanelRendersNoStoredValues`, `TestSecretPanelEscapesNamesAndErrors`, and the asset test that rejects `innerHTML`; commit as `feat(web): add secret management panel`.
 
 ## 7. External changes, documentation, and release evidence

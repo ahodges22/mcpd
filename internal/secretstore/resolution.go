@@ -207,6 +207,11 @@ func (c *ResolutionCoordinator) ProviderHealth() (Condition, bool) {
 	return c.health.condition, true
 }
 
+func (c *ResolutionCoordinator) EnvironmentHas(name string) bool {
+	_, present := c.lookup(name)
+	return present
+}
+
 func (c *ResolutionCoordinator) ResolveConsumer(ctx context.Context, consumer config.SecretConsumer) (map[string]string, error) {
 	providerBacked := !c.environmentOnly(consumer)
 	if providerBacked {

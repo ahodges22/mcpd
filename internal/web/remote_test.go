@@ -143,6 +143,30 @@ func TestRemoteForbiddenRoutesAbsent(t *testing.T) {
 	}
 }
 
+func TestRemoteSurfaceExcludesSecretRoutes(t *testing.T) {
+	h := newHarness(t)
+	rh := h.server.remoteHandler(func() string { return testToken }, nil)
+	forbidden := []struct{ method, path string }{
+		{http.MethodGet, "/api/secrets/-/challenge?nonce=001122"},
+		{http.MethodGet, "/api/secrets/-/status"},
+		{http.MethodPost, "/api/secrets/-/status/refresh"},
+		{http.MethodPost, "/api/secrets/-/retry"},
+		{http.MethodPost, "/api/secrets/TOKEN"},
+		{http.MethodPost, "/api/secrets/TOKEN/remove"},
+		{http.MethodPost, "/api/secrets/TOKEN/refresh"},
+	}
+	for _, forbidden := range forbidden {
+		req := remoteReq(forbidden.method, forbidden.path, strings.NewReader("{}"))
+		req.Header.Set("Content-Type", "application/json")
+		req.AddCookie(&http.Cookie{Name: "mcpd_remote", Value: testToken})
+		rr := httptest.NewRecorder()
+		rh.ServeHTTP(rr, req)
+		if rr.Code != http.StatusNotFound {
+			t.Errorf("%s %s = %d, want %d", forbidden.method, forbidden.path, rr.Code, http.StatusNotFound)
+		}
+	}
+}
+
 // fakeRemoteWriter records SetRemote calls and can refuse them.
 type fakeRemoteWriter struct {
 	calls      int

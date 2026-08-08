@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"embed"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -15,6 +16,7 @@ import (
 	"github.com/ahodges22/mcpd/internal/catalog"
 	"github.com/ahodges22/mcpd/internal/config"
 	"github.com/ahodges22/mcpd/internal/oauthstore"
+	"github.com/ahodges22/mcpd/internal/secretstore"
 )
 
 const (
@@ -30,7 +32,10 @@ const (
 	// invokeCallBudget is the inspector's tool-call budget, added to the backend's
 	// own handshake budget rather than replacing it, exactly as the catalog's read
 	// deadline is, so a cold start the configuration permits is never truncated.
-	invokeCallBudget = 60 * time.Second
+	invokeCallBudget       = 60 * time.Second
+	secretOperationTimeout = 5 * time.Second
+	// JSON \uXXXX escaping can expand one accepted byte to six bytes.
+	secretRequestBodyLimit = 6*secretstore.MaxValueBytes + 1024
 	// authorizePollInterval is how often that wait rechecks. A browser is waiting on
 	// it, so it is short enough to be imperceptible and each check is two map reads.
 	authorizePollInterval = 50 * time.Millisecond
@@ -62,7 +67,9 @@ type Server struct {
 	unvectorized func() int
 	// remote is optional: without it the panel has no remote-relogin toggle and
 	// the /api/remote route is absent.
-	remote *Remote
+	remote     *Remote
+	secrets    *secretstore.ResolutionCoordinator
+	secretAuth *secretstore.ControlAuthenticator
 }
 
 // Manager is the part of the declaration-management layer this surface drives. Each
@@ -76,6 +83,12 @@ type Manager interface {
 // WithManager enables the add, remove and reload routes.
 func (s *Server) WithManager(m Manager) *Server {
 	s.manager = m
+	return s
+}
+
+func (s *Server) WithSecrets(coordinator *secretstore.ResolutionCoordinator, authenticator *secretstore.ControlAuthenticator) *Server {
+	s.secrets = coordinator
+	s.secretAuth = authenticator
 	return s
 }
 
@@ -120,6 +133,13 @@ func (s *Server) routes() []route {
 		// with the status page, which hides anything registered outside this table.
 		{method: http.MethodGet, path: "/{$}", handler: s.statusPage},
 		{method: http.MethodGet, path: "/api/status", handler: s.statusAPI},
+		{method: http.MethodGet, path: "/api/secrets/-/status", handler: s.secretStatus},
+		{method: http.MethodGet, path: "/api/secrets/-/challenge", handler: s.secretChallenge},
+		{method: http.MethodPost, path: "/api/secrets/-/status/refresh", mutates: true, handler: s.secretRefreshStatus},
+		{method: http.MethodPost, path: "/api/secrets/-/retry", mutates: true, handler: s.secretRetry},
+		{method: http.MethodPost, path: "/api/secrets/{name}", mutates: true, handler: s.secretSet},
+		{method: http.MethodPost, path: "/api/secrets/{name}/remove", mutates: true, handler: s.secretRemove},
+		{method: http.MethodPost, path: "/api/secrets/{name}/refresh", mutates: true, handler: s.secretRefreshConsumers},
 		{method: http.MethodGet, path: "/inspect/{name}", handler: s.inspectPage},
 		{method: http.MethodGet, path: "/assets/", handler: http.FileServerFS(assetFS).ServeHTTP},
 		{method: http.MethodGet, path: "/oauth/callback", mutates: true, nonceGuarded: true,
@@ -151,6 +171,113 @@ func (s *Server) routes() []route {
 		route{method: http.MethodPost, path: "/api/backends/{name}/remove", mutates: true, handler: s.removeBackend},
 		route{method: http.MethodPost, path: "/api/reload", mutates: true, handler: s.reload},
 	)
+}
+
+func (s *Server) secretChallenge(w http.ResponseWriter, r *http.Request) {
+	if s.secretAuth == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "secret control authentication is unavailable"})
+		return
+	}
+	nonce := r.URL.Query().Get("nonce")
+	if decoded, err := hex.DecodeString(nonce); err != nil || len(decoded) != 32 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid secret control nonce"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"proof": s.secretAuth.Proof(nonce)})
+}
+
+func (s *Server) secretStatus(w http.ResponseWriter, r *http.Request) {
+	if s.secrets == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "secret storage is not configured"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "secrets": s.secrets.Status(r.Context())})
+}
+
+func (s *Server) secretRefreshStatus(w http.ResponseWriter, r *http.Request) {
+	if s.secrets == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "secret storage is not configured"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "secrets": s.secrets.RefreshStatus(r.Context())})
+}
+
+func (s *Server) secretRetry(w http.ResponseWriter, _ *http.Request) {
+	if s.secrets == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "secret storage is not configured"})
+		return
+	}
+	s.secrets.Retry()
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (s *Server) secretSet(w http.ResponseWriter, r *http.Request) {
+	if s.secrets == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "secret storage is not configured"})
+		return
+	}
+	var in struct {
+		Value string `json:"value"`
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, secretRequestBodyLimit)
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		var bodyTooLarge *http.MaxBytesError
+		if errors.As(err, &bodyTooLarge) {
+			valueErr := &secretstore.Error{
+				Operation: secretstore.OperationSet,
+				Condition: secretstore.ConditionInvalidValue,
+				Limit:     secretstore.MaxValueBytes,
+			}
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": valueErr.Error()})
+			return
+		}
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body: " + err.Error()})
+		return
+	}
+	if err := secretstore.ValidateValue(in.Value); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	name := r.PathValue("name")
+	shadowed := s.secrets.EnvironmentHas(name)
+	ctx, cancel := context.WithTimeout(r.Context(), secretOperationTimeout)
+	defer cancel()
+	dependents, err := s.secrets.Set(ctx, name, in.Value)
+	if err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
+		return
+	}
+	out := map[string]any{"status": "ok", "dependents": dependents}
+	if shadowed {
+		out["warning"] = "the daemon environment still shadows the stored value; remove the variable from the launch environment and restart mcpd for the stored value to take effect"
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *Server) secretRemove(w http.ResponseWriter, r *http.Request) {
+	if s.secrets == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "secret storage is not configured"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), secretOperationTimeout)
+	defer cancel()
+	dependents, err := s.secrets.Delete(ctx, r.PathValue("name"))
+	if err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "dependents": dependents})
+}
+
+func (s *Server) secretRefreshConsumers(w http.ResponseWriter, r *http.Request) {
+	if s.secrets == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "secret storage is not configured"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), secretOperationTimeout)
+	defer cancel()
+	dependents := s.secrets.RefreshConsumers(ctx, r.PathValue("name"))
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "dependents": dependents})
 }
 
 type addRequest struct {

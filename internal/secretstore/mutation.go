@@ -44,6 +44,17 @@ func (c *ResolutionCoordinator) Delete(ctx context.Context, name string) ([]Cons
 func (c *ResolutionCoordinator) refreshAfterMutation(ctx context.Context, name string) []ConsumerIdentity {
 	c.InvalidatePresence(name)
 	c.noteSuccess()
+	return c.refreshConsumers(ctx, name)
+}
+
+func (c *ResolutionCoordinator) RefreshConsumers(ctx context.Context, name string) []ConsumerIdentity {
+	c.mutationMu.Lock()
+	defer c.mutationMu.Unlock()
+	c.InvalidatePresence(name)
+	return c.refreshConsumers(ctx, name)
+}
+
+func (c *ResolutionCoordinator) refreshConsumers(ctx context.Context, name string) []ConsumerIdentity {
 	groups, dependents := c.dependentGroups(name)
 	for _, group := range groups {
 		if c.mutationHooks.Reset != nil && !c.mutationHooks.Reset(group) {

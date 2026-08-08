@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -101,6 +102,59 @@ func TestWireDegradesSecretControlAuthenticatorFailure(t *testing.T) {
 	})
 	if d.secretAuth != nil {
 		t.Fatal("secret control authenticator initialized from an unsafe artifact")
+	}
+}
+
+func TestWireExposesAuthenticatedSecretAPI(t *testing.T) {
+	dir := t.TempDir()
+	state := filepath.Join(dir, "state")
+	provider, err := secretstore.NewFileStore(state)
+	if err != nil {
+		t.Fatalf("NewFileStore: %v", err)
+	}
+	cfgPath := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(cfgPath, []byte(`{"backends":{},"secrets":{"provider":"file"}}`), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	writer, cfg, err := config.NewWriter(cfgPath)
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	overrides, err := backend.LoadOverrides(filepath.Join(state, "overrides.json"), writer)
+	if err != nil {
+		t.Fatalf("LoadOverrides: %v", err)
+	}
+	d := &daemon{state: state, writer: writer, overrides: overrides}
+	if err := d.wire(cfg, "127.0.0.1:0"); err != nil {
+		t.Fatalf("wire: %v", err)
+	}
+	t.Cleanup(func() {
+		if d.secretCancel != nil {
+			d.secretCancel()
+		}
+		d.reg.Shutdown()
+	})
+	server := httptest.NewServer(d.handler)
+	t.Cleanup(server.Close)
+
+	var stdout bytes.Buffer
+	err = runSecret([]string{
+		"set", "--addr", server.URL, "--config", cfgPath, "--state", state, "TOKEN",
+	}, secretCommandDeps{
+		stdin:      strings.NewReader("daemon-managed-secret\n"),
+		stdout:     &stdout,
+		httpClient: server.Client(),
+		isTerminal: func() bool { return false },
+	})
+	if err != nil {
+		t.Fatalf("runSecret: %v", err)
+	}
+	if got := stdout.String(); !strings.Contains(got, "set TOKEN") || strings.Contains(got, "daemon-managed-secret") {
+		t.Fatalf("stdout = %q", got)
+	}
+	stored, err := provider.Get(t.Context(), "TOKEN")
+	if err != nil || !stored.Present || stored.Value != "daemon-managed-secret" {
+		t.Fatalf("stored result = %#v, error = %v", stored, err)
 	}
 }
 

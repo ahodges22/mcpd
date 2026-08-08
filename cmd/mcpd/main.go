@@ -296,7 +296,7 @@ func (d *daemon) wire(cfg *config.Config, addr string) error {
 	})
 
 	guard := web.NewGuard()
-	surface := web.New(d.reg, d.cat, guard, d.store).WithManager(d.mgr)
+	surface := web.New(d.reg, d.cat, guard, d.store).WithManager(d.mgr).WithSecrets(d.secrets, d.secretAuth)
 	hostname, _ := os.Hostname()
 	d.remote = web.NewRemote(surface, d.writer, filepath.Join(d.state, "remote-token"), cfg.Remote.Addr, hostname)
 	surface = surface.WithRemote(d.remote)
