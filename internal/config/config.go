@@ -85,17 +85,7 @@ func (c Config) SecretConsumers() []SecretConsumer {
 	out := make([]SecretConsumer, 0, len(c.Backends)+1)
 	for _, name := range backendNames {
 		b := c.Backends[name]
-		refs := map[string]struct{}{}
-		fields := b.Headers
-		if b.IsStdio() {
-			fields = b.Env
-		}
-		for _, value := range fields {
-			for _, match := range envRef.FindAllStringSubmatch(value, -1) {
-				refs[match[1]] = struct{}{}
-			}
-		}
-		if names := sortedReferenceNames(refs); len(names) > 0 {
+		if names := b.SecretReferences(); len(names) > 0 {
 			out = append(out, SecretConsumer{Kind: ConsumerBackend, Name: name, References: names})
 		}
 	}
@@ -170,10 +160,28 @@ func (r Ranking) RerankTimeout() time.Duration {
 
 func (b Backend) IsStdio() bool { return b.Command != "" }
 
+func (b Backend) SecretReferences() []string {
+	refs := map[string]struct{}{}
+	fields := b.Headers
+	if b.IsStdio() {
+		fields = b.Env
+	}
+	for _, value := range fields {
+		for _, match := range envRef.FindAllStringSubmatch(value, -1) {
+			refs[match[1]] = struct{}{}
+		}
+	}
+	return sortedReferenceNames(refs)
+}
+
 // ChildEnv builds the environment for a stdio child: a curated base, plus the
 // backend's declared env, plus its declared passthrough patterns. It never returns
 // nil, because exec.Cmd treats nil as "inherit everything".
 func (b Backend) ChildEnv(parent []string) []string {
+	return b.ChildEnvResolved(parent, nil)
+}
+
+func (b Backend) ChildEnvResolved(parent []string, resolved map[string]string) []string {
 	index := indexEnv(parent)
 	out := make([]string, 0, len(baseEnvKeys)+len(b.Env)+len(b.EnvPassthrough))
 	add := func(k, v string) { out = append(out, k+"="+v) }
@@ -204,7 +212,7 @@ func (b Backend) ChildEnv(parent []string) []string {
 		}
 	}
 	for k, v := range b.Env {
-		add(k, b.expand(v, index))
+		add(k, b.expand(v, index, resolved))
 	}
 	return out
 }
@@ -213,10 +221,14 @@ func (b Backend) ChildEnv(parent []string) []string {
 // environment. Unlike ChildEnv this is not a privilege boundary: the value is used by
 // mcpd itself, not handed to a child process.
 func (b Backend) ExpandHeaders(parent []string) map[string]string {
+	return b.ExpandHeadersResolved(parent, nil)
+}
+
+func (b Backend) ExpandHeadersResolved(parent []string, resolved map[string]string) map[string]string {
 	index := indexEnv(parent)
 	out := make(map[string]string, len(b.Headers))
 	for k, v := range b.Headers {
-		out[k] = b.expand(v, index)
+		out[k] = b.expand(v, index, resolved)
 	}
 	return out
 }
@@ -234,10 +246,13 @@ func indexEnv(parent []string) map[string]string {
 // expand resolves ${VAR} references, warning on any variable the daemon does not
 // hold: the reference still becomes "", but silently sending "Bearer " upstream
 // looks exactly like a bad credential, so the log must name the real cause.
-func (b Backend) expand(s string, index map[string]string) string {
+func (b Backend) expand(s string, index, resolved map[string]string) string {
 	return envRef.ReplaceAllStringFunc(s, func(m string) string {
 		name := envRef.FindStringSubmatch(m)[1]
 		v, ok := index[name]
+		if !ok {
+			v, ok = resolved[name]
+		}
 		if !ok {
 			b.warnUnset("declaration references a variable the daemon environment does not hold", name)
 		}

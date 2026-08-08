@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -14,6 +15,7 @@ import (
 	"github.com/ahodges22/mcpd/internal/backend"
 	"github.com/ahodges22/mcpd/internal/config"
 	"github.com/ahodges22/mcpd/internal/searchindex"
+	"github.com/ahodges22/mcpd/internal/secretstore"
 	"github.com/ahodges22/mcpd/internal/testfake"
 )
 
@@ -82,6 +84,151 @@ func rpc(t *testing.T, ts *httptest.Server, path, method string) string {
 		t.Fatalf("POST %s = %d", path, res.StatusCode)
 	}
 	return path
+}
+
+func TestWireResolvesFileSecretIntoHTTPHeader(t *testing.T) {
+	const secretName = "MCPD_TEST_WIRE_TOKEN"
+	old, present := os.LookupEnv(secretName)
+	if err := os.Unsetenv(secretName); err != nil {
+		t.Fatalf("Unsetenv: %v", err)
+	}
+	t.Cleanup(func() {
+		if present {
+			_ = os.Setenv(secretName, old)
+		} else {
+			_ = os.Unsetenv(secretName)
+		}
+	})
+
+	dir := t.TempDir()
+	state := filepath.Join(dir, "state")
+	store, err := secretstore.NewFileStore(state)
+	if err != nil {
+		t.Fatalf("NewFileStore: %v", err)
+	}
+	if err := store.Set(t.Context(), secretName, "resolved-key"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+
+	fake := testfake.New("alpha", tool("kubectl_logs"))
+	mcpHandler := mcp.NewStreamableHTTPHandler(
+		func(*http.Request) *mcp.Server { return fake.Server() },
+		&mcp.StreamableHTTPOptions{Stateless: true},
+	)
+	var authorization atomic.Value
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authorization.Store(r.Header.Get("Authorization"))
+		mcpHandler.ServeHTTP(w, r)
+	}))
+	t.Cleanup(func() {
+		upstream.CloseClientConnections()
+		upstream.Close()
+		fake.Close()
+	})
+
+	cfgPath := filepath.Join(dir, "config.json")
+	declaration := config.Config{
+		Backends: map[string]config.Backend{
+			"alpha": {HTTPURL: upstream.URL, Headers: map[string]string{"Authorization": "Bearer ${" + secretName + "}"}},
+		},
+		Secrets: &config.Secrets{Provider: config.SecretProviderFile},
+	}
+	body, err := json.Marshal(declaration)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if err := os.WriteFile(cfgPath, body, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	writer, cfg, err := config.NewWriter(cfgPath)
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	overrides, err := backend.LoadOverrides(filepath.Join(state, "overrides.json"), writer)
+	if err != nil {
+		t.Fatalf("LoadOverrides: %v", err)
+	}
+	d := &daemon{state: state, writer: writer, overrides: overrides}
+	if err := d.wire(cfg, "127.0.0.1:0"); err != nil {
+		t.Fatalf("wire: %v", err)
+	}
+	t.Cleanup(func() {
+		if d.secretCancel != nil {
+			d.secretCancel()
+		}
+		d.reg.Shutdown()
+	})
+
+	d.cat.RefreshAll(t.Context())
+	if got, _ := authorization.Load().(string); got != "Bearer resolved-key" {
+		t.Fatalf("Authorization = %q", got)
+	}
+	if got := d.reg.Health()["alpha"].State; got != backend.StateUp {
+		t.Fatalf("alpha state = %q, want up", got)
+	}
+}
+
+func TestProviderFailureIsolatesDependents(t *testing.T) {
+	dir := t.TempDir()
+	state := filepath.Join(dir, "state")
+	if err := os.MkdirAll(state, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(state, "secrets.json"), []byte("{"), 0o600); err != nil {
+		t.Fatalf("WriteFile secrets: %v", err)
+	}
+
+	fake := testfake.New("shared", tool("kubectl_logs"))
+	upstream := httptest.NewServer(mcp.NewStreamableHTTPHandler(
+		func(*http.Request) *mcp.Server { return fake.Server() },
+		&mcp.StreamableHTTPOptions{Stateless: true},
+	))
+	t.Cleanup(func() {
+		upstream.CloseClientConnections()
+		upstream.Close()
+		fake.Close()
+	})
+
+	cfgPath := filepath.Join(dir, "config.json")
+	declaration := config.Config{
+		Backends: map[string]config.Backend{
+			"dependent": {HTTPURL: upstream.URL, Headers: map[string]string{"Authorization": "Bearer ${MCPD_TEST_MISSING_TOKEN}"}},
+			"unrelated": {HTTPURL: upstream.URL},
+		},
+		Secrets: &config.Secrets{Provider: config.SecretProviderFile},
+	}
+	body, err := json.Marshal(declaration)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if err := os.WriteFile(cfgPath, body, 0o600); err != nil {
+		t.Fatalf("WriteFile config: %v", err)
+	}
+	writer, cfg, err := config.NewWriter(cfgPath)
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	overrides, err := backend.LoadOverrides(filepath.Join(state, "overrides.json"), writer)
+	if err != nil {
+		t.Fatalf("LoadOverrides: %v", err)
+	}
+	d := &daemon{state: state, writer: writer, overrides: overrides}
+	if err := d.wire(cfg, "127.0.0.1:0"); err != nil {
+		t.Fatalf("wire: %v", err)
+	}
+	t.Cleanup(func() {
+		d.secretCancel()
+		d.reg.Shutdown()
+	})
+
+	d.cat.RefreshAll(t.Context())
+	health := d.reg.Health()
+	if health["dependent"].State != backend.StatePending || !strings.Contains(health["dependent"].LastErr, "corrupt") {
+		t.Fatalf("dependent health = %#v", health["dependent"])
+	}
+	if health["unrelated"].State != backend.StateUp {
+		t.Fatalf("unrelated health = %#v", health["unrelated"])
+	}
 }
 
 // Scenario (mcp-endpoints spec): all three surfaces answer, and the two MCP endpoints are

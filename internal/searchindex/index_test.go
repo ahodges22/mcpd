@@ -106,6 +106,26 @@ func TestSearchReturnsLexicalResultsWhenEmbeddingFails(t *testing.T) {
 	}
 }
 
+func TestEmbeddingsUsesResolvedAPIKey(t *testing.T) {
+	var authorization string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authorization = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"index":0,"embedding":[1]}]}`))
+	}))
+	defer server.Close()
+	live := NewLive(t.TempDir(), config.Embeddings{URL: server.URL, Model: "embed", APIKeyEnv: "EMBEDDINGS_TOKEN"}, config.Ranking{})
+	if err := live.ApplyAPIKey("resolved-key"); err != nil {
+		t.Fatalf("ApplyAPIKey: %v", err)
+	}
+	if _, err := live.index().Embed(t.Context(), []string{"query"}); err != nil {
+		t.Fatalf("Embed: %v", err)
+	}
+	if authorization != "Bearer resolved-key" {
+		t.Fatalf("Authorization = %q", authorization)
+	}
+}
+
 func TestRefreshReportsMissingExpansion(t *testing.T) {
 	server := embeddingServer(t, func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "generation unavailable", http.StatusServiceUnavailable)

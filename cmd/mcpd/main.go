@@ -115,6 +115,9 @@ func run() error {
 	if err := d.wire(cfg, *addr); err != nil {
 		return err
 	}
+	if d.secretCancel != nil {
+		defer d.secretCancel()
+	}
 	return d.serve(*addr)
 }
 
@@ -122,17 +125,27 @@ func run() error {
 // catalog, the catalog reads the registry, and the OAuth store's hooks reach the registry.
 // Late-bound closures over these fields are what break the cycle.
 type daemon struct {
-	state     string
-	writer    *config.Writer
-	overrides *backend.Overrides
-	reg       *backend.Registry
-	cat       *catalog.Catalog
-	store     *oauthstore.Store
-	mgr       *manage.Manager
-	pass      *mcpsrv.Passthrough
-	index     *searchindex.Index
-	remote    *web.Remote
-	handler   http.Handler
+	state        string
+	writer       *config.Writer
+	overrides    *backend.Overrides
+	reg          *backend.Registry
+	cat          *catalog.Catalog
+	store        *oauthstore.Store
+	mgr          *manage.Manager
+	pass         *mcpsrv.Passthrough
+	index        daemonSearchIndex
+	liveIndex    *searchindex.Live
+	secrets      *secretstore.ResolutionCoordinator
+	secretCancel context.CancelFunc
+	remote       *web.Remote
+	handler      http.Handler
+}
+
+type daemonSearchIndex interface {
+	mcpsrv.SearchIndex
+	QueueRefresh([]catalog.Entry, time.Duration)
+	Unvectorized() int
+	Model() string
 }
 
 func (d *daemon) wire(cfg *config.Config, addr string) error {
@@ -150,6 +163,33 @@ func (d *daemon) wire(cfg *config.Config, addr string) error {
 			}
 		},
 	})
+	var resolveSecrets func(context.Context, config.SecretConsumer) (map[string]string, error)
+	var retrySecrets func()
+	if cfg.Secrets != nil {
+		provider := configuredSecretProvider(d.state, cfg.Secrets)
+		if cfg.Embeddings.Enabled() {
+			d.liveIndex = searchindex.NewLive(d.state, cfg.Embeddings, cfg.Ranking)
+			d.index = d.liveIndex
+		}
+		d.secrets = secretstore.NewResolutionCoordinator(cfg, provider, os.LookupEnv, secretstore.ResolutionTuning{}, func(resolved secretstore.ResolvedConsumer) {
+			switch resolved.Consumer.Kind {
+			case config.ConsumerBackend:
+				d.reg.ApplySecretResolution(resolved.Consumer, resolved.Values)
+			case config.ConsumerEmbeddings:
+				if d.liveIndex == nil {
+					return
+				}
+				if err := d.liveIndex.ApplyAPIKey(resolved.Values[cfg.Embeddings.APIKeyEnv]); err != nil {
+					slog.Warn("load search index", "error", err)
+				}
+				if d.cat != nil {
+					d.liveIndex.QueueRefresh(d.cat.Entries(), indexBudget)
+				}
+			}
+		})
+		resolveSecrets = d.secrets.ResolveConsumer
+		retrySecrets = d.secrets.Retry
+	}
 	d.reg = backend.NewRegistry(cfg, d.overrides, backend.Hooks{
 		ToolListChanged: func(s string) { d.cat.Trigger(s) },
 		Reconnected:     func(s string) { d.cat.Trigger(s) },
@@ -157,7 +197,9 @@ func (d *daemon) wire(cfg *config.Config, addr string) error {
 		DropTools:       func(s string) { d.cat.Drop(s) },
 		Refresh:         func(s string) { d.cat.Trigger(s) },
 		// A nil AuthHandler fails loudly at the first dial of an OAuth backend.
-		AuthHandler: d.store.Handler,
+		AuthHandler:    d.store.Handler,
+		ResolveSecrets: resolveSecrets,
+		RetrySecrets:   retrySecrets,
 	})
 	d.cat = catalog.New(d.reg, filepath.Join(d.state, "catalog.json"))
 
@@ -184,13 +226,19 @@ func (d *daemon) wire(cfg *config.Config, addr string) error {
 	// Embeddings, when a gateway is configured. Without this every query reaches rank.Fuse
 	// with nil vectors, so fusion degrades to lexical only and abstention is inert: Tasks 6
 	// and 7 are dead code in production until it is wired.
-	if cfg.Embeddings.Enabled() {
+	if cfg.Embeddings.Enabled() && cfg.Secrets == nil {
 		// The client first, so the cache records the model actually sent rather than the one
 		// configured: an empty configuration resolves to a default, and a header saying "" would
 		// be a claim about a model that does not exist.
-		d.index = searchindex.New(d.state, cfg.Embeddings, cfg.Ranking)
-		if err := d.index.Load(); err != nil {
+		index := searchindex.New(d.state, cfg.Embeddings, cfg.Ranking)
+		d.index = index
+		if err := index.Load(); err != nil {
 			// A cold cache is a slower first refresh, not a failure.
+			slog.Warn("load search index", "error", err)
+		}
+	}
+	if d.liveIndex != nil && cfg.Embeddings.APIKeyEnv == "" {
+		if err := d.liveIndex.ApplyAPIKey(""); err != nil {
 			slog.Warn("load search index", "error", err)
 		}
 	}
@@ -238,7 +286,40 @@ func (d *daemon) wire(cfg *config.Config, addr string) error {
 	mux.Handle("/mcp/passthrough", guard.Protect(streamable(d.pass.Server())))
 	mux.Handle("/", surface.Handler())
 	d.handler = mux
+	if d.secrets != nil {
+		secretCtx, cancel := context.WithCancel(context.Background())
+		d.secretCancel = cancel
+		d.secrets.Start(secretCtx)
+		for _, pending := range d.secrets.Pending() {
+			d.reg.MarkSecretPending(pending.Consumer, string(pending.Condition))
+		}
+	}
 	return nil
+}
+
+func configuredSecretProvider(state string, declaration *config.Secrets) secretstore.Provider {
+	var (
+		provider secretstore.Provider
+		err      error
+	)
+	switch declaration.Provider {
+	case config.SecretProviderFile:
+		provider, err = secretstore.NewFileStore(state)
+	case config.SecretProviderNative:
+		executable, executableErr := os.Executable()
+		if executableErr != nil {
+			err = executableErr
+		} else {
+			provider, err = secretstore.NewNativeStore(state, executable)
+		}
+	default:
+		err = fmt.Errorf("unsupported secret provider %q", declaration.Provider)
+	}
+	if err != nil {
+		slog.Warn("initialize secret provider", "provider", declaration.Provider, "error", err)
+		return secretstore.NewFailedProvider(err)
+	}
+	return provider
 }
 
 // thresholds is the abstention configuration this daemon runs with. Abstention is only

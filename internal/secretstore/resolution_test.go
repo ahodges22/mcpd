@@ -331,6 +331,92 @@ func TestPendingGroupsRecover(t *testing.T) {
 	}
 }
 
+func TestResolveConsumerRemovesRecoveredPendingEntry(t *testing.T) {
+	var mu sync.Mutex
+	available := false
+	provider := &resolutionProvider{get: func(_ context.Context, name string, _ int) (Result, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if !available {
+			return Result{}, &Error{Operation: OperationGet, Provider: "test", Name: name, Condition: ConditionInvalidValue}
+		}
+		return Result{Value: "resolved", Present: true}, nil
+	}}
+	cfg := resolutionConfig(map[string][]string{"alpha": {"A"}})
+	tuning := fastResolutionTuning()
+	tuning.FailureBackoff = time.Hour
+	tuning.FailureBackoffMax = time.Hour
+	coordinator := NewResolutionCoordinator(cfg, provider, func(string) (string, bool) { return "", false }, tuning, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	coordinator.Start(ctx)
+	if pending := coordinator.Pending(); len(pending) != 1 {
+		t.Fatalf("pending groups after startup = %#v", pending)
+	}
+	mu.Lock()
+	available = true
+	mu.Unlock()
+	consumer := cfg.SecretConsumers()[0]
+	values, err := coordinator.ResolveConsumer(t.Context(), consumer)
+	if err != nil {
+		t.Fatalf("ResolveConsumer: %v", err)
+	}
+	if values["A"] != "resolved" {
+		t.Fatalf("resolved values = %#v", values)
+	}
+	clear(values)
+	if pending := coordinator.Pending(); len(pending) != 0 {
+		t.Fatalf("pending groups after synchronous recovery = %#v", pending)
+	}
+}
+
+func TestBlockedResolveQueuesProviderConsumerAndAllowsEnvironmentConsumer(t *testing.T) {
+	provider := &resolutionProvider{get: func(_ context.Context, name string, _ int) (Result, error) {
+		return Result{}, &Error{Operation: OperationGet, Provider: "test", Name: name, Condition: ConditionUnavailable}
+	}}
+	lookup := func(name string) (string, bool) {
+		if name == "ENV" {
+			return "environment", true
+		}
+		return "", false
+	}
+	tuning := fastResolutionTuning()
+	tuning.FailureBackoff = time.Hour
+	tuning.FailureBackoffMax = time.Hour
+	coordinator := NewResolutionCoordinator(
+		resolutionConfig(map[string][]string{"alpha": {"A"}}),
+		provider,
+		lookup,
+		tuning,
+		nil,
+	)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	coordinator.Start(ctx)
+
+	providerConsumer := config.SecretConsumer{Kind: config.ConsumerBackend, Name: "added", References: []string{"B"}}
+	if _, err := coordinator.ResolveConsumer(t.Context(), providerConsumer); err == nil {
+		t.Fatal("ResolveConsumer error = nil while provider health is blocked")
+	}
+	pending := coordinator.Pending()
+	if len(pending) != 2 || pending[1].Consumer.Name != "added" {
+		t.Fatalf("pending groups = %#v, want alpha and added", pending)
+	}
+
+	environmentConsumer := config.SecretConsumer{Kind: config.ConsumerBackend, Name: "environment", References: []string{"ENV"}}
+	values, err := coordinator.ResolveConsumer(t.Context(), environmentConsumer)
+	if err != nil {
+		t.Fatalf("environment ResolveConsumer: %v", err)
+	}
+	if values["ENV"] != "environment" {
+		t.Fatalf("environment values = %#v", values)
+	}
+	clear(values)
+	if condition, ok := coordinator.ProviderHealth(); !ok || condition != ConditionUnavailable {
+		t.Fatalf("provider health after environment-only resolution = %q, %v", condition, ok)
+	}
+}
+
 func TestBusyContentionUsesPacingAndIsNotHealth(t *testing.T) {
 	var mu sync.Mutex
 	var attempts []time.Time

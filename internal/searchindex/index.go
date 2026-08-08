@@ -38,7 +38,10 @@ type Index struct {
 }
 
 func New(statePath string, emb config.Embeddings, ranking config.Ranking) *Index {
-	apiKey := emb.APIKey()
+	return NewWithAPIKey(statePath, emb, ranking, emb.APIKey())
+}
+
+func NewWithAPIKey(statePath string, emb config.Embeddings, ranking config.Ranking, apiKey string) *Index {
 	rerankTimeout := ranking.RerankTimeout()
 	client := embedding.NewClient(emb.URL, apiKey, emb.Model)
 	baseCache := embedding.NewCache(filepath.Join(statePath, "embeddings.json"), client.Model())

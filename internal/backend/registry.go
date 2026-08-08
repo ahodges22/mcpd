@@ -40,7 +40,9 @@ type Hooks struct {
 	// authorizes with. It is called on every dial and must return the same handler
 	// for a given backend, because that handler owns the live token source and a
 	// reconnect must not re-authorize.
-	AuthHandler func(server string) (auth.OAuthHandler, error)
+	AuthHandler    func(server string) (auth.OAuthHandler, error)
+	ResolveSecrets func(context.Context, config.SecretConsumer) (map[string]string, error)
+	RetrySecrets   func()
 }
 
 // ErrRegistryShutdown reports that the daemon is shutting down, so nothing new may
@@ -196,14 +198,17 @@ func (r *Registry) Health() map[string]Health {
 }
 
 func newBackend(name string, spec config.Backend, hooks Hooks) *Backend {
+	consumer := config.SecretConsumer{Kind: config.ConsumerBackend, Name: name, References: spec.SecretReferences()}
 	b := &Backend{
-		name:        name,
-		spec:        spec,
-		onReconnect: hooks.Reconnected,
-		stopRefresh: hooks.StopRefresh,
-		dropTools:   hooks.DropTools,
-		refresh:     hooks.Refresh,
-		authHandler: hooks.AuthHandler,
+		name:           name,
+		spec:           spec,
+		onReconnect:    hooks.Reconnected,
+		stopRefresh:    hooks.StopRefresh,
+		dropTools:      hooks.DropTools,
+		refresh:        hooks.Refresh,
+		authHandler:    hooks.AuthHandler,
+		secretConsumer: consumer,
+		resolveSecrets: hooks.ResolveSecrets,
 		health: Health{
 			State:     StateDown,
 			Transport: "http",
@@ -219,7 +224,6 @@ func newBackend(name string, spec config.Backend, hooks Hooks) *Backend {
 		b.authNote = "oauth"
 		b.health.AuthNote = b.authNote
 	}
-
 	// Advertising no sampling, elicitation or roots capability is what keeps
 	// server-initiated flows from arriving at all: one shared session cannot
 	// attribute them to one of several connected clients.
@@ -231,6 +235,28 @@ func newBackend(name string, spec config.Backend, hooks Hooks) *Backend {
 	}
 	b.client = mcp.NewClient(&mcp.Implementation{Name: "mcpd", Version: version.String()}, opts)
 	return b
+}
+
+func (r *Registry) ApplySecretResolution(consumer config.SecretConsumer, values map[string]string) {
+	if consumer.Kind != config.ConsumerBackend {
+		return
+	}
+	b, ok := r.Get(consumer.Name)
+	if !ok {
+		return
+	}
+	if b.prepareSecrets(values) && b.refresh != nil {
+		b.refresh(consumer.Name)
+	}
+}
+
+func (r *Registry) MarkSecretPending(consumer config.SecretConsumer, condition string) {
+	if consumer.Kind != config.ConsumerBackend {
+		return
+	}
+	if b, ok := r.Get(consumer.Name); ok {
+		b.markSecretPending(condition)
+	}
 }
 
 // Disable is the kill switch: it cancels in-flight dispatches and any handshake,
@@ -331,11 +357,15 @@ func (r *Registry) ReconnectGeneration(name string) (uint64, error) {
 		return 0, err
 	}
 	defer done()
-	if b.Health().State == StateDisabled {
+	state := b.Health().State
+	if state == StateDisabled {
 		return 0, fmt.Errorf("reconnect %s: %w", name, ErrDisabled)
 	}
 	b.teardown(forReconnect)
 	generation := b.Generation()
+	if state == StatePending && r.hooks.RetrySecrets != nil {
+		r.hooks.RetrySecrets()
+	}
 	// A refresh rather than an eviction: the tools stay in the catalog, and this is
 	// what re-dials instead of waiting for the next client request.
 	if b.refresh != nil {

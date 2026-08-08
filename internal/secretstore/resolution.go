@@ -2,6 +2,7 @@ package secretstore
 
 import (
 	"context"
+	"log/slog"
 	"sort"
 	"sync"
 	"time"
@@ -215,6 +216,30 @@ func (c *ResolutionCoordinator) ProviderHealth() (Condition, bool) {
 	return c.health.condition, true
 }
 
+func (c *ResolutionCoordinator) ResolveConsumer(ctx context.Context, consumer config.SecretConsumer) (map[string]string, error) {
+	providerBacked := !c.environmentOnly(consumer)
+	if providerBacked {
+		if condition, blocked := c.statusBlocked(); blocked {
+			c.enqueue(consumer, condition, c.currentFailureDelay(), 0)
+			c.signal()
+			return nil, &Error{Operation: OperationGet, Provider: "configured", Condition: condition}
+		}
+	}
+	values, err := c.resolveGroup(ctx, consumer)
+	if err != nil {
+		condition, delay, failures := c.noteFailure(consumer, err)
+		c.enqueue(consumer, condition, delay, failures)
+		c.signal()
+		return nil, err
+	}
+	if providerBacked {
+		c.noteSuccess()
+	}
+	c.removePending(consumer)
+	c.signal()
+	return values, nil
+}
+
 func (c *ResolutionCoordinator) Retry() {
 	c.statusMu.Lock()
 	defer c.statusMu.Unlock()
@@ -305,6 +330,9 @@ func (c *ResolutionCoordinator) resolveGroup(ctx context.Context, group config.S
 			values[name] = result.Value
 		} else {
 			values[name] = ""
+			if group.Kind == config.ConsumerBackend {
+				slog.Warn("declaration references a variable the daemon environment does not hold", "backend", group.Name, "variable", name)
+			}
 		}
 	}
 	return values, nil

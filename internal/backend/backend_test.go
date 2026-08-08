@@ -64,6 +64,132 @@ func TestConnectFailureIsReportedRetryable(t *testing.T) {
 	}
 }
 
+func TestBackendUsesResolvedChildEnvironment(t *testing.T) {
+	spec := config.Backend{Name: "alpha", Command: "unused", Env: map[string]string{"API_TOKEN": "prefix-${TOKEN}"}}
+	b := newBackend("alpha", spec, Hooks{ResolveSecrets: func(_ context.Context, consumer config.SecretConsumer) (map[string]string, error) {
+		if consumer.Name != "alpha" || len(consumer.References) != 1 || consumer.References[0] != "TOKEN" {
+			t.Fatalf("consumer = %#v", consumer)
+		}
+		return map[string]string{"TOKEN": "resolved"}, nil
+	}})
+	transport, err := b.stdioTransport(t.Context())
+	if err != nil {
+		t.Fatalf("stdioTransport: %v", err)
+	}
+	command := transport.(*mcp.CommandTransport).Command
+	if !slices.Contains(command.Env, "API_TOKEN=prefix-resolved") {
+		t.Fatalf("child environment = %#v", command.Env)
+	}
+}
+
+func TestHTTPBackendUsesResolvedHeaders(t *testing.T) {
+	spec := config.Backend{Name: "alpha", HTTPURL: "https://example.test", Headers: map[string]string{"Authorization": "Bearer ${TOKEN}"}}
+	b := newBackend("alpha", spec, Hooks{ResolveSecrets: func(context.Context, config.SecretConsumer) (map[string]string, error) {
+		return map[string]string{"TOKEN": "resolved"}, nil
+	}})
+	transport, err := b.httpTransport(t.Context())
+	if err != nil {
+		t.Fatalf("httpTransport: %v", err)
+	}
+	streamable := transport.(*mcp.StreamableClientTransport)
+	headers := streamable.HTTPClient.Transport.(headerTransport).headers
+	if headers["Authorization"] != "Bearer resolved" {
+		t.Fatalf("headers = %#v", headers)
+	}
+}
+
+func TestProviderFailureIsolatesDependents(t *testing.T) {
+	cfg := &config.Config{Backends: map[string]config.Backend{
+		"dependent": {Name: "dependent", Command: "unused", Env: map[string]string{"TOKEN": "${TOKEN}"}},
+		"unrelated": {Name: "unrelated", Command: "unused"},
+	}}
+	r := NewRegistry(cfg, overridesAt(t, filepath.Join(t.TempDir(), "overrides.json")), Hooks{
+		ResolveSecrets: func(context.Context, config.SecretConsumer) (map[string]string, error) {
+			return nil, errors.New("provider unavailable")
+		},
+	})
+	r.MarkSecretPending(config.SecretConsumer{Kind: config.ConsumerBackend, Name: "dependent"}, "unavailable")
+	health := r.Health()
+	if health["dependent"].State != StatePending || health["dependent"].LastErr != "pending secret resolution: unavailable" {
+		t.Fatalf("dependent health = %#v", health["dependent"])
+	}
+	if health["unrelated"].State != StateDown || health["unrelated"].LastErr != "" {
+		t.Fatalf("unrelated health = %#v", health["unrelated"])
+	}
+}
+
+func TestAddedBackendCanResolveSecretsOnFirstDial(t *testing.T) {
+	cfg := &config.Config{Backends: map[string]config.Backend{}}
+	var resolutions atomic.Int32
+	r := NewRegistry(cfg, overridesAt(t, filepath.Join(t.TempDir(), "overrides.json")), Hooks{
+		ResolveSecrets: func(_ context.Context, consumer config.SecretConsumer) (map[string]string, error) {
+			resolutions.Add(1)
+			return map[string]string{consumer.References[0]: "resolved"}, nil
+		},
+	})
+	r.Add("added", config.Backend{Command: "true", Env: map[string]string{"TOKEN": "${TOKEN}"}}, true)
+	b, _ := r.Get("added")
+	_, _ = b.ListTools(t.Context())
+	if got := resolutions.Load(); got != 1 {
+		t.Fatalf("secret resolutions = %d, want 1", got)
+	}
+}
+
+func TestPreparedSecretsOnlyReleasePendingHealth(t *testing.T) {
+	b := newBackend("alpha", config.Backend{Command: "unused", Env: map[string]string{"TOKEN": "${TOKEN}"}}, Hooks{
+		ResolveSecrets: func(context.Context, config.SecretConsumer) (map[string]string, error) {
+			return nil, errors.New("unexpected resolver call")
+		},
+	})
+	for _, state := range []State{StateUp, StateNeedsAuth} {
+		b.health.State = state
+		if !b.prepareSecrets(map[string]string{"TOKEN": "resolved"}) {
+			t.Fatalf("prepareSecrets refused state %q", state)
+		}
+		if got := b.Health().State; got != state {
+			t.Fatalf("state after preparing secrets = %q, want %q", got, state)
+		}
+	}
+	b.health.State = StatePending
+	b.health.LastErr = "pending secret resolution: unavailable"
+	if !b.prepareSecrets(map[string]string{"TOKEN": "resolved"}) {
+		t.Fatal("prepareSecrets refused pending state")
+	}
+	if health := b.Health(); health.State != StateDown || health.LastErr != "" {
+		t.Fatalf("health after pending resolution = %#v", health)
+	}
+	b.markSecretPending("stale startup snapshot")
+	if health := b.Health(); health.State != StateDown || health.LastErr != "" {
+		t.Fatalf("stale pending snapshot changed health = %#v", health)
+	}
+	values, err := b.secretValues(t.Context())
+	if err != nil {
+		t.Fatalf("secretValues: %v", err)
+	}
+	if values["TOKEN"] != "resolved" {
+		t.Fatalf("prepared values = %#v", values)
+	}
+	clear(values)
+}
+
+func TestReconnectRetriesPendingSecretResolutionBeforeRefresh(t *testing.T) {
+	var events []string
+	cfg := &config.Config{Backends: map[string]config.Backend{
+		"alpha": {Command: "unused", Env: map[string]string{"TOKEN": "${TOKEN}"}},
+	}}
+	r := NewRegistry(cfg, overridesAt(t, filepath.Join(t.TempDir(), "overrides.json")), Hooks{
+		RetrySecrets: func() { events = append(events, "retry") },
+		Refresh:      func(string) { events = append(events, "refresh") },
+	})
+	r.MarkSecretPending(config.SecretConsumer{Kind: config.ConsumerBackend, Name: "alpha"}, "interaction_required")
+	if err := r.Reconnect("alpha"); err != nil {
+		t.Fatalf("Reconnect: %v", err)
+	}
+	if got := strings.Join(events, ","); got != "retry,refresh" {
+		t.Fatalf("events = %q, want retry,refresh", got)
+	}
+}
+
 func TestInteractiveBudgetSurvivesConfiguredTimeout(t *testing.T) {
 	cfg := &config.Config{Backends: map[string]config.Backend{
 		"alpha": {Name: "alpha", Command: "true", TimeoutSec: 1},

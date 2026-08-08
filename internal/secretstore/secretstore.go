@@ -34,6 +34,35 @@ type Result struct {
 	Present bool
 }
 
+type failedProvider struct {
+	condition Condition
+	cause     error
+}
+
+func NewFailedProvider(cause error) Provider {
+	condition, ok := ConditionOf(cause)
+	if !ok {
+		condition = ConditionUnavailable
+	}
+	return &failedProvider{condition: condition, cause: cause}
+}
+
+func (p *failedProvider) Get(_ context.Context, name string) (Result, error) {
+	return Result{}, p.err(OperationGet, name)
+}
+
+func (p *failedProvider) Set(_ context.Context, name, _ string) error {
+	return p.err(OperationSet, name)
+}
+
+func (p *failedProvider) Delete(_ context.Context, name string) error {
+	return p.err(OperationDelete, name)
+}
+
+func (p *failedProvider) err(operation Operation, name string) error {
+	return &Error{Operation: operation, Provider: "configured", Name: name, Condition: p.condition, Cause: p.cause}
+}
+
 type Operation string
 
 const (

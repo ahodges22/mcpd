@@ -40,6 +40,8 @@ var ErrDisabled = errors.New("backend disabled")
 // terminal for the life of the process.
 var ErrShutdown = errors.New("backend shut down")
 
+var ErrPendingSecretResolution = errors.New("pending secret resolution")
+
 type State string
 
 const (
@@ -47,6 +49,7 @@ const (
 	StateDown      State = "down"
 	StateNeedsAuth State = "needs-auth"
 	StateDisabled  State = "disabled"
+	StatePending   State = "pending-secret"
 )
 
 type Health struct {
@@ -97,15 +100,17 @@ const (
 // exclusively before life, so dispatch must never acquire them the other way
 // round.
 type Backend struct {
-	name        string
-	spec        config.Backend
-	client      *mcp.Client
-	dial        func(context.Context) (mcp.Transport, error)
-	onReconnect func(server string)
-	stopRefresh func(server string)
-	dropTools   func(server string)
-	refresh     func(server string)
-	authHandler func(server string) (auth.OAuthHandler, error)
+	name           string
+	spec           config.Backend
+	client         *mcp.Client
+	dial           func(context.Context) (mcp.Transport, error)
+	onReconnect    func(server string)
+	stopRefresh    func(server string)
+	dropTools      func(server string)
+	refresh        func(server string)
+	authHandler    func(server string) (auth.OAuthHandler, error)
+	secretConsumer config.SecretConsumer
+	resolveSecrets func(context.Context, config.SecretConsumer) (map[string]string, error)
 	// authNote is what the auth column says when nothing is pending, so a note left
 	// by an authorization does not outlive it.
 	authNote string
@@ -120,15 +125,16 @@ type Backend struct {
 	// transition and posting a tool count over a backend that stopped serving them.
 	gen atomic.Uint64
 
-	mu             sync.Mutex
-	session        *mcp.ClientSession
-	health         Health
-	failures       int
-	retryAt        time.Time
-	connectCancel  context.CancelFunc
-	dispatches     map[*dispatchCancel]struct{}
-	connectAttempt ConnectAttempt
-	connected      bool // a session has existed, so the next connect is a reconnect
+	mu              sync.Mutex
+	session         *mcp.ClientSession
+	health          Health
+	failures        int
+	retryAt         time.Time
+	connectCancel   context.CancelFunc
+	dispatches      map[*dispatchCancel]struct{}
+	connectAttempt  ConnectAttempt
+	connected       bool // a session has existed, so the next connect is a reconnect
+	preparedSecrets map[string]string
 	// interactive latches that the next handshake is one a user asked for and is waiting on
 	// in a browser, so it gets the budget above. Atomic rather than guarded by mu, because
 	// connectTimeout is read with mu already held.
@@ -276,6 +282,9 @@ func (b *Backend) ensureSession(ctx context.Context) (*mcp.ClientSession, error)
 
 	if state == StateDisabled {
 		return nil, ErrDisabled
+	}
+	if state == StatePending {
+		return nil, ErrPendingSecretResolution
 	}
 	if sess != nil {
 		return sess, nil
@@ -454,6 +463,8 @@ func (b *Backend) teardown(mode teardownMode) {
 	// transition of any mode can dial a child this process would not own.
 	b.shutdown = b.shutdown || mode == forShutdown
 	b.health.LastErr = ""
+	clear(b.preparedSecrets)
+	b.preparedSecrets = nil
 	b.gen.Add(1)
 	b.mu.Unlock()
 
@@ -545,6 +556,13 @@ func (b *Backend) failConnect(stage string, cause error) error {
 	if b.health.State == StateDisabled {
 		return ErrDisabled
 	}
+	if errors.Is(cause, ErrPendingSecretResolution) {
+		b.health.State = StatePending
+		b.health.LastErr = cause.Error()
+		b.failures = 0
+		b.retryAt = time.Time{}
+		return fmt.Errorf("%s: %w", stage, cause)
+	}
 	b.failures++
 	// A handshake that stopped for want of an authorization is not a backend
 	// failure: needs-auth is what tells the user to act, and StateDown would bury it.
@@ -614,11 +632,16 @@ func (b *Backend) trackDispatch(cancel context.CancelFunc) context.CancelFunc {
 	}
 }
 
-func (b *Backend) stdioTransport(context.Context) (mcp.Transport, error) {
+func (b *Backend) stdioTransport(ctx context.Context) (mcp.Transport, error) {
+	values, err := b.secretValues(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrPendingSecretResolution, err)
+	}
+	defer clear(values)
 	cmd := exec.Command(b.spec.Command, b.spec.Args...)
 	// Never nil: nil means inherit-everything, which would hand every credential
 	// mcpd holds to third-party code.
-	cmd.Env = b.spec.ChildEnv(environ())
+	cmd.Env = b.spec.ChildEnvResolved(environ(), values)
 	return &mcp.CommandTransport{Command: cmd}, nil
 }
 
@@ -638,14 +661,19 @@ var streamableBase = func() *http.Transport {
 	return t
 }()
 
-func (b *Backend) httpTransport(context.Context) (mcp.Transport, error) {
+func (b *Backend) httpTransport(ctx context.Context) (mcp.Transport, error) {
+	values, err := b.secretValues(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrPendingSecretResolution, err)
+	}
+	defer clear(values)
 	t := &mcp.StreamableClientTransport{
 		Endpoint: b.spec.HTTPURL,
 		// No http.Client.Timeout: it would also cap the long-lived standalone SSE
 		// stream. Per-call deadlines come from withTimeout instead.
 		HTTPClient: &http.Client{Transport: headerTransport{
 			base:    streamableBase,
-			headers: b.spec.ExpandHeaders(environ()),
+			headers: b.spec.ExpandHeadersResolved(environ(), values),
 		}},
 	}
 	if b.spec.Auth == "oauth" {
@@ -659,6 +687,58 @@ func (b *Backend) httpTransport(context.Context) (mcp.Transport, error) {
 		t.OAuthHandler = h
 	}
 	return t, nil
+}
+
+func (b *Backend) secretValues(ctx context.Context) (map[string]string, error) {
+	if len(b.secretConsumer.References) == 0 || b.resolveSecrets == nil {
+		return nil, nil
+	}
+	b.mu.Lock()
+	if b.preparedSecrets != nil {
+		values := b.preparedSecrets
+		b.preparedSecrets = nil
+		b.mu.Unlock()
+		return values, nil
+	}
+	resolve := b.resolveSecrets
+	consumer := b.secretConsumer
+	b.mu.Unlock()
+	return resolve(ctx, consumer)
+}
+
+func (b *Backend) prepareSecrets(values map[string]string) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.health.State == StateDisabled || b.shutdown {
+		return false
+	}
+	clear(b.preparedSecrets)
+	b.preparedSecrets = make(map[string]string, len(values))
+	for name, value := range values {
+		b.preparedSecrets[name] = value
+	}
+	if b.health.State == StatePending {
+		b.health.State = StateDown
+		b.health.LastErr = ""
+		b.failures = 0
+		b.retryAt = time.Time{}
+	}
+	return true
+}
+
+func (b *Backend) markSecretPending(condition string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.health.State == StateDisabled || b.preparedSecrets != nil {
+		return
+	}
+	clear(b.preparedSecrets)
+	b.preparedSecrets = nil
+	b.health.State = StatePending
+	b.health.LastErr = "pending secret resolution"
+	if condition != "" {
+		b.health.LastErr += ": " + condition
+	}
 }
 
 type headerTransport struct {
