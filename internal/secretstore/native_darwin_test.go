@@ -403,7 +403,7 @@ func TestDarwinNativeRoundTrip(t *testing.T) {
 		defer cleanupCancel()
 		_ = store.Delete(cleanupCtx, name)
 	})
-	values := []string{"quotes ' \" slash \\ dollar $ tick \x60", "  café 雪  ", strings.Repeat("x", MaxValueBytes)}
+	values := []string{"quotes ' \" slash \\ dollar $ tick \x60", "c3a9", "  café 雪  ", strings.Repeat("x", MaxValueBytes)}
 	for i, want := range values {
 		if err := store.Set(ctx, name, want); err != nil {
 			t.Fatalf("Set value %d: %v", i, err)
