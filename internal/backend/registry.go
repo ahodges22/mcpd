@@ -259,6 +259,22 @@ func (r *Registry) MarkSecretPending(consumer config.SecretConsumer, condition s
 	}
 }
 
+func (r *Registry) ResetSecretConsumer(consumer config.SecretConsumer) bool {
+	if consumer.Kind != config.ConsumerBackend {
+		return false
+	}
+	b, done, err := r.beginTransition(consumer.Name)
+	if err != nil {
+		return false
+	}
+	defer done()
+	if b.Health().State == StateDisabled {
+		return false
+	}
+	b.teardown(forReconnect)
+	return true
+}
+
 // Disable is the kill switch: it cancels in-flight dispatches and any handshake,
 // awaits the dispatch drain, closes the session, terminates a stdio child, and
 // evicts the backend's tools from the catalog. The override is persisted before

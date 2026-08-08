@@ -13,6 +13,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/ahodges22/mcpd/internal/backend"
+	"github.com/ahodges22/mcpd/internal/catalog"
 	"github.com/ahodges22/mcpd/internal/config"
 	"github.com/ahodges22/mcpd/internal/searchindex"
 	"github.com/ahodges22/mcpd/internal/secretstore"
@@ -228,6 +229,77 @@ func TestProviderFailureIsolatesDependents(t *testing.T) {
 	}
 	if health["unrelated"].State != backend.StateUp {
 		t.Fatalf("unrelated health = %#v", health["unrelated"])
+	}
+}
+
+func TestEmbeddingSecretRebuildsIndexClient(t *testing.T) {
+	const secretName = "MCPD_TEST_EMBEDDING_TOKEN"
+	old, present := os.LookupEnv(secretName)
+	if err := os.Unsetenv(secretName); err != nil {
+		t.Fatalf("Unsetenv: %v", err)
+	}
+	t.Cleanup(func() {
+		if present {
+			_ = os.Setenv(secretName, old)
+		} else {
+			_ = os.Unsetenv(secretName)
+		}
+	})
+
+	var authorization atomic.Value
+	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authorization.Store(r.Header.Get("Authorization"))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"index":0,"embedding":[1]}]}`))
+	}))
+	defer gateway.Close()
+
+	dir := t.TempDir()
+	state := filepath.Join(dir, "state")
+	if _, err := secretstore.NewFileStore(state); err != nil {
+		t.Fatalf("NewFileStore: %v", err)
+	}
+	cfgPath := filepath.Join(dir, "config.json")
+	declaration := config.Config{
+		Backends: map[string]config.Backend{},
+		Embeddings: config.Embeddings{
+			URL: gateway.URL, Model: "embed", APIKeyEnv: secretName,
+		},
+		Secrets: &config.Secrets{Provider: config.SecretProviderFile},
+	}
+	body, err := json.Marshal(declaration)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if err := os.WriteFile(cfgPath, body, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	writer, cfg, err := config.NewWriter(cfgPath)
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	overrides, err := backend.LoadOverrides(filepath.Join(state, "overrides.json"), writer)
+	if err != nil {
+		t.Fatalf("LoadOverrides: %v", err)
+	}
+	d := &daemon{state: state, writer: writer, overrides: overrides}
+	if err := d.wire(cfg, "127.0.0.1:0"); err != nil {
+		t.Fatalf("wire: %v", err)
+	}
+	t.Cleanup(func() {
+		d.secretCancel()
+		d.reg.Shutdown()
+	})
+
+	if _, err := d.secrets.Set(t.Context(), secretName, "new-key"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	entries := []catalog.Entry{{ID: "mcp__alpha__tool", Server: "alpha", Tool: "tool", Description: "tool"}}
+	if _, _, err := d.index.Search(t.Context(), "tool", entries, 1); err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if got, _ := authorization.Load().(string); got != "Bearer new-key" {
+		t.Fatalf("Authorization = %q", got)
 	}
 }
 

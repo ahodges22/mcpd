@@ -45,11 +45,12 @@ func (c *ResolutionCoordinator) Status(ctx context.Context) []SecretStatus {
 func (c *ResolutionCoordinator) status(ctx context.Context) []SecretStatus {
 	sweepCtx, cancelSweep := context.WithTimeout(ctx, c.tuning.StatusBudget)
 	defer cancelSweep()
-	out := make([]SecretStatus, 0, len(c.referenceNames))
-	for _, name := range c.referenceNames {
+	referenceNames, references := c.referenceSnapshot()
+	out := make([]SecretStatus, 0, len(referenceNames))
+	for _, name := range referenceNames {
 		status := SecretStatus{
 			Name:      name,
-			Consumers: append([]ConsumerIdentity(nil), c.references[name]...),
+			Consumers: references[name],
 		}
 		if _, ok := c.lookup(name); ok {
 			status.Source = EffectiveSourceEnvironment

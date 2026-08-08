@@ -3,7 +3,6 @@ package secretstore
 import (
 	"context"
 	"log/slog"
-	"sort"
 	"sync"
 	"time"
 
@@ -77,6 +76,9 @@ type ResolutionCoordinator struct {
 	busyUntil     time.Time
 	busyCondition Condition
 	presence      map[string]presenceEntry
+
+	mutationMu    sync.Mutex
+	mutationHooks MutationHooks
 }
 
 func NewResolutionCoordinator(
@@ -120,26 +122,15 @@ func NewResolutionCoordinator(
 		tuning.StatusBudget = defaultStatusBudget
 	}
 	var groups []config.SecretConsumer
-	references := map[string][]ConsumerIdentity{}
 	if cfg != nil {
 		groups = cfg.SecretConsumers()
 		if cfg.Secrets == nil || !cfg.Secrets.Enabled() {
 			provider = nil
 		}
-		for _, group := range groups {
-			consumer := ConsumerIdentity{Kind: group.Kind, Name: group.Name}
-			for _, name := range group.References {
-				references[name] = append(references[name], consumer)
-			}
-		}
 	} else {
 		provider = nil
 	}
-	referenceNames := make([]string, 0, len(references))
-	for name := range references {
-		referenceNames = append(referenceNames, name)
-	}
-	sort.Strings(referenceNames)
+	groups, references, referenceNames := buildConsumerIndex(groups)
 	return &ResolutionCoordinator{
 		provider:       provider,
 		lookup:         lookup,

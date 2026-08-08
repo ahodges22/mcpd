@@ -26,6 +26,11 @@ type Tokens interface {
 	Reconcile(declared map[string]config.Identity) error
 }
 
+type SecretIndex interface {
+	UpdateBackend(string, *config.Backend)
+	Reindex(*config.Config)
+}
+
 // Manager serializes add, remove and reload against each other.
 //
 // The lock is held for the whole sequence rather than only the declaration write. Ending
@@ -39,12 +44,13 @@ type Tokens interface {
 // alternative is generation-tagged cleanup, which is more machinery guarding a race that
 // serializing removes outright.
 type Manager struct {
-	mu     sync.Mutex
-	writer *config.Writer
-	reg    *backend.Registry
-	cat    Catalog
-	ov     *backend.Overrides
-	tokens Tokens
+	mu      sync.Mutex
+	writer  *config.Writer
+	reg     *backend.Registry
+	cat     Catalog
+	ov      *backend.Overrides
+	tokens  Tokens
+	secrets SecretIndex
 
 	// afterCommit runs between a removal's declaration write and its cleanup. It exists
 	// so a test can drive the exact interleaving the operation lock is held across;
@@ -61,6 +67,11 @@ type Manager struct {
 
 func New(w *config.Writer, reg *backend.Registry, cat Catalog, ov *backend.Overrides, tokens Tokens) *Manager {
 	return &Manager{writer: w, reg: reg, cat: cat, ov: ov, tokens: tokens}
+}
+
+func (m *Manager) WithSecretIndex(index SecretIndex) *Manager {
+	m.secrets = index
+	return m
 }
 
 // Add declares a backend and publishes it.
@@ -87,6 +98,9 @@ func (m *Manager) Add(name string, spec config.Backend) ([]error, error) {
 	warnings = append(warnings, m.forget(name)...)
 
 	m.reg.Add(name, spec, true)
+	if m.secrets != nil {
+		m.secrets.UpdateBackend(name, &spec)
+	}
 	// A trigger, not a gate. A declared backend that cannot be reached is a normal
 	// state, shown as down with its cause, so a dial is never a precondition here.
 	m.cat.Trigger(name)
@@ -115,6 +129,9 @@ func (m *Manager) Remove(name string) ([]error, error) {
 	}
 	m.writer.Undeclare(name)
 	m.reg.Remove(name)
+	if m.secrets != nil {
+		m.secrets.UpdateBackend(name, nil)
+	}
 	m.cat.Drop(name)
 	return append(warnings, m.forget(name)...), nil
 }
@@ -182,6 +199,9 @@ func (m *Manager) Reload() ([]error, error) {
 			}
 		}
 		m.cat.Trigger(name)
+	}
+	if m.secrets != nil {
+		m.secrets.Reindex(cfg)
 	}
 	if m.ReloadRemote != nil {
 		m.ReloadRemote()

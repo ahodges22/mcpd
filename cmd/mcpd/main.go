@@ -183,7 +183,9 @@ func (d *daemon) wire(cfg *config.Config, addr string) error {
 					slog.Warn("load search index", "error", err)
 				}
 				if d.cat != nil {
-					d.liveIndex.QueueRefresh(d.cat.Entries(), indexBudget)
+					if entries := d.cat.Entries(); len(entries) > 0 {
+						d.liveIndex.QueueRefresh(entries, indexBudget)
+					}
 				}
 			}
 		})
@@ -202,8 +204,28 @@ func (d *daemon) wire(cfg *config.Config, addr string) error {
 		RetrySecrets:   retrySecrets,
 	})
 	d.cat = catalog.New(d.reg, filepath.Join(d.state, "catalog.json"))
+	if d.secrets != nil {
+		d.secrets.SetMutationHooks(secretstore.MutationHooks{
+			Reset: func(consumer config.SecretConsumer) bool {
+				switch consumer.Kind {
+				case config.ConsumerBackend:
+					return d.reg.ResetSecretConsumer(consumer)
+				case config.ConsumerEmbeddings:
+					return d.liveIndex != nil
+				default:
+					return false
+				}
+			},
+			Pending: func(pending secretstore.PendingConsumer) {
+				d.reg.MarkSecretPending(pending.Consumer, string(pending.Condition))
+			},
+		})
+	}
 
 	d.mgr = manage.New(d.writer, d.reg, d.cat, d.overrides, d.store)
+	if d.secrets != nil {
+		d.mgr.WithSecretIndex(d.secrets)
+	}
 
 	// The backstop for a crash between a commit and its cleanup, and the only thing that
 	// catches a declaration removed or repointed by hand while the daemon was stopped.

@@ -54,6 +54,23 @@ type fakeTokens struct {
 	forgotWhileUp []string
 }
 
+type fakeSecretIndex struct {
+	updates   []string
+	reindexed *config.Config
+}
+
+func (f *fakeSecretIndex) UpdateBackend(name string, spec *config.Backend) {
+	if spec == nil {
+		f.updates = append(f.updates, "remove:"+name)
+		return
+	}
+	f.updates = append(f.updates, "set:"+name)
+}
+
+func (f *fakeSecretIndex) Reindex(cfg *config.Config) {
+	f.reindexed = cfg
+}
+
 func (f *fakeTokens) Forget(server string) error {
 	up := f.publishedAt != nil && f.publishedAt(server)
 	f.mu.Lock()
@@ -141,6 +158,32 @@ func TestAddDeclaresPublishesAndRefreshes(t *testing.T) {
 	}
 	if !h.cat.saw(h.cat.triggered, "flint") {
 		t.Error("no catalog refresh was triggered for the added backend")
+	}
+}
+
+func TestBackendManagementKeepsSecretIndexCurrent(t *testing.T) {
+	h := newHarness(t, `{"backends":{"platform":{"command":"x"}}}`)
+	index := &fakeSecretIndex{}
+	h.m.WithSecretIndex(index)
+	secretBackend := config.Backend{Command: "unused", Env: map[string]string{"TOKEN": "${TOKEN}"}}
+	if _, err := h.m.Add("alpha", secretBackend); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if _, err := h.m.Remove("alpha"); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if got := strings.Join(index.updates, ","); got != "set:alpha,remove:alpha" {
+		t.Fatalf("updates = %q", got)
+	}
+
+	if err := os.WriteFile(h.path, []byte(`{"backends":{"beta":{"http_url":"https://example.test","headers":{"Authorization":"Bearer ${BETA_TOKEN}"}}}}`), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if _, err := h.m.Reload(); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	if index.reindexed == nil || len(index.reindexed.SecretConsumers()) != 1 || index.reindexed.SecretConsumers()[0].Name != "beta" {
+		t.Fatalf("reindexed config = %#v", index.reindexed)
 	}
 }
 
