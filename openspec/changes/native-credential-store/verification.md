@@ -1,6 +1,6 @@
 # Verification evidence
 
-Date: 2026-08-08
+Date: 2026-08-09
 
 Host: macOS 26.5 arm64, Go 1.26.5
 
@@ -46,6 +46,6 @@ The installed development binary, the current user LaunchAgent, and the live con
 - The LaunchAgent command removes `CONTEXT7_API_KEY` before it starts mcpd.
 - `mcpd secret status` reports `CONTEXT7_API_KEY` as `provider-present` for `backend/context7`.
 - A Context7 MCP initialize request authenticated with the value read from the `io.mcpd.secrets` Keychain item returned HTTP 200 in 0.30 seconds. The value was passed by pipes and was not printed or placed in process arguments.
-- The LaunchAgent's mcpd process could not advertise Context7 tools because outbound Go HTTPS is blocked in this execution sandbox. The same process timed out against several unrelated remote MCP servers. A curl request to Context7 from the same session succeeded. The final tool-advertisement check must be repeated after the LaunchAgent is restarted from an unrestricted user Terminal session.
+- A LaunchAgent restart initiated inside the execution sandbox could not advertise remote tools because outbound Go HTTPS was blocked. After the user restarted the same LaunchAgent from an unrestricted Terminal session, `/api/status` reported Context7 as `up` with 2 advertised tools. All 13 configured backends were serving.
 
 No secret value was written to this evidence file or to the verification command output.
