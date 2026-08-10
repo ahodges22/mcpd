@@ -126,6 +126,64 @@ func TestEmbeddingsUsesResolvedAPIKey(t *testing.T) {
 	}
 }
 
+func TestApplyAPIKeyStopsSupersededRefresh(t *testing.T) {
+	oldStarted := make(chan struct{})
+	releaseOld := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") == "Bearer old-key" {
+			close(oldStarted)
+			<-releaseOld
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"index":0,"embedding":[1]}]}`))
+	}))
+	t.Cleanup(func() {
+		select {
+		case <-releaseOld:
+		default:
+			close(releaseOld)
+		}
+		server.Close()
+	})
+
+	state := t.TempDir()
+	live := NewLive(state, config.Embeddings{URL: server.URL, Model: "embed"}, config.Ranking{})
+	if err := live.ApplyAPIKey("old-key"); err != nil {
+		t.Fatalf("ApplyAPIKey old: %v", err)
+	}
+	old := live.index()
+	live.QueueRefresh([]catalog.Entry{{ID: "mcp__x__tool", Server: "x", Tool: "tool"}}, 10*time.Second)
+	waitSignal(t, oldStarted)
+	if err := live.ApplyAPIKey("new-key"); err != nil {
+		t.Fatalf("ApplyAPIKey new: %v", err)
+	}
+	cachePath := filepath.Join(state, "embeddings.json")
+	if err := os.Remove(cachePath); err != nil && !os.IsNotExist(err) {
+		t.Fatalf("remove cache after swap: %v", err)
+	}
+	close(releaseOld)
+	old.refreshMu.Lock()
+	old.refreshMu.Unlock()
+	if _, err := os.Stat(cachePath); !os.IsNotExist(err) {
+		t.Fatalf("superseded refresh wrote cache after ApplyAPIKey returned: %v", err)
+	}
+}
+
+func TestApplyAPIKeyReusesIndexForSameKey(t *testing.T) {
+	live := NewLive(t.TempDir(), config.Embeddings{URL: "http://127.0.0.1:1", Model: "embed"}, config.Ranking{})
+	if err := live.ApplyAPIKey("same-key"); err != nil {
+		t.Fatalf("first ApplyAPIKey: %v", err)
+	}
+	first := live.index()
+	if err := live.ApplyAPIKey("same-key"); err != nil {
+		t.Fatalf("second ApplyAPIKey: %v", err)
+	}
+	if live.index() != first {
+		t.Fatal("same API key replaced the live index")
+	}
+}
+
 func TestRefreshReportsMissingExpansion(t *testing.T) {
 	server := embeddingServer(t, func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "generation unavailable", http.StatusServiceUnavailable)

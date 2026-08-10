@@ -30,11 +30,15 @@ type Index struct {
 	missing    int
 	unexpanded int
 
-	queueMu sync.Mutex
-	queued  []catalog.Entry
-	pending bool
-	latest  uint64
-	running bool
+	queueMu   sync.Mutex
+	queued    []catalog.Entry
+	pending   bool
+	latest    uint64
+	running   bool
+	stopped   bool
+	queueWG   sync.WaitGroup
+	queueCtx  context.Context
+	stopQueue context.CancelFunc
 }
 
 func New(statePath string, emb config.Embeddings, ranking config.Ranking) *Index {
@@ -45,11 +49,14 @@ func NewWithAPIKey(statePath string, emb config.Embeddings, ranking config.Ranki
 	rerankTimeout := ranking.RerankTimeout()
 	client := embedding.NewClient(emb.URL, apiKey, emb.Model)
 	baseCache := embedding.NewCache(filepath.Join(statePath, "embeddings.json"), client.Model())
+	queueCtx, stopQueue := context.WithCancel(context.Background())
 	index := &Index{
 		client:    client,
 		baseCache: baseCache,
 		base:      map[string][]float32{},
 		expanded:  map[string][]float32{},
+		queueCtx:  queueCtx,
+		stopQueue: stopQueue,
 	}
 	if ranking.ExpansionModel != "" && ranking.RerankModel != "" && rerankTimeout > 0 {
 		index.gateway = newGateway(emb.URL, apiKey)
@@ -95,6 +102,10 @@ func (i *Index) Refresh(ctx context.Context, entries []catalog.Entry) {
 
 func (i *Index) QueueRefresh(entries []catalog.Entry, budget time.Duration) {
 	i.queueMu.Lock()
+	if i.stopped {
+		i.queueMu.Unlock()
+		return
+	}
 	i.latest++
 	i.queued = append([]catalog.Entry(nil), entries...)
 	i.pending = true
@@ -103,22 +114,34 @@ func (i *Index) QueueRefresh(entries []catalog.Entry, budget time.Duration) {
 		return
 	}
 	i.running = true
+	i.queueWG.Add(1)
 	i.queueMu.Unlock()
 
 	go func() {
+		defer i.queueWG.Done()
 		for {
 			i.queueMu.Lock()
+			if i.stopped {
+				i.running = false
+				i.queueMu.Unlock()
+				return
+			}
 			entries := i.queued
 			sequence := i.latest
 			i.queued = nil
 			i.pending = false
 			i.queueMu.Unlock()
 
-			ctx, cancel := context.WithTimeout(context.Background(), budget)
+			ctx, cancel := context.WithTimeout(i.queueCtx, budget)
 			i.refresh(ctx, entries, sequence)
 			cancel()
 
 			i.queueMu.Lock()
+			if i.stopped {
+				i.running = false
+				i.queueMu.Unlock()
+				return
+			}
 			if !i.pending {
 				i.running = false
 				i.queueMu.Unlock()
@@ -127,6 +150,20 @@ func (i *Index) QueueRefresh(entries []catalog.Entry, budget time.Duration) {
 			i.queueMu.Unlock()
 		}
 	}()
+}
+
+func (i *Index) Stop() {
+	i.queueMu.Lock()
+	if !i.stopped {
+		i.stopped = true
+		i.queued = nil
+		i.pending = false
+		if i.stopQueue != nil {
+			i.stopQueue()
+		}
+	}
+	i.queueMu.Unlock()
+	i.queueWG.Wait()
 }
 
 func (i *Index) refresh(ctx context.Context, entries []catalog.Entry, sequence uint64) {

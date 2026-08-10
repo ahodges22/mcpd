@@ -2,6 +2,7 @@ package searchindex
 
 import (
 	"context"
+	"crypto/sha256"
 	"sync"
 	"time"
 
@@ -15,8 +16,11 @@ type Live struct {
 	emb     config.Embeddings
 	ranking config.Ranking
 
-	mu      sync.RWMutex
-	current *Index
+	applyMu      sync.Mutex
+	mu           sync.RWMutex
+	current      *Index
+	keySHA256    [sha256.Size]byte
+	hasKeySHA256 bool
 }
 
 func NewLive(state string, emb config.Embeddings, ranking config.Ranking) *Live {
@@ -24,10 +28,29 @@ func NewLive(state string, emb config.Embeddings, ranking config.Ranking) *Live 
 }
 
 func (l *Live) ApplyAPIKey(apiKey string) error {
+	keySHA256 := sha256.Sum256([]byte(apiKey))
+	l.applyMu.Lock()
+	defer l.applyMu.Unlock()
+
+	l.mu.Lock()
+	if l.current != nil && l.hasKeySHA256 && l.keySHA256 == keySHA256 {
+		l.mu.Unlock()
+		return nil
+	}
+	previous := l.current
+	l.current = nil
+	l.hasKeySHA256 = false
+	l.mu.Unlock()
+
+	if previous != nil {
+		previous.Stop()
+	}
 	index := NewWithAPIKey(l.state, l.emb, l.ranking, apiKey)
 	err := index.Load()
 	l.mu.Lock()
 	l.current = index
+	l.keySHA256 = keySHA256
+	l.hasKeySHA256 = true
 	l.mu.Unlock()
 	return err
 }
