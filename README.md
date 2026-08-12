@@ -55,9 +55,15 @@ tar -xzf mcpd_*_*.tar.gz
 install -m 0755 mcpd "$HOME/.local/bin/mcpd"
 ```
 
-Each release also publishes `checksums.txt`. Verify the downloaded archive before you extract it:
+Each release also publishes `checksums.txt` and its keyless Sigstore bundle,
+`checksums.txt.cosign`. Replace `vX.Y.Z` with the downloaded release tag, then verify the signed
+checksums and archive before you extract it:
 
 ```sh
+cosign verify-blob --bundle checksums.txt.cosign \
+  --certificate-identity https://github.com/ahodges22/mcpd/.github/workflows/release.yml@refs/tags/vX.Y.Z \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  checksums.txt
 sha256sum --check --ignore-missing checksums.txt
 ```
 
@@ -73,6 +79,18 @@ Each archive also carries GitHub build provenance. With the `gh` CLI you can ver
 ```sh
 gh attestation verify mcpd_linux_amd64.tar.gz --repo ahodges22/mcpd
 ```
+
+Update an existing binary installation from the latest stable GitHub release:
+
+```sh
+mcpd update --check
+mcpd update
+```
+
+Use `mcpd update --version vX.Y.Z` to install a specific release. The command verifies the
+signed checksums, preserves the executable mode, and replaces the current executable
+atomically. Restart an already-running daemon after the command finishes. The command prints
+the platform-specific restart command for the shipped systemd and launchd definitions.
 
 To build from source instead:
 
@@ -226,4 +244,6 @@ git tag -a v0.1.0 -m v0.1.0
 git push origin v0.1.0
 ```
 
-The release workflow runs the Linux and macOS test suites, then publishes the four archives, SHA-256 checksums, and generated release notes to a GitHub Release.
+The release workflow runs the Linux and macOS test suites, then publishes the four archives,
+SHA-256 checksums, the keyless Sigstore bundle for those checksums, and generated release notes
+to a GitHub Release.

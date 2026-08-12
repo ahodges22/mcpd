@@ -51,6 +51,10 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: Set up cosign
+        uses: sigstore/cosign-installer@cad07c2e89fa2edd6e2d7bab4c1aa38e53f76003 # v4.1.1
+        with:
+          cosign-release: v2.6.1
       - name: Publish GitHub release
         uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7
         with:

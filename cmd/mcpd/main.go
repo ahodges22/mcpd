@@ -77,6 +77,9 @@ func run() error {
 	if len(os.Args) > 1 && os.Args[1] == "install" {
 		return runInstall(os.Args[2:])
 	}
+	if len(os.Args) > 1 && os.Args[1] == "update" {
+		return runUpdate(os.Args[2:])
+	}
 	if len(os.Args) > 1 && os.Args[1] == "secret" {
 		return runSecret(os.Args[2:], defaultSecretCommandDeps())
 	}

@@ -40,6 +40,18 @@ archives:
 checksum:
   name_template: checksums.txt
 
+signs:
+  - id: cosign
+    artifacts: checksum
+    cmd: cosign
+    signature: ${artifact}.cosign
+    args:
+      - sign-blob
+      - --oidc-provider=github-actions
+      - --bundle=${signature}
+      - ${artifact}
+      - --yes
+
 changelog:
   sort: asc
   filters:
