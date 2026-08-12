@@ -6,9 +6,11 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
+	"crypto/x509"
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -53,6 +55,39 @@ func TestCheckUsesSemanticVersionOrdering(t *testing.T) {
 	}
 	if result.Current != "v1.2.0" || result.Latest != "v1.3.0" || !result.Outdated {
 		t.Fatalf("Check() = %+v", result)
+	}
+}
+
+func TestDefaultClientUsesHTTP1(t *testing.T) {
+	protocol := make(chan string, 1)
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		protocol <- request.Proto
+		response.WriteHeader(http.StatusNoContent)
+	}))
+	server.EnableHTTP2 = true
+	server.StartTLS()
+	defer server.Close()
+
+	client := (&Updater{}).client()
+	transport, ok := client.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("default client transport = %T, want *http.Transport", client.Transport)
+	}
+	if transport.TLSClientConfig == nil || len(transport.TLSClientConfig.NextProtos) != 1 || transport.TLSClientConfig.NextProtos[0] != "http/1.1" {
+		t.Fatalf("default client TLS protocols = %v, want [http/1.1]", transport.TLSClientConfig)
+	}
+	roots := x509.NewCertPool()
+	roots.AddCert(server.Certificate())
+	tlsConfig := transport.TLSClientConfig.Clone()
+	tlsConfig.RootCAs = roots
+	transport.TLSClientConfig = tlsConfig
+	response, err := client.Get(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if got := <-protocol; got != "HTTP/1.1" {
+		t.Fatalf("request protocol = %q, want HTTP/1.1", got)
 	}
 }
 

@@ -51,7 +51,7 @@ type cosignRekorPayload struct {
 }
 
 var loadTrustedMaterial = func(ctx context.Context) (root.TrustedMaterial, error) {
-	options := tuf.DefaultOptions().WithContext(ctx).WithFetcher(contextFetcher{ctx: ctx, client: http.DefaultClient})
+	options := tuf.DefaultOptions().WithContext(ctx).WithFetcher(contextFetcher{ctx: ctx, client: http1Client(5 * time.Minute)})
 	return root.FetchTrustedRootWithOptions(options)
 }
 

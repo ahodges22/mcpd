@@ -6,6 +6,7 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -200,7 +201,23 @@ func (updater *Updater) client() *http.Client {
 	if updater.HTTPClient != nil {
 		return updater.HTTPClient
 	}
-	return &http.Client{Timeout: 5 * time.Minute}
+	return http1Client(5 * time.Minute)
+}
+
+func http1Client(timeout time.Duration) *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.ForceAttemptHTTP2 = false
+	transport.Protocols = new(http.Protocols)
+	transport.Protocols.SetHTTP1(true)
+	tlsConfig := transport.TLSClientConfig
+	if tlsConfig == nil {
+		tlsConfig = new(tls.Config)
+	} else {
+		tlsConfig = tlsConfig.Clone()
+	}
+	tlsConfig.NextProtos = []string{"http/1.1"}
+	transport.TLSClientConfig = tlsConfig
+	return &http.Client{Transport: transport, Timeout: timeout}
 }
 
 func findChecksum(checksums []byte, name string) ([]byte, error) {
