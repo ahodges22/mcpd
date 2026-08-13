@@ -28,7 +28,10 @@ jobs:
           go-version-file: go.mod
           cache: true
       - name: Run tests
-        run: go test -count=1 -race ./...
+        run: |
+          mkdir -p "$HOME/.tmp"
+          chmod 700 "$HOME/.tmp"
+          TMPDIR="$HOME/.tmp" go test -count=1 -race ./...
 
   vet:
     name: Vet and vulnerability scan
