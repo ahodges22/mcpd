@@ -2,7 +2,11 @@ package tray
 
 import (
 	"context"
+	"sync"
+	"sync/atomic"
 	"time"
+
+	"github.com/ahodges22/mcpd/internal/config"
 )
 
 const controllerPollInterval = 5 * time.Second
@@ -11,26 +15,56 @@ type controllerStatusClient interface {
 	Status(context.Context) (Status, error)
 }
 
-type Controller struct {
-	client       controllerStatusClient
-	polls        <-chan time.Time
-	retry        chan struct{}
-	updates      chan MenuModel
-	pollInterval time.Duration
+type controllerActionClient interface {
+	Reconnect(context.Context, string) error
+	Authorize(context.Context, string) (string, error)
 }
 
-func NewController(client controllerStatusClient) *Controller {
-	return &Controller{
-		client:       client,
-		retry:        make(chan struct{}, 1),
-		updates:      make(chan MenuModel, 1),
-		pollInterval: controllerPollInterval,
-	}
+type controllerClient interface {
+	controllerStatusClient
+	controllerActionClient
+}
+
+type actionRequest struct {
+	command MenuCommand
+	backend string
+}
+
+type Controller struct {
+	client         controllerStatusClient
+	actions        controllerActionClient
+	openURL        func(context.Context, string) error
+	polls          <-chan time.Time
+	retry          chan struct{}
+	actionRequests chan actionRequest
+	actionResults  chan error
+	updates        chan MenuModel
+	pollInterval   time.Duration
+	actionActive   atomic.Bool
+	actionWG       sync.WaitGroup
+	actionFailed   bool
+}
+
+func NewController(client *Client, openURL func(context.Context, string) error) *Controller {
+	return newActionController(client, openURL, nil)
 }
 
 func newController(client controllerStatusClient, polls <-chan time.Time) *Controller {
-	controller := NewController(client)
-	controller.polls = polls
+	return &Controller{
+		client:         client,
+		polls:          polls,
+		retry:          make(chan struct{}, 1),
+		actionRequests: make(chan actionRequest, 1),
+		actionResults:  make(chan error, 1),
+		updates:        make(chan MenuModel, 1),
+		pollInterval:   controllerPollInterval,
+	}
+}
+
+func newActionController(client controllerClient, openURL func(context.Context, string) error, polls <-chan time.Time) *Controller {
+	controller := newController(client, polls)
+	controller.actions = client
+	controller.openURL = openURL
 	return controller
 }
 
@@ -46,9 +80,30 @@ func (c *Controller) Retry() {
 	}
 }
 
+// Repair accepts at most one reconnect or authorize action at a time.
+func (c *Controller) Repair(command MenuCommand, backend string) {
+	if c.actions == nil || !config.ValidName(backend) {
+		return
+	}
+	if command != CommandReconnect && command != CommandAuthorize {
+		return
+	}
+	if !c.actionActive.CompareAndSwap(false, true) {
+		return
+	}
+	select {
+	case c.actionRequests <- actionRequest{command: command, backend: backend}:
+	default:
+		c.actionActive.Store(false)
+	}
+}
+
 // Run owns controller state until ctx is canceled and closes Updates on exit.
 func (c *Controller) Run(ctx context.Context) {
-	defer close(c.updates)
+	defer func() {
+		c.actionWG.Wait()
+		close(c.updates)
+	}()
 
 	polls := c.polls
 	var ticker *time.Ticker
@@ -67,6 +122,12 @@ func (c *Controller) Run(ctx context.Context) {
 			return
 		case <-polls:
 		case <-c.retry:
+		case request := <-c.actionRequests:
+			c.startAction(ctx, request)
+			continue
+		case err := <-c.actionResults:
+			c.actionActive.Store(false)
+			c.actionFailed = err != nil
 		}
 		if !c.refresh(ctx) {
 			return
@@ -83,8 +144,35 @@ func (c *Controller) refresh(ctx context.Context) bool {
 		c.publish(BuildOfflineMenu())
 		return true
 	}
-	c.publish(BuildMenu(status, false))
+	c.publish(BuildMenu(status, c.actionFailed))
 	return true
+}
+
+func (c *Controller) startAction(ctx context.Context, request actionRequest) {
+	c.actionWG.Add(1)
+	go func() {
+		defer c.actionWG.Done()
+		err := c.runAction(ctx, request)
+		select {
+		case c.actionResults <- err:
+		case <-ctx.Done():
+		}
+	}()
+}
+
+func (c *Controller) runAction(ctx context.Context, request actionRequest) error {
+	switch request.command {
+	case CommandReconnect:
+		return c.actions.Reconnect(ctx, request.backend)
+	case CommandAuthorize:
+		target, err := c.actions.Authorize(ctx, request.backend)
+		if err != nil || target == "" {
+			return err
+		}
+		return OpenAuthorizeURL(ctx, target, c.openURL)
+	default:
+		return nil
+	}
 }
 
 func (c *Controller) publish(model MenuModel) {

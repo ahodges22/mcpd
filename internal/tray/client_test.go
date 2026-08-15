@@ -294,7 +294,7 @@ func TestAuthorizeURL(t *testing.T) {
 	for _, raw := range accepted {
 		t.Run("accept "+raw, func(t *testing.T) {
 			var opened []string
-			if err := OpenAuthorizeURL(raw, func(target string) error {
+			if err := OpenAuthorizeURL(t.Context(), raw, func(_ context.Context, target string) error {
 				opened = append(opened, target)
 				return nil
 			}); err != nil {
@@ -313,7 +313,7 @@ func TestAuthorizeURL(t *testing.T) {
 	for _, raw := range refused {
 		t.Run("refuse "+raw, func(t *testing.T) {
 			called := false
-			err := OpenAuthorizeURL(raw, func(string) error {
+			err := OpenAuthorizeURL(t.Context(), raw, func(context.Context, string) error {
 				called = true
 				return nil
 			})

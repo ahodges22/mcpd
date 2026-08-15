@@ -155,14 +155,17 @@ func (c *Client) action(ctx context.Context, name, operation string) ([]byte, er
 	return body, nil
 }
 
-func OpenAuthorizeURL(raw string, open func(string) error) error {
+func OpenAuthorizeURL(ctx context.Context, raw string, open func(context.Context, string) error) error {
 	if err := validateAuthorizeURL(raw); err != nil {
 		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("open authorization URL: %w", err)
 	}
 	if open == nil {
 		return fmt.Errorf("open authorization URL: no opener configured")
 	}
-	if err := open(raw); err != nil {
+	if err := open(ctx, raw); err != nil {
 		return fmt.Errorf("open authorization URL: %w", err)
 	}
 	return nil
