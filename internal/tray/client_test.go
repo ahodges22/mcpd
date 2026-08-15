@@ -3,6 +3,7 @@ package tray
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -12,6 +13,10 @@ import (
 	"testing"
 	"time"
 )
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
 func TestClientStatus(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -60,6 +65,22 @@ func TestClientStatusErrors(t *testing.T) {
 		}
 		if strings.Contains(err.Error(), "backend-derived") {
 			t.Errorf("Status error exposes response detail: %v", err)
+		}
+	})
+
+	t.Run("custom reason phrase", func(t *testing.T) {
+		client, err := NewClient("127.0.0.1:7420")
+		if err != nil {
+			t.Fatalf("NewClient: %v", err)
+		}
+		client.http.Transport = responseTransport(http.StatusBadGateway, "502 peer-controlled detail", `{}`)
+
+		_, err = client.Status(t.Context())
+		if err == nil || !strings.Contains(err.Error(), "502 Bad Gateway") {
+			t.Fatalf("Status error = %v, want canonical HTTP status", err)
+		}
+		if strings.Contains(err.Error(), "peer-controlled") {
+			t.Errorf("Status error exposes the peer reason phrase: %v", err)
 		}
 	})
 
@@ -140,6 +161,172 @@ func TestClientRejectsNonLoopback(t *testing.T) {
 	}
 }
 
+func TestClientAction(t *testing.T) {
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		if r.Method != http.MethodPost {
+			t.Errorf("method = %s, want POST", r.Method)
+		}
+		if got := r.Header.Get("Content-Type"); got != "application/json" {
+			t.Errorf("Content-Type = %q, want application/json", got)
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read body: %v", err)
+		}
+		if string(body) != `{}` {
+			t.Errorf("body = %q, want {}", body)
+		}
+		switch r.URL.EscapedPath() {
+		case "/api/backends/alpha%2Fbeta/reconnect":
+			fmt.Fprint(w, `{"status":"ok"}`)
+		case "/api/backends/oauth%20backend/authorize":
+			fmt.Fprint(w, `{"status":"pending","authorize_url":"https://login.example/authorize?state=one"}`)
+		default:
+			http.Error(w, "unexpected path", http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+	client := clientForServer(t, server)
+
+	if err := client.Reconnect(t.Context(), "alpha/beta"); err != nil {
+		t.Fatalf("Reconnect: %v", err)
+	}
+	offered, err := client.Authorize(t.Context(), "oauth backend")
+	if err != nil {
+		t.Fatalf("Authorize: %v", err)
+	}
+	if offered != "https://login.example/authorize?state=one" {
+		t.Errorf("Authorize URL = %q, want provider URL", offered)
+	}
+	if got := requests.Load(); got != 2 {
+		t.Errorf("requests = %d, want exactly one per action", got)
+	}
+
+	t.Run("response body is bounded", func(t *testing.T) {
+		large := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			fmt.Fprint(w, strings.Repeat(" ", 1<<20+1)+`{}`)
+		}))
+		defer large.Close()
+
+		if err := clientForServer(t, large).Reconnect(t.Context(), "alpha"); err == nil || !strings.Contains(err.Error(), "response body exceeds") {
+			t.Fatalf("Reconnect error = %v, want bounded-body refusal", err)
+		}
+	})
+
+	t.Run("error detail is not exposed", func(t *testing.T) {
+		failed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			http.Error(w, "backend-derived detail", http.StatusBadGateway)
+		}))
+		defer failed.Close()
+
+		err := clientForServer(t, failed).Reconnect(t.Context(), "alpha")
+		if err == nil || !strings.Contains(err.Error(), "502 Bad Gateway") {
+			t.Fatalf("Reconnect error = %v, want HTTP status", err)
+		}
+		if strings.Contains(err.Error(), "backend-derived") {
+			t.Errorf("Reconnect error exposes response detail: %v", err)
+		}
+	})
+
+	t.Run("custom reason phrase is not exposed", func(t *testing.T) {
+		client, err := NewClient("127.0.0.1:7420")
+		if err != nil {
+			t.Fatalf("NewClient: %v", err)
+		}
+		client.http.Transport = responseTransport(http.StatusBadGateway, "502 peer-controlled detail", `{}`)
+
+		err = client.Reconnect(t.Context(), "alpha")
+		if err == nil || !strings.Contains(err.Error(), "502 Bad Gateway") {
+			t.Fatalf("Reconnect error = %v, want canonical HTTP status", err)
+		}
+		if strings.Contains(err.Error(), "peer-controlled") {
+			t.Errorf("Reconnect error exposes the peer reason phrase: %v", err)
+		}
+	})
+
+	t.Run("unsafe authorization URL is refused", func(t *testing.T) {
+		unsafe := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			fmt.Fprint(w, `{"status":"pending","authorize_url":"http://login.example/authorize"}`)
+		}))
+		defer unsafe.Close()
+
+		if _, err := clientForServer(t, unsafe).Authorize(t.Context(), "alpha"); err == nil {
+			t.Fatal("Authorize accepted an external plain-HTTP URL")
+		}
+	})
+}
+
+func TestClientActionTimeout(t *testing.T) {
+	client, err := NewClient("127.0.0.1:7420")
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	client.http.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		deadline, ok := r.Context().Deadline()
+		if !ok {
+			t.Fatal("action request has no deadline")
+		}
+		if remaining := time.Until(deadline); remaining < 39*time.Second || remaining > 40*time.Second {
+			t.Errorf("action deadline = %s, want a 40-second budget", remaining)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"status":"ok"}`)),
+		}, nil
+	})
+
+	if err := client.Reconnect(context.Background(), "alpha"); err != nil {
+		t.Fatalf("Reconnect: %v", err)
+	}
+}
+
+func TestAuthorizeURL(t *testing.T) {
+	accepted := []string{
+		"https://login.example/authorize?client_id=one#consent",
+		"http://localhost:8080/authorize",
+		"http://127.42.0.9:8080/authorize",
+		"http://[::1]:8080/authorize",
+	}
+	for _, raw := range accepted {
+		t.Run("accept "+raw, func(t *testing.T) {
+			var opened []string
+			if err := OpenAuthorizeURL(raw, func(target string) error {
+				opened = append(opened, target)
+				return nil
+			}); err != nil {
+				t.Fatalf("OpenAuthorizeURL(%q): %v", raw, err)
+			}
+			if !reflect.DeepEqual(opened, []string{raw}) {
+				t.Errorf("opened = %q, want one exact URL argument", opened)
+			}
+		})
+	}
+
+	refused := []string{
+		"", "/relative", "javascript:alert(1)", "data:text/plain,no", "https://",
+		"http://login.example/authorize", "http://localhost.evil/authorize", "http://127.0.0.1.evil/authorize",
+	}
+	for _, raw := range refused {
+		t.Run("refuse "+raw, func(t *testing.T) {
+			called := false
+			err := OpenAuthorizeURL(raw, func(string) error {
+				called = true
+				return nil
+			})
+			if err == nil {
+				t.Fatalf("OpenAuthorizeURL(%q) succeeded", raw)
+			}
+			if called {
+				t.Fatalf("OpenAuthorizeURL(%q) invoked the opener", raw)
+			}
+		})
+	}
+}
+
 func clientForServer(t *testing.T, server *httptest.Server) *Client {
 	t.Helper()
 	parsed, err := url.Parse(server.URL)
@@ -151,4 +338,15 @@ func clientForServer(t *testing.T, server *httptest.Server) *Client {
 		t.Fatalf("NewClient: %v", err)
 	}
 	return client
+}
+
+func responseTransport(code int, status, body string) roundTripFunc {
+	return func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: code,
+			Status:     status,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(body)),
+		}, nil
+	}
 }

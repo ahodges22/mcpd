@@ -1,6 +1,7 @@
 package tray
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 
 const (
 	statusTimeout       = 2 * time.Second
+	actionTimeout       = 40 * time.Second
 	maxResponseBodySize = 1 << 20
 )
 
@@ -93,7 +95,7 @@ func (c *Client) Status(ctx context.Context) (Status, error) {
 		return Status{}, fmt.Errorf("read status: %w", err)
 	}
 	if res.StatusCode != http.StatusOK {
-		return Status{}, fmt.Errorf("read status: %s", res.Status)
+		return Status{}, fmt.Errorf("read status: %s", canonicalHTTPStatus(res.StatusCode))
 	}
 
 	var status Status
@@ -101,6 +103,98 @@ func (c *Client) Status(ctx context.Context) (Status, error) {
 		return Status{}, fmt.Errorf("decode status: %w", err)
 	}
 	return status, nil
+}
+
+func (c *Client) Reconnect(ctx context.Context, name string) error {
+	_, err := c.action(ctx, name, "reconnect")
+	return err
+}
+
+func (c *Client) Authorize(ctx context.Context, name string) (string, error) {
+	body, err := c.action(ctx, name, "authorize")
+	if err != nil {
+		return "", err
+	}
+	var response struct {
+		AuthorizeURL string `json:"authorize_url"`
+	}
+	if err := json.Unmarshal(body, &response); err != nil {
+		return "", fmt.Errorf("decode authorize response: %w", err)
+	}
+	if response.AuthorizeURL != "" {
+		if err := validateAuthorizeURL(response.AuthorizeURL); err != nil {
+			return "", err
+		}
+	}
+	return response.AuthorizeURL, nil
+}
+
+func (c *Client) action(ctx context.Context, name, operation string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, actionTimeout)
+	defer cancel()
+
+	target := c.baseURL.String() + "/api/backends/" + url.PathEscape(name) + "/" + operation
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, bytes.NewBufferString(`{}`))
+	if err != nil {
+		return nil, fmt.Errorf("build %s request: %w", operation, err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	res, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("%s backend: %w", operation, err)
+	}
+	defer res.Body.Close()
+
+	body, err := boundedBody(res.Body)
+	if err != nil {
+		return nil, fmt.Errorf("%s backend: %w", operation, err)
+	}
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		return nil, fmt.Errorf("%s backend: %s", operation, canonicalHTTPStatus(res.StatusCode))
+	}
+	return body, nil
+}
+
+func OpenAuthorizeURL(raw string, open func(string) error) error {
+	if err := validateAuthorizeURL(raw); err != nil {
+		return err
+	}
+	if open == nil {
+		return fmt.Errorf("open authorization URL: no opener configured")
+	}
+	if err := open(raw); err != nil {
+		return fmt.Errorf("open authorization URL: %w", err)
+	}
+	return nil
+}
+
+func validateAuthorizeURL(raw string) error {
+	target, err := url.Parse(raw)
+	if err != nil || !target.IsAbs() || target.Hostname() == "" {
+		return fmt.Errorf("refuse authorization URL: malformed or relative target")
+	}
+	if strings.EqualFold(target.Scheme, "https") {
+		return nil
+	}
+	if strings.EqualFold(target.Scheme, "http") && loopbackHostname(target.Hostname()) {
+		return nil
+	}
+	return fmt.Errorf("refuse authorization URL: target must use https or loopback http")
+}
+
+func loopbackHostname(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	addr, err := netip.ParseAddr(host)
+	return err == nil && addr.IsLoopback()
+}
+
+func canonicalHTTPStatus(code int) string {
+	if text := http.StatusText(code); text != "" {
+		return fmt.Sprintf("%d %s", code, text)
+	}
+	return strconv.Itoa(code)
 }
 
 func boundedBody(r io.Reader) ([]byte, error) {

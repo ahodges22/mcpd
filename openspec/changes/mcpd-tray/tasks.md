@@ -11,7 +11,7 @@
 ## 3. Loopback Tray Client
 
 - [x] 3.1 Implement the no-proxy loopback status client with bounded bodies, a two-second poll budget, minimal response types, and refusal of non-loopback addresses. Proof: `TestClientStatus`, `TestClientStatusErrors`, and `TestClientRejectsNonLoopback` under `go test ./internal/tray`. Commit: `feat: add tray status client`.
-- [ ] 3.2 Implement bounded reconnect and authorize POSTs, escaped backend paths, single-argument URL opening, and the HTTPS-or-loopback-HTTP authorization allowlist. Proof: `TestClientAction`, `TestClientActionTimeout`, and `TestAuthorizeURL` under `go test ./internal/tray`. Commit: `feat: add tray repair client`.
+- [x] 3.2 Implement bounded reconnect and authorize POSTs, escaped backend paths, single-argument URL opening, and the HTTPS-or-loopback-HTTP authorization allowlist. Proof: `TestClientAction`, `TestClientActionTimeout`, and `TestAuthorizeURL` under `go test ./internal/tray`. Commit: `feat: add tray repair client`.
 
 ## 4. Tray Menu and Controller
 
