@@ -2,7 +2,7 @@
 
 ## Dependency evaluation
 
-Status: build and patched macOS runtime gates passed. Linux runtime acceptance remains pending, so the dependency is not yet approved for `go.mod`.
+Status: build and platform runtime gates passed. Production pinning remains blocked on an upstream release or explicitly approved maintained source for the required macOS main-thread patch.
 
 - Candidate: `github.com/gogpu/systray v0.2.8`
 - Module checksum: `h1:3C/jUnHGO/e/kCbrRWw9n3psuuP7pfvSer68sqjzA4U=`
@@ -85,13 +85,27 @@ Gate result: passed with a required narrow main-thread patch. Unmodified `github
 
 ## Linux graphical-session acceptance
 
-- [ ] Renders one StatusNotifierItem with a host present.
-- [ ] Replaces healthy, attention, and offline icons while running.
-- [ ] Updates a nested backend menu while running.
-- [ ] Keeps the native callback responsive while work runs asynchronously.
-- [ ] Reports a distinct unsupported outcome when no host is present.
-- [ ] Registers successfully when a host appears after process startup, or documents the required manual restart.
-- [ ] Removes the icon and exits cleanly.
+- [x] Renders one StatusNotifierItem with a host present.
+- [x] Replaces healthy, attention, and offline icons while running.
+- [x] Updates a nested backend menu while running.
+- [x] Keeps the native callback responsive while work runs asynchronously.
+- [x] Reports a distinct unsupported outcome when no host is present.
+- [x] Registers successfully when a host appears after process startup, or documents the required manual restart.
+- [x] Removes the icon and exits cleanly.
+
+### Linux run evidence, 2026-08-15
+
+- Environment: a disposable OrbStack container running Ubuntu 24.04.4 LTS on arm64, with Xvfb 21.1.12, Openbox 3.6.1, `xfce4-panel` 4.18.4, and `xfce4-sntray-plugin` 0.4.13.1. This was a real Linux X11 session with an actual StatusNotifier host, not a mocked D-Bus watcher. Physical-desktop coverage remains in Task 7.2.
+- The patched zero-CGO Linux arm64 spike had SHA-256 `8b9e14253fd8a75eeeaba754a5c2627b6a134a284956bdc0ad2851bdba85f359`.
+- With the XFCE host present, `org.kde.StatusNotifierWatcher.RegisteredStatusNotifierItems` contained exactly `org.kde.StatusNotifierItem-2957-2/StatusNotifierItem`. Captured 1024 by 768 screenshots showed the healthy ring, attention triangle, and offline X replacing one another in the panel.
+- Opening the item showed the changing summary and the nested `All servers` menu. The nested label changed with state, including `example: unavailable` during offline state.
+- Selecting `Run non-blocking probe` logged `callback-returned duration=62.748µs`. The three-second worker ran separately, and the icon and menu remained responsive while it was active.
+- Selecting `Quit feasibility spike` logged `quit-clicked` and `run-stopped`. The watcher's registered-item array was empty afterward, and the post-Quit screenshot matched the no-item baseline.
+- With the XFCE host stopped but the X session and session bus still running, startup logged one explicit warning: `initial watcher registration failed (watcher may not be running)`. The process remained alive, continued cycling states, and retained its `org.kde.StatusNotifierItem-3066-2` bus name. This is distinct from a generic process failure and does not enter a restart loop.
+- Starting the XFCE host afterward registered `org.kde.StatusNotifierItem-3066-2/StatusNotifierItem` automatically. The process remained PID 3066 with its original start time, and the item rendered without a process restart or manual intervention.
+- The exact disposable container was removed after the logs, D-Bus replies, screenshots, package versions, and hashes were captured.
+
+Gate result: passed. Host absence is explicit and non-fatal, and late host appearance recovers automatically. No manual restart is required.
 
 ## Supervisor acceptance
 
