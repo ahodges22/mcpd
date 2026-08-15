@@ -15,7 +15,7 @@
 
 ## 4. Tray Menu and Controller
 
-- [ ] 4.1 Add the three embedded monochrome icons and pure menu model for summary, actionable entries, all servers, offline state, dashboard, retry, failure note, and quit. Proof: `TestMenuModel`, `TestMenuModelOffline`, and `TestTrayAssets` under `go test ./internal/tray`. Commit: `feat: add tray status menu`.
+- [x] 4.1 Add the three embedded monochrome icons and pure menu model for summary, actionable entries, all servers, offline state, dashboard, retry, failure note, and quit. Proof: `TestMenuModel`, `TestMenuModelOffline`, and `TestTrayAssets` under `go test ./internal/tray`. Commit: `feat: add tray status menu`.
 - [ ] 4.2 Add the controller that refreshes at startup and every five seconds, replaces snapshots atomically, recovers from daemon loss, cancels on shutdown, and keeps native callbacks non-blocking. Proof: `TestControllerPolling`, `TestControllerOfflineRecovery`, and `TestControllerShutdown` under `go test -race -count=5 ./internal/tray`. Commit: `feat: add tray status controller`.
 - [ ] 4.3 Serialize repair actions, disable or ignore duplicate activation while one is active, refresh after completion, and never replay after an unknown outcome. Proof: `TestControllerSerializesAction`, `TestControllerActionFailure`, and `TestControllerDoesNotReplay` under `go test -race -count=5 ./internal/tray`. Commit: `feat: coordinate tray repair actions`.
 
