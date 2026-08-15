@@ -265,6 +265,128 @@ func TestADisabledBackendRendersAsDisabledRatherThanFailing(t *testing.T) {
 	}
 }
 
+func TestBackendStatusRecommendedAction(t *testing.T) {
+	tests := []struct {
+		name       string
+		status     backendStatus
+		projection string
+		wantText   string
+		wantLabel  string
+		wantPath   string
+	}{
+		{
+			name:       "reconnect overrides oauth inference",
+			status:     backendStatus{Name: "alpha", Health: backend.Health{State: backend.StateDown}, Tone: "fault", OAuth: true},
+			projection: `{"recommended_action":"reconnect"}`,
+			wantText:   "alpha is not answering",
+			wantLabel:  "Reconnect",
+			wantPath:   "/api/backends/alpha/reconnect",
+		},
+		{
+			name:       "authorize overrides non-oauth inference",
+			status:     backendStatus{Name: "alpha", Health: backend.Health{State: backend.StateDown}, Tone: "fault"},
+			projection: `{"recommended_action":"authorize"}`,
+			wantText:   "alpha is refusing the connection, and it authorizes with OAuth",
+			wantLabel:  "Authorize",
+			wantPath:   "/api/backends/alpha/authorize",
+		},
+		{
+			name:       "no recommendation means no repair",
+			status:     backendStatus{Name: "alpha", Health: backend.Health{State: backend.StateDown}, Tone: "fault", OAuth: true},
+			projection: `{}`,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := tc.status
+			if err := json.Unmarshal([]byte(tc.projection), &got); err != nil {
+				t.Fatalf("unmarshal projection: %v", err)
+			}
+			if text := got.Wants(); text != tc.wantText {
+				t.Errorf("Wants() = %q, want %q", text, tc.wantText)
+			}
+			if label := got.FixLabel(); label != tc.wantLabel {
+				t.Errorf("FixLabel() = %q, want %q", label, tc.wantLabel)
+			}
+			if path := got.FixPath(); path != tc.wantPath {
+				t.Errorf("FixPath() = %q, want %q", path, tc.wantPath)
+			}
+		})
+	}
+}
+
+func TestStatusAPIRecommendedAction(t *testing.T) {
+	h := newHarness(t, testfake.New("alpha", tool("kubectl_logs")))
+	if _, err := h.mgr.Add("broken", config.Backend{HTTPURL: "http://127.0.0.1:1/mcp"}); err != nil {
+		t.Fatalf("add broken backend: %v", err)
+	}
+	h.cat.Refresh(t.Context(), "broken")
+	if _, err := h.mgr.Add("oauth-broken", config.Backend{HTTPURL: "http://127.0.0.1:1/mcp", Auth: "oauth"}); err != nil {
+		t.Fatalf("add broken OAuth backend: %v", err)
+	}
+	h.cat.Refresh(t.Context(), "oauth-broken")
+	if _, err := h.mgr.Add("secured", config.Backend{HTTPURL: "https://mcp.example.test/mcp", Auth: "oauth"}); err != nil {
+		t.Fatalf("add secured backend: %v", err)
+	}
+	secured, ok := h.reg.Get("secured")
+	if !ok {
+		t.Fatal("secured backend was not published")
+	}
+	secured.NoteNeedsAuth("authorization required")
+
+	res := h.get(t, "/api/status")
+	if res.status != http.StatusOK {
+		t.Fatalf("GET /api/status = %d (%s), want %d", res.status, res.body, http.StatusOK)
+	}
+	var payload struct {
+		Backends []map[string]json.RawMessage `json:"backends"`
+	}
+	if err := json.Unmarshal([]byte(res.body), &payload); err != nil {
+		t.Fatalf("decode status: %v", err)
+	}
+
+	want := map[string]string{
+		"alpha":        "",
+		"broken":       "reconnect",
+		"oauth-broken": "authorize",
+		"secured":      "authorize",
+	}
+	for _, item := range payload.Backends {
+		var name string
+		if err := json.Unmarshal(item["name"], &name); err != nil {
+			t.Fatalf("decode backend name: %v", err)
+		}
+		wantAction, expected := want[name]
+		if !expected {
+			continue
+		}
+		delete(want, name)
+		raw, present := item["recommended_action"]
+		if wantAction == "" {
+			if present {
+				t.Errorf("%s recommended_action is present as %s, want omitted", name, raw)
+			}
+			continue
+		}
+		var action string
+		if !present {
+			t.Errorf("%s recommended_action is omitted, want %q", name, wantAction)
+			continue
+		}
+		if err := json.Unmarshal(raw, &action); err != nil {
+			t.Errorf("decode %s recommended_action: %v", name, err)
+			continue
+		}
+		if action != wantAction {
+			t.Errorf("%s recommended_action = %q, want %q", name, action, wantAction)
+		}
+	}
+	for name := range want {
+		t.Errorf("status omitted backend %q", name)
+	}
+}
+
 func TestTheInspectorSurfacesToolsNeedingConfirmation(t *testing.T) {
 	destructive := true
 	tools := []*mcp.Tool{

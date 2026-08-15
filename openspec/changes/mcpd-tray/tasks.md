@@ -6,7 +6,7 @@
 
 ## 2. Shared Attention Contract
 
-- [ ] 2.1 Add the typed optional `recommended_action` projection and make it the single source for the web attention list, labels, paths, and status JSON without changing existing state semantics. Proof: red-before/green-after `TestBackendStatusRecommendedAction` and `TestStatusAPIRecommendedAction`, followed by `go test ./internal/web`. Commit: `feat: expose backend recommended actions`.
+- [x] 2.1 Add the typed optional `recommended_action` projection and make it the single source for the web attention list, labels, paths, and status JSON without changing existing state semantics. Proof: red-before/green-after `TestBackendStatusRecommendedAction` and `TestStatusAPIRecommendedAction`, followed by `go test ./internal/web`. Commit: `feat: expose backend recommended actions`.
 
 ## 3. Loopback Tray Client
 

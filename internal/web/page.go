@@ -55,6 +55,13 @@ func secretShadowed(source secretstore.EffectiveSource) bool {
 // own name. Below it the label would not fit, and clipping a name reads as corruption.
 const namedShare = 7
 
+type recommendedAction string
+
+const (
+	recommendedActionReconnect recommendedAction = "reconnect"
+	recommendedActionAuthorize recommendedAction = "authorize"
+)
+
 type backendStatus struct {
 	Name string `json:"name"`
 	backend.Health
@@ -66,6 +73,8 @@ type backendStatus struct {
 	CatalogError string `json:"catalog_error,omitempty"`
 	OAuth        bool   `json:"oauth"`
 	TokenExpiry  string `json:"token_expiry,omitempty"`
+	// RecommendedAction is the repair decision shared by the API and status page.
+	RecommendedAction recommendedAction `json:"recommended_action,omitempty"`
 	// Grow is this backend's share of the catalog, as a flex weight for the bus. It is
 	// computed here rather than measured in the browser so the bar needs no layout pass.
 	Grow int `json:"-"`
@@ -179,10 +188,11 @@ func (s *Server) snapshot() statusView {
 			TokenExpiry:  s.tokenExpiry(name),
 			tokenExp:     exp,
 		}
+		entry.RecommendedAction = entry.classifyRecommendedAction()
 		if h.State == backend.StateUp {
 			out.Serving++
 		}
-		if entry.Wants() != "" {
+		if entry.RecommendedAction != "" {
 			out.Attention = append(out.Attention, entry)
 		}
 		out.Backends = append(out.Backends, entry)
@@ -245,19 +255,33 @@ func bus(all []backendStatus) []backendStatus {
 // bus draws: a segment or a notch.
 func (b backendStatus) Serving() bool { return b.State == backend.StateUp }
 
+func (b backendStatus) classifyRecommendedAction() recommendedAction {
+	switch {
+	case b.State == backend.StateNeedsAuth:
+		return recommendedActionAuthorize
+	case b.Tone != "fault":
+		return ""
+	case b.OAuth:
+		return recommendedActionAuthorize
+	default:
+		return recommendedActionReconnect
+	}
+}
+
 // Wants is what this backend needs from the user, in the interface's own voice, or
 // nothing at all when it needs nothing. A backend the user turned off wants nothing, and
 // neither does one that has simply not been dialled yet, so neither raises an alarm.
 func (b backendStatus) Wants() string {
-	switch {
-	case b.State == backend.StateNeedsAuth:
-		return b.Name + " is waiting for you to authorize it"
-	case b.Tone != "fault":
-		return ""
-	case b.OAuth:
+	switch b.RecommendedAction {
+	case recommendedActionReconnect:
+		return b.Name + " is not answering"
+	case recommendedActionAuthorize:
+		if b.State == backend.StateNeedsAuth {
+			return b.Name + " is waiting for you to authorize it"
+		}
 		return b.Name + " is refusing the connection, and it authorizes with OAuth"
 	default:
-		return b.Name + " is not answering"
+		return ""
 	}
 }
 
@@ -265,17 +289,25 @@ func (b backendStatus) Wants() string {
 // backend is offered authorization even when it reports as down, because the authorize
 // route reconnects first and a 401 is how a missing grant presents.
 func (b backendStatus) FixLabel() string {
-	if b.OAuth {
+	switch b.RecommendedAction {
+	case recommendedActionAuthorize:
 		return "Authorize"
+	case recommendedActionReconnect:
+		return "Reconnect"
+	default:
+		return ""
 	}
-	return "Reconnect"
 }
 
 func (b backendStatus) FixPath() string {
-	if b.OAuth {
+	switch b.RecommendedAction {
+	case recommendedActionAuthorize:
 		return "/api/backends/" + b.Name + "/authorize"
+	case recommendedActionReconnect:
+		return "/api/backends/" + b.Name + "/reconnect"
+	default:
+		return ""
 	}
-	return "/api/backends/" + b.Name + "/reconnect"
 }
 
 // Trouble is what the backend reported, preferring its own error over the catalog's
