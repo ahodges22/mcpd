@@ -2,7 +2,7 @@
 
 ## Dependency evaluation
 
-Status: build gate passed on 2026-08-14. Runtime acceptance remains pending on macOS and Linux, so the dependency is not yet approved for `go.mod`.
+Status: build and patched macOS runtime gates passed. Linux runtime acceptance remains pending, so the dependency is not yet approved for `go.mod`.
 
 - Candidate: `github.com/gogpu/systray v0.2.8`
 - Module checksum: `h1:3C/jUnHGO/e/kCbrRWw9n3psuuP7pfvSer68sqjzA4U=`
@@ -65,12 +65,23 @@ Result: the candidate preserves mcpd's zero-CGO, single-binary release constrain
 
 ## macOS graphical-session acceptance
 
-- [ ] Renders one `NSStatusItem` in a real Aqua session.
-- [ ] Does not create a Dock icon.
-- [ ] Replaces healthy, attention, and offline icons while running.
-- [ ] Updates a nested backend menu while running.
-- [ ] Keeps the native callback responsive while work runs asynchronously.
-- [ ] Removes the icon and exits cleanly.
+- [x] Renders one `NSStatusItem` in a real Aqua session.
+- [x] Does not create a Dock icon.
+- [x] Replaces healthy, attention, and offline icons while running.
+- [x] Updates a nested backend menu while running.
+- [x] Keeps the native callback responsive while work runs asynchronously.
+- [x] Removes the icon and exits cleanly.
+
+### macOS run evidence, 2026-08-15
+
+- The unmodified candidate failed `TestSetTemplateIconMarshalsAppKitMutationToMainThread` with `probe_main_thread=false`. Its `SetTemplateIcon` method created `NSImage` and mutated `NSStatusBarButton` on the controller goroutine.
+- A temporary patch reused the dependency's main-thread target to marshal runtime icon mutations. The regression test and `TestSetTemplateIconFromWorkerBeforeRunReturnsError` then passed, followed by `CGO_ENABLED=0 go test ./... -count=1`.
+- Fresh patched builds passed for `linux/amd64`, `linux/arm64`, `darwin/amd64`, and `darwin/arm64` with `CGO_ENABLED=0`.
+- The patched arm64 spike entered `Run` in the logged-in user's Aqua session. `lsappinfo` reported it as `ApplicationType="UIElement"`, confirming accessory activation without a Dock icon.
+- Alex visually confirmed one status item cycling through the healthy ring, attention triangle, and offline X. Alex also confirmed the changing nested backend label and that the menu reopened immediately while the three-second action worker was active.
+- Selecting `Quit feasibility spike` removed the visible item. The log recorded `quit-clicked`, `run-stopped`, and exit status 0.
+
+Gate result: passed with a required narrow main-thread patch. Unmodified `github.com/gogpu/systray v0.2.8` remains rejected. Before production pinning, the patch must be available from an upstream release or an explicitly approved maintained source.
 
 ## Linux graphical-session acceptance
 
