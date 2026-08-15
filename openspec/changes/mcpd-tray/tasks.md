@@ -1,6 +1,6 @@
 ## 1. Tray Dependency Gate
 
-- [ ] 1.1 Evaluate the candidate dependency in a temporary module, record license and transitive dependencies in `phase0-tray-feasibility.md`, and prove `CGO_ENABLED=0` builds for Linux and macOS on amd64 and arm64. Proof: the four named `go build` commands recorded with passing output in the artifact. Commit: `docs: record tray dependency build feasibility`.
+- [x] 1.1 Evaluate the candidate dependency in a temporary module, record license and transitive dependencies in `phase0-tray-feasibility.md`, and prove `CGO_ENABLED=0` builds for Linux and macOS on amd64 and arm64. Proof: the four named `go build` commands recorded with passing output in the artifact. Commit: `docs: record tray dependency build feasibility`.
 - [ ] 1.2 Run the temporary spike in a real macOS session and record `NSStatusItem`, no-Dock-icon, three-icon replacement, dynamic nested menu, non-blocking callback, and clean-shutdown results. Proof: the `macOS graphical-session acceptance` checklist in `phase0-tray-feasibility.md`. Commit: `docs: verify macos tray feasibility`.
 - [ ] 1.3 Run the temporary spike in a real Linux session with host present, host absent, and host appearing late; stop the change if no-host behavior is indistinguishable from a generic failure. Proof: the `Linux graphical-session acceptance` checklist in `phase0-tray-feasibility.md`. Commit: `docs: verify linux tray feasibility`.
 
