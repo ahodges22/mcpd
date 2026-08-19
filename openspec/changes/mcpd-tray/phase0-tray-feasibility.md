@@ -2,25 +2,34 @@
 
 ## Dependency evaluation
 
-Status: build and platform runtime gates passed. `github.com/ahodges22/systray` is the approved maintained source for the required macOS main-thread runtime-mutation patch; production pinning remains blocked only on verifying and immutably pinning that fork.
+Status: build and platform runtime gates passed. `github.com/ahodges22/systray` is the approved maintained source for the required macOS main-thread runtime-mutation patch and is pinned to the independently reviewed immutable revision below.
 
 - Candidate: `github.com/gogpu/systray v0.2.8`
-- Approved patched source: `github.com/ahodges22/systray`, aligned with upstream and limited to the main-thread dispatcher required for runtime icon and complete-menu replacement
-- Module checksum: `h1:3C/jUnHGO/e/kCbrRWw9n3psuuP7pfvSer68sqjzA4U=`
-- Declared Go version: `1.25.0`, compatible with mcpd's `1.26.5`
-- License: MIT
+- Approved patched source: `github.com/ahodges22/systray`, aligned with upstream and limited to the main-thread dispatcher, Linux close lifecycle, and error plumbing required for runtime icon and complete-menu replacement
+- Pinned fork commit: `8d1612f5113230275c23f80236b7f2690da54af7`
+- Pinned pseudo-version: `v0.2.9-0.20260819052144-8d1612f51132`
+- Pinned module checksum: `h1:WXsTBAcGL9XmmfSV58f1446twJr87A3NEK9Mtt3EH6E=`
+- Pinned `go.mod` checksum: `h1:UTsyHG33eGgLuQcvwBfaKo7wuLtnRloMh0WZjVGdFp0=`
+- Upstream base: `github.com/gogpu/systray@a3901e26a16407483bcb765d35cba446e60c6932` (`v0.2.9-0.20260812082930-a3901e26a164`)
+- Declared dependency Go version: `1.25.0`, compatible with mcpd's `1.26.6`
+- License: MIT; the pinned source has no `NOTICE`
 - Platform approach: `NSStatusItem` through `goffi` on macOS and StatusNotifierItem through D-Bus on Linux
 
 The complete candidate module graph is:
 
 | Module | Version | Relationship | License |
 | --- | --- | --- | --- |
-| `github.com/gogpu/systray` | `v0.2.8` | candidate | MIT |
+| `github.com/ahodges22/systray` | `v0.2.9-0.20260819052144-8d1612f51132` | pinned patched dependency | MIT |
+| `github.com/gogpu/systray` | `v0.2.8` | original candidate only, not in production graph | MIT |
 | `github.com/go-webgpu/goffi` | `v0.6.3` | macOS transitive dependency | MIT |
 | `github.com/godbus/dbus/v5` | `v5.2.2` | Linux transitive dependency | BSD-2-Clause |
 | `golang.org/x/sys` | `v0.47.0` | candidate module graph; already a direct mcpd dependency | BSD-3-Clause |
 
 The macOS binaries embed `goffi`; the Linux binaries embed `godbus/dbus`. `go version -m` records `CGO_ENABLED=0` for every binary.
+
+The pinned graph was resolved without a `replace` directive. `go mod graph` reports the fork's direct edges to `goffi v0.6.3`, `godbus/dbus v5.2.2`, and `x/sys v0.47.0`. The fork and `goffi` license artifacts were read from the exact pinned module sources before their `LICENSE` and `NOTICE` text was added to `THIRD-PARTY-NOTICES`.
+
+Fork verification before publication passed on macOS and Linux: full tests, race tests repeated five times, `go vet`, real `dbus-run-session` property/menu mutation tests repeated five times under the race detector, and zero-CGO builds for Linux and macOS on amd64 and arm64 plus unchanged Windows amd64 compatibility. Grok's independent Cursor review approved the complete uncommitted fork diff after three iterations and three addressed lifecycle findings. The published fork worktree was clean at the pinned commit.
 
 ## Reproduction spike
 
@@ -107,6 +116,33 @@ Gate result: passed with a required narrow main-thread patch. Unmodified `github
 - The exact disposable container was removed after the logs, D-Bus replies, screenshots, package versions, and hashes were captured.
 
 Gate result: passed. Host absence is explicit and non-fatal, and late host appearance recovers automatically. No manual restart is required.
+
+## Native adapter evidence, 2026-08-18
+
+- `TestNativeAdapterLifecycle` passed 100 race-enabled repetitions. It covers synchronous offline apply, pre-ready latest-only coalescing, recoverable initial and runtime apply failures, already-cancelled and cancellation-during-initial-apply exits, update-channel closure, removal before join, blocked runtime apply release, and exact driver-error forwarding.
+- `TestBuildNativeMenu`, `TestSystrayDriverApply`, and `TestTemplateIconAlphaMasksAreDistinct` passed. The three embedded icons have distinct alpha masks, so Darwin uses template icons. Complete menu snapshots preserve ordering, separators, disabled state, nested children, and value-captured callbacks. Identical menus are retained, changed menus are replaced, and failed menu/show calls retry on the next complete snapshot.
+- `go test -count=1 -race ./...`, `go vet ./...`, `go vet ./internal/tray/testdata/darwin-session`, strict OpenSpec validation, and zero-CGO `mcpd` builds for Linux and Darwin on amd64 and arm64 passed with Go 1.26.6.
+- The first vulnerability scan on Go 1.26.5 correctly failed on six reachable standard-library advisories fixed in 1.26.6. After raising the repository patch-level requirement, `go tool govulncheck ./...` reported zero reachable vulnerabilities and zero vulnerable imported packages. Three required modules contain vulnerabilities only in packages mcpd does not import.
+- A real arm64 Aqua process built from `internal/tray/testdata/darwin-session` ran through multiple complete snapshots and automatic cancellation. `lsappinfo` reported the process as `type="UIElement"`, confirming no Dock application, and the native loop exited cleanly after the seven-second probe.
+- A real arm64 Linux session-bus process stayed alive and continued updating with no StatusNotifier host, logging the expected distinct watcher warning. A second D-Bus connection read `Title='mcpd'`, `IconPixmap`, `Menu=/MenuBar`, and the exported dbusmenu layout. The process removed itself cleanly after automatic cancellation.
+- With `DBUS_SESSION_BUS_ADDRESS` absent, the same Linux binary returned a synchronous construction error and never entered the native loop. Late-host registration, disabled initial item properties, live replacement, and remove-during-setter behavior also passed the pinned fork's real `dbus-run-session` race tests five times.
+- Grok's independent Cursor review approved the complete mcpd Task 5.1 adapter diff. It verified the lifecycle contract, callback boundary, exact fork API usage, immutable pseudo-version and checksums, Go 1.26.6 requirement, and Darwin/Linux clean removal. The 626 KB `THIRD-PARTY-NOTICES` file was explicitly excluded from the model payload; its new fork and `goffi` sections were instead checked directly against the exact pinned `LICENSE` and `NOTICE` artifacts.
+
+Exact automated commands:
+
+```text
+go test -race ./internal/tray -run '^TestNativeAdapterLifecycle$' -count=100
+go test -count=1 -race ./...
+go vet ./...
+go vet ./internal/tray/testdata/darwin-session
+go tool govulncheck ./...
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build ./cmd/mcpd
+CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build ./cmd/mcpd
+CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build ./cmd/mcpd
+CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build ./cmd/mcpd
+openspec validate mcpd-tray --strict
+git diff --check
+```
 
 ## Supervisor acceptance
 

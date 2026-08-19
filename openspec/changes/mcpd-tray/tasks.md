@@ -21,7 +21,7 @@
 
 ## 5. Native Adapter and Command
 
-- [ ] 5.1 Pin the dependency that passed Phase 1, add the minimal native adapter, and update `THIRD-PARTY-NOTICES` while preserving zero-CGO builds. Proof: `TestNativeAdapterLifecycle`, `go vet ./...`, `go tool govulncheck ./...`, and the four release-target build commands. Commit: `feat: add native tray adapter`.
+- [x] 5.1 Pin the dependency that passed Phase 1, add the minimal native adapter, and update `THIRD-PARTY-NOTICES` while preserving zero-CGO builds. Proof: `TestNativeAdapterLifecycle`, `go vet ./...`, `go tool govulncheck ./...`, and the four release-target build commands. Commit: `feat: add native tray adapter`.
 - [ ] 5.2 Add `mcpd tray`, its `--addr` flag, signal and exit-outcome handling, and safe macOS and Linux browser openers without changing credential-helper dispatch. Proof: `TestRunTrayFlags`, `TestRunTrayRejectsNonLoopback`, `TestRunTrayExitOutcome`, and `TestOpenURLArgumentBoundary` under `go test ./cmd/mcpd ./internal/tray`. Commit: `feat: add tray command`.
 
 ## 6. Session Startup and Distribution
