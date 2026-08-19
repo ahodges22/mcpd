@@ -35,7 +35,7 @@ The candidate dependency must first pass a temporary-module spike on real macOS 
 
 The dependency is added to `go.mod` only after that gate. A failure reopens the dependency decision; it does not permit enabling CGO, dropping a target, or introducing native application projects. `getlantern/systray` is not the automatic fallback because its CGO requirements conflict with the existing release contract.
 
-The approved production source is a narrowly maintained `github.com/ahodges22/systray` fork. The fork stays aligned with upstream `github.com/gogpu/systray`, carries only the verified macOS main-thread icon-mutation patch, and is pinned immutably from `mcpd`. Fork-only changes require the dependency's own focused tests and the complete zero-CGO build and real-session acceptance gates. When upstream publishes an equivalent fix, `mcpd` returns to the upstream module after repeating those gates.
+The approved production source is a narrowly maintained `github.com/ahodges22/systray` fork. The fork stays aligned with upstream `github.com/gogpu/systray`, carries only the macOS main-thread mutation dispatcher required for runtime icon and complete-menu replacement, and is pinned immutably from `mcpd`. Fork-only changes require focused tests proving the actual AppKit mutation thread plus the complete zero-CGO build and real-session acceptance gates. When upstream publishes an equivalent fix, `mcpd` returns to the upstream module after repeating those gates.
 
 ### Make recommended action additive API data
 

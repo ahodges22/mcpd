@@ -2,10 +2,10 @@
 
 ## Dependency evaluation
 
-Status: build and platform runtime gates passed. `github.com/ahodges22/systray` is the approved maintained source for the required macOS main-thread patch; production pinning remains blocked only on verifying and immutably pinning that fork.
+Status: build and platform runtime gates passed. `github.com/ahodges22/systray` is the approved maintained source for the required macOS main-thread runtime-mutation patch; production pinning remains blocked only on verifying and immutably pinning that fork.
 
 - Candidate: `github.com/gogpu/systray v0.2.8`
-- Approved patched source: `github.com/ahodges22/systray`, aligned with upstream and limited to the verified main-thread patch
+- Approved patched source: `github.com/ahodges22/systray`, aligned with upstream and limited to the main-thread dispatcher required for runtime icon and complete-menu replacement
 - Module checksum: `h1:3C/jUnHGO/e/kCbrRWw9n3psuuP7pfvSer68sqjzA4U=`
 - Declared Go version: `1.25.0`, compatible with mcpd's `1.26.5`
 - License: MIT
