@@ -1,0 +1,18 @@
+[Unit]
+Description=mcpd, the local MCP proxy daemon
+Documentation=https://github.com/ahodges22/mcpd
+After=network-online.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart="{{.Binary}}" --config "{{.Config}}" --state "{{.State}}" --addr "{{.Addr}}"
+Restart=always
+RestartSec=2
+Environment=PATH=%h/.local/bin:%h/.bin:/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:/usr/local/bin:/usr/bin:/bin
+PassEnvironment=HOME USER LOGNAME SHELL LANG TZ TERM TMPDIR
+KillMode=control-group
+TimeoutStopSec=30
+
+[Install]
+WantedBy=graphical-session.target

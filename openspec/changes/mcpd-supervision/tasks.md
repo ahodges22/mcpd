@@ -28,7 +28,7 @@
       variable is in the session environment, and the session pushes that into the user manager
       at login, which is ordered before the target activates. **The conclusion holds and the
       documentation did not: it implied the session binding supplies the variable.** Corrected in
-      `dist/README.md` and the requirement. A fresh-login start is still unverified, only a
+      `docs/service.md` and the requirement. A fresh-login start is still unverified, only a
       mid-session start and a kill-recovery were
 - [ ] 1.7 Durable fix, left to the user because it means writing a credential: declare
       `GITHUB_TOKEN` in `~/.config/environment.d/` at mode 600. It is a distinct secret, not a
@@ -64,5 +64,5 @@
 ## 4. Not done
 
 - [ ] 4.1 Run the launchd agent on macOS. It is committed untested and labelled as such in
-      `dist/README.md`. Nothing here has executed it, and a reboot-time start on either
+      `docs/service.md`. Nothing here has executed it, and a reboot-time start on either
       platform is likewise unverified: only a session-time start and a kill-recovery were

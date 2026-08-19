@@ -48,6 +48,30 @@ func TestWriterInitialSnapshotMatchesDeclaredState(t *testing.T) {
 	}
 }
 
+// A fresh install has no declaration file yet. Starting mcpd must create the smallest
+// valid declaration without requiring the user to prepare directories or JSON by hand.
+func TestNewWriterCreatesMissingConfigSecurely(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "nested", "mcpd")
+	path := filepath.Join(dir, "config.json")
+
+	_, cfg, err := NewWriter(path)
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	if len(cfg.Backends) != 0 {
+		t.Fatalf("backends = %v, want empty", cfg.Backends)
+	}
+	if got := readFile(t, path); got != "{\"backends\":{}}\n" {
+		t.Fatalf("created config = %q", got)
+	}
+	if got := mode(t, dir); got != 0o700 {
+		t.Fatalf("config directory mode = %o, want 0700", got)
+	}
+	if got := mode(t, path); got != 0o600 {
+		t.Fatalf("config mode = %o, want 0600", got)
+	}
+}
+
 func readFile(t *testing.T, path string) string {
 	t.Helper()
 	raw, err := os.ReadFile(path)

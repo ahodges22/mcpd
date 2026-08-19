@@ -80,6 +80,9 @@ type Writer struct {
 // normal setup, and exchanging on the link would swap the link itself for a regular file,
 // leaving the daemon reading a detached copy while the user kept editing the original.
 func NewWriter(path string) (*Writer, *Config, error) {
+	if err := createInitialConfig(path); err != nil {
+		return nil, nil, err
+	}
 	resolved, err := filepath.EvalSymlinks(path)
 	if err != nil {
 		return nil, nil, fmt.Errorf("resolve config path: %w", err)
@@ -103,6 +106,43 @@ func NewWriter(path string) (*Writer, *Config, error) {
 	}
 	w.publish(cfg)
 	return w, cfg, nil
+}
+
+func createInitialConfig(path string) error {
+	if _, err := os.Lstat(path); err == nil {
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("inspect config path: %w", err)
+	}
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("create config directory: %w", err)
+	}
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if errors.Is(err, os.ErrExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("create config: %w", err)
+	}
+	remove := true
+	defer func() {
+		file.Close()
+		if remove {
+			os.Remove(path)
+		}
+	}()
+	if _, err := file.WriteString("{\"backends\":{}}\n"); err != nil {
+		return fmt.Errorf("write initial config: %w", err)
+	}
+	if err := file.Sync(); err != nil {
+		return fmt.Errorf("sync initial config: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("close initial config: %w", err)
+	}
+	remove = false
+	return nil
 }
 
 // Path is the resolved declaration path, which is what everything else must read.

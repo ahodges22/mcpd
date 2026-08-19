@@ -72,8 +72,7 @@ func run() error {
 	if handled, err := secretstore.ServeNativeHelperIfRequested(context.Background(), os.Args, os.Stdin, os.Stdout); handled {
 		return err
 	}
-	// One subcommand, and it is not the default: mcpd with no arguments serves, which is
-	// what the systemd unit invokes.
+	// Serving remains the default. Management subcommands return before daemon flags are parsed.
 	if len(os.Args) > 1 && os.Args[1] == "install" {
 		return runInstall(os.Args[2:])
 	}
@@ -82,6 +81,15 @@ func run() error {
 	}
 	if len(os.Args) > 1 && os.Args[1] == "secret" {
 		return runSecret(os.Args[2:], defaultSecretCommandDeps())
+	}
+	if len(os.Args) > 1 && os.Args[1] == "service" {
+		return runService(os.Args[2:], defaultServiceCommandDeps())
+	}
+	if len(os.Args) > 1 && os.Args[1] == "doctor" {
+		return runDoctor(os.Args[2:], defaultDoctorCommandDeps())
+	}
+	if len(os.Args) > 1 && os.Args[1] == "setup" {
+		return runSetup(os.Args[2:], defaultSetupCommandDeps())
 	}
 	var (
 		addr        = flag.String("addr", "127.0.0.1:7420", "loopback address to serve on")

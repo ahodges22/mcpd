@@ -38,26 +38,22 @@ The facade reduces schema load, but it also moves argument validation and approv
 
 ## Install
 
-mcpd targets Linux and macOS. Release archives contain one self-contained binary. The web UI is embedded.
-
-| Platform | Archive |
-|---|---|
-| Linux x86-64 | [`mcpd_linux_amd64.tar.gz`](https://github.com/ahodges22/mcpd/releases/latest/download/mcpd_linux_amd64.tar.gz) |
-| Linux ARM64 | [`mcpd_linux_arm64.tar.gz`](https://github.com/ahodges22/mcpd/releases/latest/download/mcpd_linux_arm64.tar.gz) |
-| macOS Intel | [`mcpd_darwin_amd64.tar.gz`](https://github.com/ahodges22/mcpd/releases/latest/download/mcpd_darwin_amd64.tar.gz) |
-| macOS Apple silicon | [`mcpd_darwin_arm64.tar.gz`](https://github.com/ahodges22/mcpd/releases/latest/download/mcpd_darwin_arm64.tar.gz) |
-
-Extract the archive and put `mcpd` on your `PATH`:
+mcpd targets Linux and macOS. Install the latest release and start the guided setup:
 
 ```sh
-mkdir -p "$HOME/.local/bin"
-tar -xzf mcpd_*_*.tar.gz
-install -m 0755 mcpd "$HOME/.local/bin/mcpd"
+curl --proto '=https' --tlsv1.2 -fsSL \
+  https://raw.githubusercontent.com/ahodges22/mcpd/main/install.sh | sh
 ```
 
-Each release also publishes `checksums.txt` and its keyless Sigstore bundle,
-`checksums.txt.cosign`. Replace `vX.Y.Z` with the downloaded release tag, then verify the signed
-checksums and archive before you extract it:
+The installer detects the platform, downloads the release into a temporary directory, verifies
+its checksum, installs `mcpd` to `~/.local/bin`, and runs `mcpd setup`. Setup creates the initial
+configuration, installs and health-checks the user service, detects supported client
+configurations, previews their changes, and asks once before applying them. It never uses `sudo`.
+
+When `cosign` is available, the installer also verifies the signed checksum bundle against the
+mcpd release workflow identity. Without `cosign`, it warns and continues with the release
+checksum and HTTPS transport. Every release publishes `checksums.txt` and
+`checksums.txt.cosign` for manual verification:
 
 ```sh
 cosign verify-blob --bundle checksums.txt.cosign \
@@ -79,6 +75,10 @@ Each archive also carries GitHub build provenance. With the `gh` CLI you can ver
 ```sh
 gh attestation verify mcpd_linux_amd64.tar.gz --repo ahodges22/mcpd
 ```
+
+Set `MCPD_VERSION=vX.Y.Z` to install a specific release or `MCPD_INSTALL_DIR=/path` to choose a
+different user-writable binary directory. Run `mcpd setup` again at any time; it recognizes
+clients it already configured.
 
 Update an existing binary installation from the latest stable GitHub release:
 
@@ -102,12 +102,11 @@ This requires Go 1.26.5 or later.
 
 ## Quick start
 
-Create an empty declaration, start the daemon, and open <http://127.0.0.1:7420>:
+After installation, open <http://127.0.0.1:7420>. To inspect the installation:
 
 ```sh
-install -d -m 0700 "$HOME/.config/mcpd"
-printf '{"backends":{}}\n' > "$HOME/.config/mcpd/config.json"
-mcpd
+mcpd doctor
+mcpd service status
 ```
 
 Add stdio and HTTP backends from the panel, or edit `~/.config/mcpd/config.json`. A minimal stdio declaration looks like this:
@@ -162,7 +161,8 @@ The abstention threshold is calibrated per embedding model and baked into the bi
 
 ## Connect clients
 
-Inspect the proposed edits first:
+`mcpd setup` detects installed clients, previews all changes, and asks once before applying them.
+To manage one client explicitly, inspect the proposed edit first:
 
 ```sh
 mcpd install --client all
@@ -182,7 +182,9 @@ mcpd install --client all --revert --apply
 
 The installer supports `claude`, `codex`, `cursor`, `opencode`, or `all`. It records a receipt in the mcpd state directory and refuses a revert when a region it owns has changed.
 
-For login-session startup on Linux or macOS, see [the systemd and launchd guide](dist/README.md).
+Manage login-session startup with `mcpd service install`, `mcpd service start`,
+`mcpd service status`, and `mcpd service uninstall`. See the
+[service guide](docs/service.md) for platform behavior and credential environment details.
 
 ## Inspect tools
 

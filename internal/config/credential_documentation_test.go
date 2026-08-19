@@ -70,7 +70,7 @@ func TestCredentialProviderDocumentationCoversOperations(t *testing.T) {
 
 func TestCredentialDocumentationHasNoSecretLiterals(t *testing.T) {
 	tokenPattern := regexp.MustCompile(`\b(?:AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{16,}|xox[baprs]-[A-Za-z0-9-]{16,})\b`)
-	paths := []string{"../../README.md", "../../dist/README.md"}
+	paths := []string{"../../README.md"}
 	err := filepath.WalkDir("../../docs", func(path string, entry os.DirEntry, err error) error {
 		if err != nil {
 			return err

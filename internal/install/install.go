@@ -225,6 +225,33 @@ func (c Client) PlanInstall(addr string) (Plan, error) {
 	return p, nil
 }
 
+// Installed reports whether the receipt still describes edits present in the client file.
+// A missing or stale receipt is not an installation. A partially changed owned region is a
+// conflict, because setup must not hide damage that revert would refuse to guess through.
+func (c Client) Installed(state string) (bool, error) {
+	rec, err := readReceipt(state, c.Name)
+	if errors.Is(err, ErrNotInstalled) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if rec.Client != c.Name || rec.Path != c.Path {
+		return false, fmt.Errorf("install receipt does not match %s at %s", c.Name, c.Path)
+	}
+	raw, err := os.ReadFile(c.Path)
+	if err != nil {
+		return false, fmt.Errorf("read %s: %w", c.Path, err)
+	}
+	if rec.OriginalHash != "" && contentHash(raw) == rec.OriginalHash {
+		return false, nil
+	}
+	if _, err := c.edit.revert(c, string(raw), rec); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // Apply performs a planned install and records what it did. It re-reads the file first:
 // a plan computed against bytes that have since changed would splice into the wrong place.
 func (c Client) Apply(state string, p Plan) error {

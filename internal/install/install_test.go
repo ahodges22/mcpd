@@ -343,6 +343,25 @@ func TestAnUnrelatedLaterEditSurvivesRevert(t *testing.T) {
 	}
 }
 
+func TestInstalledAllowsAnotherJSONServerAddedLater(t *testing.T) {
+	f := newFixture(t, "cursor", cursorGolden)
+	f.install(t)
+
+	body := strings.Replace(f.read(t), `"mcpServers": {`, `"mcpServers": {
+    "mine": { "type": "http", "url": "https://mine.test/mcp" },`, 1)
+	if err := os.WriteFile(f.client.Path, []byte(body), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	installed, err := f.client.Installed(f.state)
+	if err != nil {
+		t.Fatalf("Installed: %v", err)
+	}
+	if !installed {
+		t.Fatal("Installed = false after an unrelated JSON server was added")
+	}
+}
+
 // Scenario: "A hand-modified owned region blocks revert", naming the file and the key.
 // Guessing whose version wins is the one thing worse than refusing.
 func TestAHandEditedOwnedRegionBlocksRevertAndNamesIt(t *testing.T) {
