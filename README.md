@@ -9,7 +9,7 @@
 <p align="center">
   <a href="https://github.com/ahodges22/mcpd/actions/workflows/ci.yml"><img src="https://github.com/ahodges22/mcpd/actions/workflows/ci.yml/badge.svg" alt="CI status"></a>
   <a href="https://github.com/ahodges22/mcpd/releases"><img src="https://img.shields.io/github/v/release/ahodges22/mcpd?display_name=tag&sort=semver" alt="Latest release"></a>
-  <img src="https://img.shields.io/badge/Go-1.26.5-00ADD8?logo=go&logoColor=white" alt="Go 1.26.5">
+  <img src="https://img.shields.io/badge/Go-1.26.6-00ADD8?logo=go&logoColor=white" alt="Go 1.26.6">
 </p>
 
 `mcpd` fronts all of your MCP backends with one loopback-only daemon. It gives clients the tool surface that fits them, manages OAuth-backed servers, and shows backend health and tools in a local web panel.
@@ -98,7 +98,7 @@ To build from source instead:
 go install github.com/ahodges22/mcpd/cmd/mcpd@latest
 ```
 
-This requires Go 1.26.5 or later.
+This requires Go 1.26.6 or later.
 
 ## Quick start
 

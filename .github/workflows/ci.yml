@@ -72,8 +72,7 @@ jobs:
         run: |
           test "$(find .release -maxdepth 1 -name 'mcpd_*_*.tar.gz' | wc -l)" -eq 4
           for archive in .release/mcpd_*_*.tar.gz; do
-            tar -tzf "$archive" | grep -qx 'dist/mcpd.service'
-            tar -tzf "$archive" | grep -qx 'dist/dev.mcpd.daemon.plist'
+            tar -tzf "$archive" | grep -qx 'install.sh'
             tar -tzf "$archive" | grep -qx 'THIRD-PARTY-NOTICES'
           done
           cd .release
