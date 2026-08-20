@@ -32,5 +32,5 @@
 
 ## 7. Final Evidence
 
-- [ ] 7.1 Run the full automated gate and record exact commands and results in `verification.md`. Proof: `go test -count=1 -race ./...`, `go vet ./...`, `go tool govulncheck ./...`, `git diff --check`, strict OpenSpec validation, and the GoReleaser snapshot all pass. Commit: `test: record tray verification evidence`.
+- [x] 7.1 Run the full automated gate and record exact commands and results in `verification.md`. Proof: `go test -count=1 -race ./...`, `go vet ./...`, `go tool govulncheck ./...`, `git diff --check`, strict OpenSpec validation, and the GoReleaser snapshot all pass. Commit: `test: record tray verification evidence`.
 - [ ] 7.2 Run the complete real-session acceptance matrix on macOS and Linux, including healthy, attention, offline recovery, reconnect, OAuth browser launch, dashboard launch, duplicate action suppression, clean Quit, crash restart, login start, no macOS Dock icon, host absence, and late host appearance; then run adversarial code review and resolve every merge-blocking finding. Proof: the signed-off platform matrix and review result in `verification.md`. Commit: `test: complete tray acceptance review`.
