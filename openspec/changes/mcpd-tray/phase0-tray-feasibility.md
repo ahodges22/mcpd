@@ -193,11 +193,35 @@ systemd-analyze --user verify /home/probe/.config/systemd/user/mcpd-tray.service
 systemctl --user show mcpd-tray.service -p ActiveState -p SubState -p MainPID -p NRestarts -p Result
 ```
 
+## macOS tray supervisor evidence, 2026-08-19
+
+- The final `CGO_ENABLED=0` Darwin arm64 binary ran as a real LaunchAgent in the current Aqua session on macOS 26.5.2 build 25F84. The installed supervisor was Darwin Bootstrapper 7.0.0 from `libxpc_executables-3102.120.13~112`.
+- `plutil -lint dist/dev.mcpd.tray.plist` returned `OK`. The installed `launchd.plist(5)` documentation confirmed that `LimitLoadToSessionType` applies to agents, `SuccessfulExit=false` restarts the inverse of exit status zero and implies initial launch, and `ThrottleInterval` limits spawn frequency in seconds.
+- The test copied the final plist to a validated `/tmp/mcpd-task62.*` directory and changed only its label, binary path, and loopback address. It used unique label `dev.mcpd.tray.task62-probe` and verified that `127.0.0.1:47429` had no listener. The normal daemon listening on `127.0.0.1:7420` was not stopped, restarted, or modified.
+- Initial PID 74008 remained alive for eleven seconds while its configured daemon address was offline. `lsappinfo` classified it as `ApplicationType=UIElement`, confirming Aqua registration without a Dock application.
+- The GUI launchd environment contained synthetic `MCPD_TASK62_PROBE_SECRET=must-not-pass`, set with `launchctl setenv`. A quiet `ps eww` predicate confirmed that the long-running tray process contained the allowlisted `HOME` and did not contain the synthetic secret after the non-login shell executed `/usr/bin/env -i`.
+- `TestRunTrayExitOutcome` passed immediately before direct SIGTERM. PID 74008 then exited with `last exit code = 0`; the loaded job reported `state = not running`, `runs = 1`, and no PID after more than the ten-second throttle interval, proving the successful Quit path remains stopped.
+- A prompt SIGKILL of PID 74855 produced replacement PID 75933 after a 10,239 ms spawn-to-spawn interval. Promptly killing PID 75933 produced PID 76509 after 10,052 ms. Both intervals exceeded the nine-second observation floor around the documented ten-second throttle, proving unsuccessful exits restart without a spin loop.
+- `launchctl kickstart -p` briefly reports a root-owned `xpcproxy` before that same PID executes as the user job. The probe condition-waited for the user-owned process before signaling it, preventing the harness from mistaking the bootstrap transition for tray behavior.
+- Cleanup waited for asynchronous `launchctl bootout` completion, unset only the synthetic variable, and removed only the validated temporary directory. Final checks found no probe label, synthetic variable, or Task 6.2 directory; the normal daemon remained listening on its original PID and port.
+- Grok's independent Cursor plan review approved the Task 6.2 implementation plan on iteration 1. Its three non-blocking precision notes were incorporated: each crash interval has its own timestamp, the existing Quit exit-zero test is composed with the real signal probe, and the synthetic secret enters through `launchctl setenv` rather than a shell export.
+- Grok's independent Cursor code review approved the complete Task 6.2 diff on iteration 1 with no skipped files or blocking findings. It confirmed the successful Quit classification, unsuccessful-exit restart, Aqua scope, ten-second spawn throttle, non-login `env -i` boundary, and live synthetic-secret evidence. It agreed that packaging, installation guidance, and browser click-through remain in Tasks 6.3 and 7.2.
+
+Exact focused commands and outcomes:
+
+```text
+go test ./cmd/mcpd -run '^TestMacOSTrayLaunchAgent$' -count=1
+plutil -lint dist/dev.mcpd.tray.plist
+CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -o <validated-temp-dir>/mcpd ./cmd/mcpd
+go test ./cmd/mcpd -run '^TestRunTrayExitOutcome$' -count=1
+launchctl print gui/501/dev.mcpd.tray.task62-probe
+```
+
 ## Supervisor acceptance
 
 These checks belong to the later startup tasks.
 
 - [x] Linux clean Quit does not restart the tray.
 - [x] Linux unexpected failure restarts after a delay and remains start-limited.
-- [ ] macOS clean Quit does not restart the tray.
-- [ ] macOS unsuccessful exit restarts after throttling.
+- [x] macOS clean Quit does not restart the tray.
+- [x] macOS unsuccessful exit restarts after throttling.

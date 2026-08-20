@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>dev.mcpd.tray</string>
+
+  <key>LimitLoadToSessionType</key>
+  <string>Aqua</string>
+
+  <!-- This non-login shell expands HOME, then immediately replaces itself with the
+       credential-free tray process. It does not read login profiles. -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/sh</string>
+    <string>-c</string>
+    <string>exec /usr/bin/env -i HOME="$HOME" PATH=/usr/local/bin:/usr/bin:/bin TMPDIR="${TMPDIR:-/tmp}" LANG="${LANG:-en_US.UTF-8}" "$HOME/.local/bin/mcpd" tray</string>
+  </array>
+
+  <!-- Quit, SIGINT, and SIGTERM exit successfully, so they remain stopped. -->
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+</dict>
+</plist>

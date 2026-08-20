@@ -38,6 +38,40 @@ func TestLinuxTrayService(t *testing.T) {
 	}
 }
 
+func TestMacOSTrayLaunchAgent(t *testing.T) {
+	raw, err := os.ReadFile("../../dist/dev.mcpd.tray.plist")
+	if err != nil {
+		t.Fatalf("read macOS tray LaunchAgent: %v", err)
+	}
+	plist := string(raw)
+	wantFragments := []string{
+		"<key>Label</key>\n  <string>dev.mcpd.tray</string>",
+		"<key>LimitLoadToSessionType</key>\n  <string>Aqua</string>",
+		"<key>SuccessfulExit</key>\n    <false/>",
+		"<key>ThrottleInterval</key>\n  <integer>10</integer>",
+	}
+	for _, fragment := range wantFragments {
+		if !strings.Contains(plist, fragment) {
+			t.Errorf("macOS tray LaunchAgent missing %q", fragment)
+		}
+	}
+
+	const programArguments = `<key>ProgramArguments</key>
+  <array>
+    <string>/bin/sh</string>
+    <string>-c</string>
+    <string>exec /usr/bin/env -i HOME="$HOME" PATH=/usr/local/bin:/usr/bin:/bin TMPDIR="${TMPDIR:-/tmp}" LANG="${LANG:-en_US.UTF-8}" "$HOME/.local/bin/mcpd" tray</string>
+  </array>`
+	if !strings.Contains(plist, programArguments) {
+		t.Error("macOS tray LaunchAgent does not use the exact minimal environment boundary")
+	}
+	for _, forbidden := range []string{"<key>RunAtLoad</key>", "<key>EnvironmentVariables</key>", "-lc", "/bin/zsh", ".zprofile", ".profile", "dev.mcpd.daemon"} {
+		if strings.Contains(plist, forbidden) {
+			t.Errorf("macOS tray LaunchAgent contains forbidden %q", forbidden)
+		}
+	}
+}
+
 func hasUnitLine(unit, want string) bool {
 	for _, line := range strings.Split(unit, "\n") {
 		if strings.TrimSpace(line) == want {
