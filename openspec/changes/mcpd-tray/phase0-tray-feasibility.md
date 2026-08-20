@@ -174,11 +174,30 @@ openspec validate mcpd-tray --strict
 git diff --check
 ```
 
+## Linux tray supervisor evidence, 2026-08-19
+
+- The final zero-CGO Linux arm64 binary and `dist/mcpd-tray.service` ran under a real systemd 255.4 user manager in a disposable privileged Ubuntu 24.04 arm64 container. The container mounted no user home, configuration, state, credential, or host session sockets.
+- `systemd-analyze --user verify /home/probe/.config/systemd/user/mcpd-tray.service` returned 0 with no output. The unit was enabled only under `graphical-session.target.wants`; the supervisor probe started the service directly because `graphical-session.target` is passive and has `RefuseManualStart=yes`.
+- With no StatusNotifier watcher, the process remained `active/running` for more than two five-second poll cycles and logged the distinct expected watcher-registration warning.
+- The user manager contained synthetic `MCPD_PROBE_SECRET=must-not-pass` and `DISPLAY=:91`. `/proc/<MainPID>/environ` contained the allowlisted display value and did not contain the synthetic secret, proving the `/usr/bin/env -i` boundary rather than a credential-name denylist.
+- Direct SIGTERM produced `Result=success`, `ActiveState=inactive`, `SubState=dead`, `MainPID=0`, and `NRestarts=0` after seven seconds. Combined with `TestRunTrayExitOutcome` proving the Quit callback reaches the same successful cancellation path, clean Quit remains stopped.
+- Direct SIGKILL changed PID 260 to PID 803 after 5,139 ms and returned to `ActiveState=active`, proving the five-second restart floor. Repeated SIGKILLs within the sixty-second window produced three active replacements, then no PID and a stable failed unit. systemd 255 retained `Result=signal`, incremented the restart counter to 4, and logged `Start request repeated too quickly`, proving the three-start rate limit even though this version does not expose `start-limit-hit` as the final `Result` value.
+- The failed unit was reset, then the disposable container and locally tagged test image were removed. No service, user, image tag, or mounted host data remained.
+- Grok's independent Cursor review approved the complete Task 6.1 diff on iteration 1 with no blocking findings. It confirmed the graphical-session lifecycle, clean-success classification, five-second restart delay, three-start rate limit, and synthetic-secret exclusion. Its non-blocking browser-path and installation notes remain assigned to Tasks 7.2 and 6.3 respectively.
+
+Exact focused commands and outcomes:
+
+```text
+go test ./cmd/mcpd -run '^TestLinuxTrayService$' -count=1
+systemd-analyze --user verify /home/probe/.config/systemd/user/mcpd-tray.service
+systemctl --user show mcpd-tray.service -p ActiveState -p SubState -p MainPID -p NRestarts -p Result
+```
+
 ## Supervisor acceptance
 
 These checks belong to the later startup tasks.
 
-- [ ] Linux clean Quit does not restart the tray.
-- [ ] Linux unexpected failure restarts after a delay and remains start-limited.
+- [x] Linux clean Quit does not restart the tray.
+- [x] Linux unexpected failure restarts after a delay and remains start-limited.
 - [ ] macOS clean Quit does not restart the tray.
 - [ ] macOS unsuccessful exit restarts after throttling.

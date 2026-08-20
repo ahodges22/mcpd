@@ -1,0 +1,18 @@
+[Unit]
+Description=mcpd status icon
+Documentation=https://github.com/ahodges22/mcpd
+PartOf=graphical-session.target
+StartLimitIntervalSec=60s
+StartLimitBurst=3
+
+[Service]
+Type=exec
+# User managers pass their imported environment to every child, so clear it before
+# supplying only the desktop session values needed by the tray and browser opener.
+ExecStart=/usr/bin/env -i HOME=%h PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin XDG_RUNTIME_DIR=%t DBUS_SESSION_BUS_ADDRESS=unix:path=%t/bus DISPLAY=${DISPLAY} WAYLAND_DISPLAY=${WAYLAND_DISPLAY} XAUTHORITY=${XAUTHORITY} XDG_CURRENT_DESKTOP=${XDG_CURRENT_DESKTOP} XDG_SESSION_TYPE=${XDG_SESSION_TYPE} LANG=${LANG} %h/.local/bin/mcpd tray
+# Quit, SIGINT, and SIGTERM are successful outcomes and must remain stopped.
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=graphical-session.target
