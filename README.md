@@ -25,6 +25,7 @@
 - Can resolve allowlisted credential references from the macOS Keychain, Linux Secret Service, or an explicit managed file.
 - Optionally serves a token-paired, relogin-only page to the local network, so an expired OAuth login can be fixed from another device.
 - Provides a status panel, backend controls, and a searchable tool inspector.
+- Optionally shows backend health and one-click repair actions in the macOS menu bar or Linux status area.
 - Rewires supported clients with a dry-run-first, reversible command.
 
 | Client | Endpoint | Tool surface |
@@ -184,7 +185,8 @@ The installer supports `claude`, `codex`, `cursor`, `opencode`, or `all`. It rec
 
 Manage login-session startup with `mcpd service install`, `mcpd service start`,
 `mcpd service status`, and `mcpd service uninstall`. See the
-[service guide](docs/service.md) for platform behavior and credential environment details.
+[service guide](docs/service.md) for platform behavior, credential environment details, and
+optional status-icon startup.
 
 ## Inspect tools
 

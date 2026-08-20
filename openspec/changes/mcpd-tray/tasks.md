@@ -28,7 +28,7 @@
 
 - [x] 6.1 Add the opt-in Linux graphical-session unit with clean-quit behavior, delayed failure restart, start limits, and no credential passthrough. Proof: `systemd-analyze --user verify dist/mcpd-tray.service` plus the Linux `clean quit and crash restart` checklist in `phase0-tray-feasibility.md`. Commit: `feat: add linux tray supervision`.
 - [x] 6.2 Add the opt-in Aqua-only macOS LaunchAgent with unsuccessful-exit keepalive and crash throttling, verified against the target host's `launchd.plist(5)`. Proof: `plutil -lint dist/dev.mcpd.tray.plist` plus the macOS `clean quit and crash restart` checklist in `phase0-tray-feasibility.md`. Commit: `feat: add macos tray supervision`.
-- [ ] 6.3 Package both startup files, extend snapshot archive assertions, and document manual use, opt-in installation/removal, Quit, `xdg-open`, offline behavior, and the GNOME host requirement. Proof: the CI release-content script and `goreleaser release --snapshot --clean --skip=sign` produce four archives containing both files. Commit: `docs: document and package tray mode`.
+- [x] 6.3 Package both startup files, extend snapshot archive assertions, and document manual use, opt-in installation/removal, Quit, `xdg-open`, offline behavior, and the GNOME host requirement. Proof: the CI release-content script and `goreleaser release --snapshot --clean --skip=sign` produce four archives containing both files. Commit: `docs: document and package tray mode`.
 
 ## 7. Final Evidence
 

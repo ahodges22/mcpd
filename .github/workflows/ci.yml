@@ -72,8 +72,11 @@ jobs:
         run: |
           test "$(find .release -maxdepth 1 -name 'mcpd_*_*.tar.gz' | wc -l)" -eq 4
           for archive in .release/mcpd_*_*.tar.gz; do
-            tar -tzf "$archive" | grep -qx 'install.sh'
-            tar -tzf "$archive" | grep -qx 'THIRD-PARTY-NOTICES'
+            archive_contents="$(tar -tzf "$archive")"
+            grep -qx 'install.sh' <<<"$archive_contents"
+            grep -qx 'dist/mcpd-tray.service' <<<"$archive_contents"
+            grep -qx 'dist/dev.mcpd.tray.plist' <<<"$archive_contents"
+            grep -qx 'THIRD-PARTY-NOTICES' <<<"$archive_contents"
           done
           cd .release
           sha256sum --check checksums.txt

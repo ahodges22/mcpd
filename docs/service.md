@@ -54,6 +54,40 @@ zsh -lc '[ -n "${YOUR_TOKEN_VARIABLE:-}" ]' \
   && echo 'token available' || echo 'token MISSING'
 ```
 
+## Optional status icon
+
+Run the icon manually with `mcpd tray`. Use `mcpd tray --addr 127.0.0.1:PORT` only when the
+daemon uses a non-default loopback port. The tray reads the loopback status API, never backend
+credentials or declarations, and never starts or stops the daemon. Control-C and `Quit status
+icon` both stop it cleanly.
+
+The release archive includes opt-in startup definitions under `dist/`. They are separate from
+the daemon service installed by `mcpd service install`.
+
+On Linux, copy `dist/mcpd-tray.service` to `~/.config/systemd/user/`, then run:
+
+```sh
+systemctl --user daemon-reload
+systemctl --user enable --now mcpd-tray.service
+```
+
+Dashboard and authorization actions require `xdg-open`. A desktop without a compatible
+StatusNotifierItem host needs one before it can display the icon; the tray remains alive while
+the host is absent.
+
+On macOS, copy `dist/dev.mcpd.tray.plist` to `~/Library/LaunchAgents/`, then run:
+
+```sh
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.mcpd.tray.plist
+```
+
+The tray agent runs only in an Aqua session. Its non-login shell expands `HOME`, then replaces
+itself with a credential-free tray process. It does not read login profiles.
+
+Quit is an explicit request to leave the tray stopped for the current session. Start it again
+with `systemctl --user start mcpd-tray.service` on Linux or `launchctl kickstart
+gui/$(id -u)/dev.mcpd.tray` on macOS. Disable or boot out the unit to remove login startup.
+
 ## Verification
 
 `mcpd doctor` verifies that the declaration file loads, the user service is installed and

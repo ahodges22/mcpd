@@ -31,6 +31,10 @@ archives:
       - LICENSE
       - THIRD-PARTY-NOTICES
       - install.sh
+      - src: dist/mcpd-tray.service
+        dst: dist/mcpd-tray.service
+      - src: dist/dev.mcpd.tray.plist
+        dst: dist/dev.mcpd.tray.plist
 
 checksum:
   name_template: checksums.txt
