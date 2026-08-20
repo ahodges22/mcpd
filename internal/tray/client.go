@@ -45,6 +45,12 @@ type Client struct {
 	http    *http.Client
 }
 
+func (c *Client) DashboardURL() string {
+	target := c.baseURL
+	target.Path = "/"
+	return target.String()
+}
+
 func NewClient(addr string) (*Client, error) {
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil || host == "" || port == "" {

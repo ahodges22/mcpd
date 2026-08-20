@@ -1,7 +1,4 @@
-// Command mcpd is the local MCP proxy daemon. It multiplexes several upstream MCP
-// servers behind one loopback endpoint and serves a status surface. The whole CLI
-// lives in mcpdcmd so that multi-tool binaries can embed it; this command is the
-// standalone shell around it.
+// Command mcpd is the standalone mcpd CLI.
 package main
 
 import (

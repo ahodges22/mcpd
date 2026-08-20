@@ -239,6 +239,68 @@ func TestControllerActionShutdown(t *testing.T) {
 	}
 }
 
+func TestControllerDashboardIsNonBlocking(t *testing.T) {
+	client := actionTestClient{
+		status: func(context.Context) (Status, error) {
+			return actionableStatus(), nil
+		},
+		reconnect: func(context.Context, string) error {
+			return errors.New("unexpected reconnect")
+		},
+		authorize: func(context.Context, string) (string, error) {
+			return "", errors.New("unexpected authorize")
+		},
+	}
+	started := make(chan string, 2)
+	release := make(chan struct{})
+	controller := newActionController(client, func(_ context.Context, target string) error {
+		started <- target
+		<-release
+		return nil
+	}, make(chan time.Time))
+	controller.dashboardURL = "http://127.0.0.1:7420/"
+	ctx, cancel := context.WithCancel(t.Context())
+	stopped := runController(controller, ctx)
+	_ = wantModel(t, controller.Updates())
+
+	returned := make(chan struct{})
+	go func() {
+		controller.OpenDashboard()
+		close(returned)
+	}()
+	select {
+	case <-returned:
+	case <-time.After(20 * time.Millisecond):
+		t.Fatal("OpenDashboard blocked the caller")
+	}
+	select {
+	case target := <-started:
+		if target != controller.dashboardURL {
+			t.Fatalf("dashboard target = %q, want %q", target, controller.dashboardURL)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("dashboard opener did not start")
+	}
+
+	for range 100 {
+		controller.OpenDashboard()
+	}
+	select {
+	case target := <-started:
+		t.Fatalf("started duplicate dashboard opener for %q", target)
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	cancel()
+	select {
+	case <-stopped:
+		t.Fatal("controller stopped before the dashboard opener returned")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(release)
+	wantStopped(t, stopped)
+}
+
 func actionableStatus() Status {
 	return Status{
 		Backends: []BackendStatus{

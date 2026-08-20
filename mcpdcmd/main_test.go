@@ -3,6 +3,9 @@ package mcpdcmd
 import (
 	"bytes"
 	"encoding/json"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -20,6 +23,104 @@ import (
 	"github.com/ahodges22/mcpd/internal/secretstore"
 	"github.com/ahodges22/mcpd/internal/testfake"
 )
+
+func TestTrayDispatchLocksCallingThread(t *testing.T) {
+	runFunc := parseMainFunction(t, "run")
+	for _, statement := range runFunc.Body.List {
+		if nodeContainsString(statement, "tray") && nodeContainsIdentifier(statement, "runTray") {
+			if !nodeContainsSelectorCall(statement, "runtime", "LockOSThread") {
+				t.Fatal("tray dispatch does not lock its calling thread")
+			}
+			return
+		}
+	}
+	t.Fatal("tray dispatch not found")
+}
+
+func TestCredentialHelperDispatchPrecedesTray(t *testing.T) {
+	runFunc := parseMainFunction(t, "run")
+	if len(runFunc.Body.List) == 0 {
+		t.Fatal("run has no statements")
+	}
+	first, ok := runFunc.Body.List[0].(*ast.IfStmt)
+	if !ok || first.Init == nil || !nodeContainsSelectorCall(first.Init, "secretstore", "ServeNativeHelperIfRequested") {
+		t.Fatal("native credential-helper dispatch is not the first run statement")
+	}
+
+	trayBranch := -1
+	for index, statement := range runFunc.Body.List {
+		if nodeContainsString(statement, "tray") && nodeContainsIdentifier(statement, "runTray") {
+			trayBranch = index
+			break
+		}
+	}
+	if trayBranch <= 0 {
+		t.Fatalf("tray branch index = %d, want after credential-helper dispatch", trayBranch)
+	}
+}
+
+func parseMainFunction(t *testing.T, name string) *ast.FuncDecl {
+	t.Helper()
+	parsed, err := parser.ParseFile(token.NewFileSet(), "main.go", nil, 0)
+	if err != nil {
+		t.Fatalf("parse main.go: %v", err)
+	}
+	for _, declaration := range parsed.Decls {
+		function, ok := declaration.(*ast.FuncDecl)
+		if ok && function.Name.Name == name {
+			return function
+		}
+	}
+	t.Fatalf("function %s not found", name)
+	return nil
+}
+
+func nodeContainsSelectorCall(node ast.Node, packageName, functionName string) bool {
+	found := false
+	ast.Inspect(node, func(candidate ast.Node) bool {
+		call, ok := candidate.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		selector, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		identifier, ok := selector.X.(*ast.Ident)
+		if ok && identifier.Name == packageName && selector.Sel.Name == functionName {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
+}
+
+func nodeContainsString(node ast.Node, value string) bool {
+	found := false
+	ast.Inspect(node, func(candidate ast.Node) bool {
+		literal, ok := candidate.(*ast.BasicLit)
+		if ok && literal.Kind == token.STRING && literal.Value == `"`+value+`"` {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
+}
+
+func nodeContainsIdentifier(node ast.Node, value string) bool {
+	found := false
+	ast.Inspect(node, func(candidate ast.Node) bool {
+		identifier, ok := candidate.(*ast.Ident)
+		if ok && identifier.Name == value {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
+}
 
 // wireDaemon stands the daemon up exactly as run does, minus the listener, over one fake
 // upstream. This is the first test in the project that exercises the whole wiring: every

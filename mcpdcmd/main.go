@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -79,6 +80,11 @@ func run(argv []string) error {
 	// argv shape regardless of what the host binary was invoked as.
 	if handled, err := secretstore.ServeNativeHelperIfRequested(context.Background(), append([]string{"mcpd"}, argv...), os.Stdin, os.Stdout); handled {
 		return err
+	}
+	if len(argv) > 0 && argv[0] == "tray" {
+		runtime.LockOSThread()
+		defer runtime.UnlockOSThread()
+		return runTray(argv[1:], defaultTrayCommandDeps())
 	}
 	// Serving remains the default. Management subcommands return before daemon flags are parsed.
 	if len(argv) > 0 && argv[0] == "install" {

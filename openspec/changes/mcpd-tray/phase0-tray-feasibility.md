@@ -144,6 +144,36 @@ openspec validate mcpd-tray --strict
 git diff --check
 ```
 
+## Tray command evidence, 2026-08-19
+
+- The browser boundary and command lifecycle were implemented test-first. The initial focused runs failed because `openURLWith`, the dashboard controller action, `runTray`, and the startup dispatch did not exist. The same focused tests then passed under the race detector, including 20 repeated controller runs, 50 repeated command runs, and 10 combined `cmd/mcpd` and `internal/tray` runs.
+- `OpenURL` accepted a metacharacter-rich valid HTTPS URL as exactly one process argument, selected `/usr/bin/open` on Darwin and `xdg-open` on Linux, rejected unsafe URLs and unsupported platforms before invocation, and honored a cancelled context.
+- The complete repository race suite, both vet targets, all four zero-CGO release builds, strict OpenSpec validation, and `git diff --check` passed. `govulncheck` reported zero reachable vulnerabilities and zero vulnerable imported packages; three required modules contain vulnerabilities only in packages mcpd does not import.
+- A final arm64 macOS binary ran the daemon from isolated temporary config and state at `127.0.0.1:47420`, then ran `mcpd tray` in the logged-in Aqua session. `lsappinfo` reported `ApplicationType="UIElement"` for tray PID 32646. SIGTERM removed the process registration and returned status 0. The daemon also shut down cleanly.
+- The same macOS binary rejected `--addr 0.0.0.0:7420` with an invalid-loopback-address error and status 1 before registering an application.
+- The final zero-CGO Linux arm64 binary ran in an ephemeral Ubuntu 24.04 arm64 container under `dbus-run-session` with no StatusNotifier watcher. It stayed alive, owned an `org.kde.StatusNotifierItem-*` bus name, emitted the expected distinct watcher-registration warning, and returned status 0 after SIGTERM.
+- In a second clean Linux session bus, `--addr 0.0.0.0:7420` returned the invalid-loopback-address error and no `org.kde.StatusNotifierItem-*` name appeared.
+- Grok's independent Cursor review approved the full uncommitted Task 5.2 change set on iteration 1 with no skipped files and no merge-blocking findings. It confirmed credential-helper precedence, startup-thread ownership, callback boundaries, browser argument safety, loopback validation, exit classification, and controller shutdown. It identified only two non-blocking UX tradeoffs: the intentionally bounded shared action queue can drop a click while busy, and a foreground `xdg-open` implementation remains attached until completion or context cancellation.
+
+Exact final automated commands:
+
+```text
+go test -race ./internal/tray -run 'Test(ControllerDashboardIsNonBlocking|ControllerSerializesAction|ControllerActionFailure|ControllerDoesNotReplay|ControllerActionShutdown|OpenURLArgumentBoundary)$' -count=20
+go test -race ./cmd/mcpd -run '^TestRunTray(Flags|RejectsNonLoopback|ExitOutcome)$' -count=50
+go test ./cmd/mcpd -run '^Test(MainLocksStartupThreadBeforeDispatch|CredentialHelperDispatchPrecedesTray)$' -count=1
+go test -race ./cmd/mcpd ./internal/tray -count=10
+go test -count=1 -race ./...
+go vet ./...
+go vet ./internal/tray/testdata/darwin-session
+go tool govulncheck ./...
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /tmp/mcpd-linux-amd64 ./cmd/mcpd
+CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o /tmp/mcpd-linux-arm64 ./cmd/mcpd
+CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -o /tmp/mcpd-darwin-amd64 ./cmd/mcpd
+CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -o /tmp/mcpd-darwin-arm64 ./cmd/mcpd
+openspec validate mcpd-tray --strict
+git diff --check
+```
+
 ## Supervisor acceptance
 
 These checks belong to the later startup tasks.

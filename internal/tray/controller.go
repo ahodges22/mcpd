@@ -2,6 +2,7 @@ package tray
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -30,23 +31,32 @@ type actionRequest struct {
 	backend string
 }
 
+type actionResult struct {
+	command MenuCommand
+	err     error
+}
+
 type Controller struct {
-	client         controllerStatusClient
-	actions        controllerActionClient
-	openURL        func(context.Context, string) error
-	polls          <-chan time.Time
-	retry          chan struct{}
-	actionRequests chan actionRequest
-	actionResults  chan error
-	updates        chan MenuModel
-	pollInterval   time.Duration
-	actionActive   atomic.Bool
-	actionWG       sync.WaitGroup
-	actionFailed   bool
+	client          controllerStatusClient
+	actions         controllerActionClient
+	openURL         func(context.Context, string) error
+	polls           <-chan time.Time
+	retry           chan struct{}
+	actionRequests  chan actionRequest
+	actionResults   chan actionResult
+	updates         chan MenuModel
+	pollInterval    time.Duration
+	actionActive    atomic.Bool
+	dashboardActive atomic.Bool
+	actionWG        sync.WaitGroup
+	actionFailed    bool
+	dashboardURL    string
 }
 
 func NewController(client *Client, openURL func(context.Context, string) error) *Controller {
-	return newActionController(client, openURL, nil)
+	controller := newActionController(client, openURL, nil)
+	controller.dashboardURL = client.DashboardURL()
+	return controller
 }
 
 func newController(client controllerStatusClient, polls <-chan time.Time) *Controller {
@@ -55,7 +65,7 @@ func newController(client controllerStatusClient, polls <-chan time.Time) *Contr
 		polls:          polls,
 		retry:          make(chan struct{}, 1),
 		actionRequests: make(chan actionRequest, 1),
-		actionResults:  make(chan error, 1),
+		actionResults:  make(chan actionResult, 1),
 		updates:        make(chan MenuModel, 1),
 		pollInterval:   controllerPollInterval,
 	}
@@ -98,6 +108,18 @@ func (c *Controller) Repair(command MenuCommand, backend string) {
 	}
 }
 
+// OpenDashboard queues at most one browser launch without blocking a native callback.
+func (c *Controller) OpenDashboard() {
+	if c.openURL == nil || c.dashboardURL == "" || !c.dashboardActive.CompareAndSwap(false, true) {
+		return
+	}
+	select {
+	case c.actionRequests <- actionRequest{command: CommandDashboard}:
+	default:
+		c.dashboardActive.Store(false)
+	}
+}
+
 // Run owns controller state until ctx is canceled and closes Updates on exit.
 func (c *Controller) Run(ctx context.Context) {
 	defer func() {
@@ -125,9 +147,16 @@ func (c *Controller) Run(ctx context.Context) {
 		case request := <-c.actionRequests:
 			c.startAction(ctx, request)
 			continue
-		case err := <-c.actionResults:
+		case result := <-c.actionResults:
+			if result.command == CommandDashboard {
+				c.dashboardActive.Store(false)
+				if result.err != nil {
+					slog.Warn("tray: open dashboard failed", "err", result.err)
+				}
+				continue
+			}
 			c.actionActive.Store(false)
-			c.actionFailed = err != nil
+			c.actionFailed = result.err != nil
 		}
 		if !c.refresh(ctx) {
 			return
@@ -154,7 +183,7 @@ func (c *Controller) startAction(ctx context.Context, request actionRequest) {
 		defer c.actionWG.Done()
 		err := c.runAction(ctx, request)
 		select {
-		case c.actionResults <- err:
+		case c.actionResults <- actionResult{command: request.command, err: err}:
 		case <-ctx.Done():
 		}
 	}()
@@ -170,6 +199,8 @@ func (c *Controller) runAction(ctx context.Context, request actionRequest) error
 			return err
 		}
 		return OpenAuthorizeURL(ctx, target, c.openURL)
+	case CommandDashboard:
+		return OpenAuthorizeURL(ctx, c.dashboardURL, c.openURL)
 	default:
 		return nil
 	}
