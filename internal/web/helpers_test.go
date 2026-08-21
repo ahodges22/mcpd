@@ -110,7 +110,7 @@ func newHarness(t *testing.T, fakes ...*testfake.Fake) *harness {
 }
 
 // mcpSurface serves the real search facade behind the same shared guard, so a test
-// exercises the MCP endpoint as cmd/mcpd will wire it.
+// exercises the MCP endpoint as mcpdcmd wires it.
 func (h *harness) mcpSurface(t *testing.T) *httptest.Server {
 	t.Helper()
 	srv := mcpsrv.NewSearch(h.cat, h.reg, rank.Thresholds{}, nil)

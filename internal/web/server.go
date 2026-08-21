@@ -52,7 +52,7 @@ var AuthorizeWaitTimeout = 30 * time.Second
 var assetFS embed.FS
 
 // Server is the loopback web surface. It is constructed without a listener, so it
-// is testable on its own; cmd/mcpd mounts Handler on its own mux.
+// is testable on its own; mcpdcmd mounts Handler on its own mux.
 type Server struct {
 	reg   *backend.Registry
 	cat   *catalog.Catalog
