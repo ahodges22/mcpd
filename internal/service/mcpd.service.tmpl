@@ -10,7 +10,7 @@ ExecStart="{{.Binary}}" --config "{{.Config}}" --state "{{.State}}" --addr "{{.A
 Restart=always
 RestartSec=2
 Environment=PATH=%h/.local/bin:%h/.bin:/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:/usr/local/bin:/usr/bin:/bin
-PassEnvironment=HOME USER LOGNAME SHELL LANG TZ TERM TMPDIR
+PassEnvironment=HOME USER LOGNAME SHELL LANG TZ TERM TMPDIR{{range .PassEnvironment}} {{.}}{{end}}
 KillMode=control-group
 TimeoutStopSec=30
 

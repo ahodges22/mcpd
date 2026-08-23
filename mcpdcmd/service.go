@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/ahodges22/mcpd/internal/config"
@@ -112,9 +113,11 @@ func runServiceInstall(args []string, deps serviceCommandDeps) error {
 		}
 		*value = absolute
 	}
-	if _, _, err := config.NewWriter(paths.Config); err != nil {
+	_, cfg, err := config.NewWriter(paths.Config)
+	if err != nil {
 		return err
 	}
+	paths.PassEnvironment = declarationEnvironment(cfg)
 	if err := os.MkdirAll(paths.State, 0o700); err != nil {
 		return fmt.Errorf("create state directory: %w", err)
 	}
@@ -126,6 +129,24 @@ func runServiceInstall(args []string, deps serviceCommandDeps) error {
 	}
 	fmt.Fprintln(deps.stdout, "mcpd service installed and started")
 	return nil
+}
+
+func declarationEnvironment(cfg *config.Config) []string {
+	unique := map[string]struct{}{}
+	for _, consumer := range cfg.SecretConsumers() {
+		for _, name := range consumer.References {
+			unique[name] = struct{}{}
+		}
+	}
+	if len(unique) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(unique))
+	for name := range unique {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 func describeServiceState(state servicepkg.State) string {

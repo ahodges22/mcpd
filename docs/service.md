@@ -19,8 +19,12 @@ mcpd installs `~/.config/systemd/user/mcpd.service` and enables it for
 credential stores and environment credentials depend on that session. A headless host without a
 graphical session needs a deliberate service policy instead of this default.
 
-The generated unit passes a small baseline environment. If a backend depends on an environment
-variable, add a persistent systemd drop-in and reinstall or restart the service:
+The generated unit passes a small baseline environment plus every `${VAR}` and `api_key_env`
+name referenced by the declaration file. Re-run `mcpd service install` after adding a new
+reference so the generated allowlist stays current.
+
+If a stdio backend uses `env_passthrough` for a variable that is not also referenced through
+`${VAR}`, add that name with a persistent systemd drop-in, then restart the service:
 
 ```sh
 systemctl --user edit mcpd

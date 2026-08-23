@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"text/template"
@@ -28,10 +29,11 @@ var platform = runtime.GOOS
 var runner = run
 
 type Paths struct {
-	Binary string
-	Config string
-	State  string
-	Addr   string
+	Binary          string
+	Config          string
+	State           string
+	Addr            string
+	PassEnvironment []string
 }
 
 type launchdTemplateData struct {
@@ -43,6 +45,11 @@ func RenderSystemdUnit(paths Paths) (string, error) {
 	if err := validatePaths(paths); err != nil {
 		return "", err
 	}
+	passEnvironment, err := normalizePassEnvironment(paths.PassEnvironment)
+	if err != nil {
+		return "", err
+	}
+	paths.PassEnvironment = passEnvironment
 	tmpl, err := template.New("mcpd.service").Parse(systemdTemplate)
 	if err != nil {
 		return "", err
@@ -56,6 +63,24 @@ func RenderSystemdUnit(paths Paths) (string, error) {
 		return "", err
 	}
 	return rendered.String(), nil
+}
+
+func normalizePassEnvironment(names []string) ([]string, error) {
+	unique := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		if name == "" || strings.IndexFunc(name, func(r rune) bool {
+			return (r < 'A' || r > 'Z') && (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '_'
+		}) >= 0 {
+			return nil, fmt.Errorf("environment variable %q contains an unsafe character", name)
+		}
+		unique[name] = struct{}{}
+	}
+	normalized := make([]string, 0, len(unique))
+	for name := range unique {
+		normalized = append(normalized, name)
+	}
+	sort.Strings(normalized)
+	return normalized, nil
 }
 
 func RenderLaunchdPlist(paths Paths, logPath string) (string, error) {
