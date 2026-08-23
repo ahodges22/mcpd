@@ -44,8 +44,10 @@ mcpd installs `~/Library/LaunchAgents/dev.mcpd.daemon.plist`. The agent starts m
 non-interactive zsh login shell so declarations can use exports from `.zprofile`. `.zshrc` is not
 read in this mode. Logs go to `~/Library/Logs/mcpd.log`.
 
-The generated plist has automated rendering tests but has not yet completed a real-machine
-launchd lifecycle test.
+The generated agent has automated rendering tests and has run in a graphical user domain with
+the shipped command, `RunAtLoad`, `KeepAlive`, and throttle settings. launchd kept the daemon
+running with a clean last exit, and the loopback status surface reported every configured
+backend serving. A fresh-login or reboot-time start has not been exercised.
 
 Check the same environment path before installing:
 

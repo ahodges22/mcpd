@@ -55,6 +55,7 @@ The daemon becomes something the machine keeps running rather than something the
 remembers to start. The blast radius of it being down is unchanged and remains total, which is
 why this is worth doing rather than deferring.
 
-The macOS agent is written against launchd's documented behaviour and is **untested**. It is
-committed as such and labelled that way, because a plausible service definition nobody has run
-is not the same as a working one.
+The macOS agent was initially committed as untested, then verified on a live macOS graphical
+session. The installed agent has the shipped command and restart semantics, launchd keeps the
+daemon running, and the loopback status surface reports every configured backend serving. A
+fresh-login or reboot-time start remains outside the verification boundary.

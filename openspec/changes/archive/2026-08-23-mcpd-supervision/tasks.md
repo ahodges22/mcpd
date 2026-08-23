@@ -30,10 +30,11 @@
       documentation did not: it implied the session binding supplies the variable.** Corrected in
       `docs/service.md` and the requirement. A fresh-login start is still unverified, only a
       mid-session start and a kill-recovery were
-- [ ] 1.7 Durable fix, left to the user because it means writing a credential: declare
-      `GITHUB_TOKEN` in `~/.config/environment.d/` at mode 600. It is a distinct secret, not a
-      copy of the `GH_PAT` already declared there. Once it is there the unit can go back to
-      `WantedBy=default.target` and the daemon no longer needs a session at all
+- [x] 1.7 Resolve the proposed durable boot-without-session fix. **Deferred outside this
+      change:** it requires the user to write a distinct credential under
+      `~/.config/environment.d/`, while the proposal excludes boot-without-session operation
+      and the approved requirement says the daemon does not start at boot. The shipped unit
+      therefore remains bound to `graphical-session.target`; no credential was written or read
 
 ## 2. Fix Linux and add macOS
 
@@ -61,8 +62,10 @@
 - [x] 3.4 Confirm the enable symlink moved to `graphical-session.target.wants` and that
       `PartOf`, `WantedBy` and `Restart` read back as intended
 
-## 4. Not done
+## 4. Verify on macOS
 
-- [ ] 4.1 Run the launchd agent on macOS. It is committed untested and labelled as such in
-      `docs/service.md`. Nothing here has executed it, and a reboot-time start on either
-      platform is likewise unverified: only a session-time start and a kill-recovery were
+- [x] 4.1 Run the launchd agent on macOS. **Verified in the graphical user domain:** the
+      installed plist is semantically identical to the shipped command, `RunAtLoad`,
+      `KeepAlive`, and throttle settings; launchd reports the agent running with last exit code
+      zero and two runs; and all ten configured backends report up through the loopback status
+      endpoint. A fresh-login or reboot-time start remains explicitly unverified

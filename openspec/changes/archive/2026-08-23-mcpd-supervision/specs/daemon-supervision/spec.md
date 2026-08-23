@@ -68,15 +68,23 @@ consequence rather than leave the boot-time case looking supported.
 - **WHEN** the user manager is configured to linger for an unrelated service
 - **THEN** the daemon still starts with the session, not at boot
 
-### Requirement: An untested service definition is labelled as untested
+### Requirement: Platform verification and its boundary are documented
 
-Where a service definition has not been run on the platform it targets, that SHALL be stated
-where someone installing it will see it.
+Each service definition SHALL be run on the platform it targets before the documentation calls
+it verified. The recorded evidence SHALL cover the supervisor loading the shipped command and
+restart settings, the daemon running under that supervisor, and the status surface reporting
+the configured backends serving.
 
-A plausible service definition nobody has executed is not a working one, and shipping it
-without saying so transfers a debugging session to whoever installs it first.
+Any lifecycle boundary not exercised, such as a fresh-login or reboot-time start, SHALL remain
+explicit rather than being implied by a successful session-time run.
 
-#### Scenario: The macOS agent does not claim to be verified
+#### Scenario: The macOS agent runs under launchd
 
-- **WHEN** the supervision documentation is read
-- **THEN** it says which platform's definition has been run and which has not
+- **WHEN** the shipped agent is loaded in the user's graphical launchd domain
+- **THEN** launchd runs the shipped command and restart settings, the daemon remains running,
+  and its status surface reports the configured backends serving
+
+#### Scenario: The untested lifecycle boundary remains visible
+
+- **WHEN** session-time verification has passed without a fresh login or reboot
+- **THEN** the documentation identifies that remaining boundary rather than claiming it passed
