@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"text/template"
+	"time"
 	"unicode"
 
 	"github.com/ahodges22/mcpd/internal/atomicfile"
@@ -170,11 +171,30 @@ func installLaunchd(paths Paths) error {
 	if _, err := runner("launchctl", "bootout", target); err != nil && !notLoaded(err) {
 		return err
 	}
+	if err := waitForLaunchdUnload(target); err != nil {
+		return err
+	}
 	if _, err := runner("launchctl", "enable", target); err != nil {
 		return err
 	}
 	_, err = runner("launchctl", "bootstrap", domain, path)
 	return err
+}
+
+func waitForLaunchdUnload(target string) error {
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		if _, err := runner("launchctl", "print", target); err != nil {
+			if notLoaded(err) {
+				return nil
+			}
+			return fmt.Errorf("inspect launchd service %s: %w", target, err)
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("timed out waiting for launchd service %s to unload", target)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 }
 
 func systemdPath() (string, error) {

@@ -136,7 +136,7 @@ func TestInstallLaunchdReloadsAgentAndCreatesLogDirectory(t *testing.T) {
 	var calls [][]string
 	setRunner(t, func(name string, args ...string) (string, error) {
 		calls = append(calls, append([]string{name}, args...))
-		if len(args) > 0 && args[0] == "bootout" {
+		if len(args) > 0 && (args[0] == "bootout" || args[0] == "print") {
 			return "", errors.New("Boot-out failed: 3: No such process")
 		}
 		return "", nil
@@ -156,11 +156,39 @@ func TestInstallLaunchdReloadsAgentAndCreatesLogDirectory(t *testing.T) {
 	domain := "gui/" + userID()
 	want := [][]string{
 		{"launchctl", "bootout", domain + "/dev.mcpd.daemon"},
+		{"launchctl", "print", domain + "/dev.mcpd.daemon"},
 		{"launchctl", "enable", domain + "/dev.mcpd.daemon"},
 		{"launchctl", "bootstrap", domain, plist},
 	}
 	if !slices.EqualFunc(calls, want, slices.Equal[[]string]) {
 		t.Fatalf("service calls = %v, want %v", calls, want)
+	}
+}
+
+func TestInstallLaunchdWaitsForPreviousAgentToUnload(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	setPlatform(t, "darwin")
+	printCalls := 0
+	setRunner(t, func(_ string, args ...string) (string, error) {
+		switch {
+		case len(args) > 0 && args[0] == "bootout":
+			return "", nil
+		case len(args) > 0 && args[0] == "print":
+			printCalls++
+			if printCalls == 1 {
+				return "service is still unloading", nil
+			}
+			return "", errors.New("Could not find service")
+		case len(args) > 0 && args[0] == "bootstrap" && printCalls < 2:
+			return "", errors.New("bootstrap raced with launchd removal")
+		default:
+			return "", nil
+		}
+	})
+
+	if err := Install(Paths{Binary: "/opt/mcpd", Config: "/tmp/config.json", State: "/tmp/state", Addr: "127.0.0.1:7420"}); err != nil {
+		t.Fatal(err)
 	}
 }
 
