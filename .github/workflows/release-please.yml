@@ -19,6 +19,8 @@ jobs:
   release-please:
     name: Prepare release
     runs-on: ubuntu-latest
+    env:
+      GH_REPO: ${{ github.repository }}
     steps:
       - name: Create or update release
         id: release
