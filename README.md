@@ -241,13 +241,7 @@ CI runs the full suite on Linux and macOS. It also builds a GoReleaser snapshot 
 
 ## Release
 
-Push an annotated semantic-version tag:
-
-```sh
-git tag -a v0.1.0 -m v0.1.0
-git push origin v0.1.0
-```
-
-The release workflow runs the Linux and macOS test suites, then publishes the four archives,
-SHA-256 checksums, the keyless Sigstore bundle for those checksums, and generated release notes
-to a GitHub Release.
+Release Please opens and updates a release pull request from Conventional Commits. Merge that
+pull request to create the semantic-version tag and GitHub Release. The release workflow then
+runs the Linux and macOS test suites and adds the four archives, SHA-256 checksums, and the
+keyless Sigstore bundle for those checksums to the GitHub Release.
