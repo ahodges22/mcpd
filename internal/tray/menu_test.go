@@ -87,6 +87,7 @@ func TestTrayAssets(t *testing.T) {
 		IconOffline:   IconOffline.Bytes(),
 	}
 	seen := make([][]byte, 0, len(icons))
+	seenColors := make(map[color.NRGBA]TrayIcon, len(icons))
 	for name, data := range icons {
 		if len(data) == 0 {
 			t.Fatalf("%s icon is empty", name)
@@ -106,6 +107,9 @@ func TestTrayAssets(t *testing.T) {
 			t.Errorf("%s icon = %s %v, want 22x22 PNG", name, format, img.Bounds())
 		}
 		visible := 0
+		outlined := 0
+		colored := 0
+		var foreground color.NRGBA
 		for y := img.Bounds().Min.Y; y < img.Bounds().Max.Y; y++ {
 			for x := img.Bounds().Min.X; x < img.Bounds().Max.X; x++ {
 				pixel := color.NRGBAModel.Convert(img.At(x, y)).(color.NRGBA)
@@ -113,13 +117,32 @@ func TestTrayAssets(t *testing.T) {
 					continue
 				}
 				visible++
-				if pixel.R != 0 || pixel.G != 0 || pixel.B != 0 {
-					t.Errorf("%s icon has colored pixel at %d,%d: %#v", name, x, y, pixel)
+				if pixel == (color.NRGBA{A: 0xff}) {
+					outlined++
+				} else if pixel.A != 0xff {
+					t.Errorf("%s icon has unexpected pixel at %d,%d: %#v", name, x, y, pixel)
+				} else {
+					colored++
+					if foreground == (color.NRGBA{}) {
+						foreground = pixel
+					} else if pixel != foreground {
+						t.Errorf("%s icon has multiple status colors: %#v and %#v", name, foreground, pixel)
+					}
 				}
 			}
 		}
 		if visible == 0 {
 			t.Errorf("%s icon has no visible pixels", name)
 		}
+		if colored == 0 {
+			t.Errorf("%s icon has no status-colored pixels", name)
+		}
+		if outlined == 0 {
+			t.Errorf("%s icon has no black outline", name)
+		}
+		if prior, exists := seenColors[foreground]; exists {
+			t.Errorf("%s and %s icons use the same status color %#v", prior, name, foreground)
+		}
+		seenColors[foreground] = name
 	}
 }
