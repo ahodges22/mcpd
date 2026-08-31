@@ -8,6 +8,8 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -15,7 +17,10 @@ import (
 	"github.com/ahodges22/mcpd/internal/backend"
 	"github.com/ahodges22/mcpd/internal/catalog"
 	"github.com/ahodges22/mcpd/internal/config"
+	"github.com/ahodges22/mcpd/internal/install"
+	"github.com/ahodges22/mcpd/internal/mcpsrv"
 	"github.com/ahodges22/mcpd/internal/oauthstore"
+	"github.com/ahodges22/mcpd/internal/searchindex"
 	"github.com/ahodges22/mcpd/internal/secretstore"
 )
 
@@ -65,11 +70,27 @@ type Server struct {
 	// unvectorized is optional: it is nil when no embedding gateway is configured, and
 	// the surface then reports nothing rather than a misleading zero.
 	unvectorized func() int
+	searchStatus func() searchindex.Status
 	// remote is optional: without it the panel has no remote-relogin toggle and
 	// the /api/remote route is absent.
-	remote     *Remote
-	secrets    *secretstore.ResolutionCoordinator
-	secretAuth *secretstore.ControlAuthenticator
+	remote      *Remote
+	secrets     *secretstore.ResolutionCoordinator
+	secretAuth  *secretstore.ControlAuthenticator
+	operations  *mcpsrv.Operations
+	clientHome  string
+	clientState string
+}
+
+func (s *Server) WithClients(home, state string) *Server {
+	s.clientHome, s.clientState = home, state
+	return s
+}
+
+// WithOperations makes browser JSON operations use the same search, describe,
+// and dispatch implementation as the MCP facade.
+func (s *Server) WithOperations(operations *mcpsrv.Operations) *Server {
+	s.operations = operations
+	return s
 }
 
 // Manager is the part of the declaration-management layer this surface drives. Each
@@ -125,6 +146,220 @@ func (s *Server) Handler() http.Handler {
 		mux.Handle(rt.path, guardMethod(s.guard, rt, rt.handler))
 	}
 	return s.guard.RequireLoopbackHost(s.guard.Protect(mux))
+}
+
+// AdminHandler returns the policy-free, prefix-relative JSON administration API.
+// Listener owners apply Host, Origin, session, and CSRF policy outside it.
+func (s *Server) AdminHandler() http.Handler {
+	mux := http.NewServeMux()
+	routes := []route{
+		{method: http.MethodGet, path: "/status", handler: s.statusAPI},
+		{method: http.MethodGet, path: "/backends", handler: s.statusAPI},
+		{method: http.MethodPost, path: "/backends", mutates: true, handler: s.addBackend},
+		{method: http.MethodPost, path: "/backends/{name}/remove", mutates: true, handler: s.removeBackend},
+		{method: http.MethodPost, path: "/backends/{name}/enable", mutates: true, handler: s.backendAction(s.reg.Enable)},
+		{method: http.MethodPost, path: "/backends/{name}/disable", mutates: true, handler: s.backendAction(s.reg.Disable)},
+		{method: http.MethodPost, path: "/backends/{name}/reconnect", mutates: true, handler: s.backendAction(s.reg.Reconnect)},
+		{method: http.MethodPost, path: "/backends/{name}/authorize", mutates: true, handler: s.authorize},
+		{method: http.MethodPost, path: "/backends/-/reload", mutates: true, handler: s.reload},
+		{method: http.MethodGet, path: "/secrets", handler: s.secretStatus},
+		{method: http.MethodPost, path: "/secrets/-/retry", mutates: true, handler: s.secretRetry},
+		{method: http.MethodPost, path: "/secrets/-/refresh", mutates: true, handler: s.secretRefreshStatus},
+		{method: http.MethodPost, path: "/secrets/{name}", mutates: true, handler: s.secretSet},
+		{method: http.MethodPost, path: "/secrets/{name}/remove", mutates: true, handler: s.secretRemove},
+		{method: http.MethodPost, path: "/secrets/{name}/refresh", mutates: true, handler: s.secretRefreshConsumers},
+		{method: http.MethodGet, path: "/tools", handler: s.toolList},
+		{method: http.MethodPost, path: "/tools/search", mutates: true, handler: s.toolSearch},
+		{method: http.MethodGet, path: "/tools/{id}", handler: s.toolDescribe},
+		{method: http.MethodPost, path: "/tools/{id}/invoke", mutates: true, handler: s.toolInvoke},
+		{method: http.MethodPost, path: "/tools/-/reindex", mutates: true, handler: s.reindex},
+		{method: http.MethodGet, path: "/clients", handler: s.clientStatus},
+		{method: http.MethodPost, path: "/clients/{name}/install", mutates: true, handler: s.clientInstall},
+		{method: http.MethodPost, path: "/clients/{name}/revert", mutates: true, handler: s.clientRevert},
+		{method: http.MethodGet, path: "/oauth/callback", nonceGuarded: true, handler: s.oauthCallback},
+		{method: http.MethodPost, path: "/oauth/callback", mutates: true, handler: s.pastedCallback},
+	}
+	for _, rt := range routes {
+		mux.Handle(rt.method+" "+rt.path, validateAdminMethod(rt, http.HandlerFunc(rt.handler)))
+	}
+	return mux
+}
+
+const adminBodyLimit = 1 << 20
+
+func validateAdminMethod(rt route, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != rt.method {
+			w.Header().Set("Allow", rt.method)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if rt.mutates && !rt.nonceGuarded && !isJSON(r.Header.Get("Content-Type")) {
+			http.Error(w, "a state change requires a JSON content type", http.StatusUnsupportedMediaType)
+			return
+		}
+		if r.Body != nil {
+			r.Body = http.MaxBytesReader(w, r.Body, adminBodyLimit)
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (s *Server) toolList(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"tools": s.cat.Entries()})
+}
+
+func (s *Server) toolSearch(w http.ResponseWriter, r *http.Request) {
+	if s.operations == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "tool operations are unavailable"})
+		return
+	}
+	var in mcpsrv.SearchRequest
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	writeJSON(w, http.StatusOK, s.operations.Search(r.Context(), in))
+}
+
+func (s *Server) toolDescribe(w http.ResponseWriter, r *http.Request) {
+	if s.operations == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "tool operations are unavailable"})
+		return
+	}
+	out, err := s.operations.Describe(r.PathValue("id"))
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *Server) toolInvoke(w http.ResponseWriter, r *http.Request) {
+	if s.operations == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "tool operations are unavailable"})
+		return
+	}
+	var in struct {
+		Arguments map[string]any `json:"arguments"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	result, err := s.operations.Call(r.Context(), mcpsrv.CallRequest{ID: r.PathValue("id"), Arguments: in.Arguments})
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"result": result})
+}
+
+func (s *Server) clientStatus(w http.ResponseWriter, _ *http.Request) {
+	type status struct {
+		Name      string `json:"name"`
+		Path      string `json:"path"`
+		Mode      string `json:"mode"`
+		Installed bool   `json:"installed"`
+		Error     string `json:"error,omitempty"`
+	}
+	out := []status{}
+	if s.clientHome != "" {
+		for _, client := range install.Clients(s.clientHome) {
+			installed, err := client.Installed(s.clientState)
+			item := status{Name: client.Name, Path: client.Path, Mode: string(client.Mode), Installed: installed}
+			if err != nil {
+				item.Error = err.Error()
+			}
+			out = append(out, item)
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"clients": out})
+}
+
+func (s *Server) clientInstall(w http.ResponseWriter, r *http.Request) {
+	if s.clientHome == "" {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "client configuration home is unavailable"})
+		return
+	}
+	client, err := install.Lookup(s.clientHome, r.PathValue("name"))
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+		return
+	}
+	var in struct {
+		Address string `json:"address"`
+		Apply   bool   `json:"apply"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil || in.Address == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "address is required"})
+		return
+	}
+	plan, err := client.PlanInstall(in.Address)
+	if err != nil {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+		return
+	}
+	if in.Apply {
+		if err := client.Apply(s.clientState, plan); err != nil {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"client": plan.Client, "path": plan.Path, "endpoint": plan.Endpoint, "notes": plan.Notes, "warnings": plan.Warnings, "applied": in.Apply})
+}
+
+func (s *Server) clientRevert(w http.ResponseWriter, r *http.Request) {
+	if s.clientHome == "" {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "client configuration home is unavailable"})
+		return
+	}
+	client, err := install.Lookup(s.clientHome, r.PathValue("name"))
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+		return
+	}
+	var in struct {
+		Apply bool `json:"apply"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	plan, err := client.PlanRevert(s.clientState)
+	if err != nil {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+		return
+	}
+	if in.Apply {
+		if err := client.Revert(s.clientState, plan); err != nil {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"client": plan.Client, "path": plan.Path, "endpoint": plan.Endpoint, "notes": plan.Notes, "applied": in.Apply})
+}
+
+func (s *Server) pastedCallback(w http.ResponseWriter, r *http.Request) {
+	var in pastedCallback
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid callback request"})
+		return
+	}
+	want, err := url.Parse(s.oauth.RedirectURL())
+	got, parseErr := url.Parse(in.URL)
+	if err != nil || parseErr != nil || got.Scheme != "http" || got.User != nil || got.Fragment != "" ||
+		!strings.EqualFold(got.Host, want.Host) || got.Path != want.Path || got.RawPath != want.RawPath ||
+		got.Query().Get("state") == "" || got.Query().Get("code") == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "callback URL does not match the configured loopback callback"})
+		return
+	}
+	q := got.Query()
+	if err := s.oauth.Deliver(q.Get("state"), q.Get("code"), q.Get("iss")); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "callback matches no pending authorization"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "completed"})
 }
 
 func (s *Server) routes() []route {
@@ -646,5 +881,10 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 // from a working one until the results are visibly bad.
 func (s *Server) WithUnvectorized(count func() int) *Server {
 	s.unvectorized = count
+	return s
+}
+
+func (s *Server) WithSearchStatus(status func() searchindex.Status) *Server {
+	s.searchStatus = status
 	return s
 }

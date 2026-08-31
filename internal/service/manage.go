@@ -55,6 +55,65 @@ func Start() error {
 	}
 }
 
+// StopDisable stops the installed service without removing its unit file.
+func StopDisable() error {
+	switch platform {
+	case "linux":
+		output, err := runner("systemctl", "--user", "disable", "--now", "mcpd.service")
+		if err != nil && !notLoaded(fmt.Errorf("%s: %w", output, err)) {
+			return err
+		}
+		return nil
+	case "darwin":
+		target := "gui/" + userID() + "/dev.mcpd.daemon"
+		if _, err := runner("launchctl", "bootout", target); err != nil && !notLoaded(err) {
+			return err
+		}
+		_, err := runner("launchctl", "disable", target)
+		return err
+	default:
+		return fmt.Errorf("service stop and disable is not supported on %s", platform)
+	}
+}
+
+// Restore returns an installed service to its prior enabled and running intent.
+func Restore(prior State) error {
+	if !prior.Installed {
+		return nil
+	}
+	switch platform {
+	case "linux":
+		if prior.Enabled {
+			if _, err := runner("systemctl", "--user", "enable", "mcpd.service"); err != nil {
+				return err
+			}
+		}
+		if prior.Running {
+			_, err := runner("systemctl", "--user", "start", "mcpd.service")
+			return err
+		}
+		return nil
+	case "darwin":
+		target := "gui/" + userID() + "/dev.mcpd.daemon"
+		if prior.Enabled {
+			if _, err := runner("launchctl", "enable", target); err != nil {
+				return err
+			}
+		}
+		if prior.Running {
+			path, err := launchdPath()
+			if err != nil {
+				return err
+			}
+			_, err = runner("launchctl", "bootstrap", "gui/"+userID(), path)
+			return err
+		}
+		return nil
+	default:
+		return fmt.Errorf("service restore is not supported on %s", platform)
+	}
+}
+
 func Uninstall() error {
 	switch platform {
 	case "linux":

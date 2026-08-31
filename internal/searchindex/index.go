@@ -29,6 +29,7 @@ type Index struct {
 	expanded   map[string][]float32
 	missing    int
 	unexpanded int
+	lastError  string
 
 	queueMu   sync.Mutex
 	queued    []catalog.Entry
@@ -39,6 +40,51 @@ type Index struct {
 	queueWG   sync.WaitGroup
 	queueCtx  context.Context
 	stopQueue context.CancelFunc
+}
+
+type Status struct {
+	Model            string `json:"model"`
+	CatalogTotal     int    `json:"catalog_total"`
+	PendingBase      int    `json:"pending_base"`
+	PendingExpansion int    `json:"pending_expansion"`
+	QueueState       string `json:"queue_state"`
+	Queued           bool   `json:"queued"`
+	Running          bool   `json:"running"`
+	Degraded         bool   `json:"degraded"`
+	Error            string `json:"error,omitempty"`
+}
+
+func (i *Index) Status() Status {
+	i.queueMu.Lock()
+	queued, running := i.pending, i.running
+	i.queueMu.Unlock()
+	i.stateMu.RLock()
+	errorText := i.lastError
+	if errorText == "" && (i.missing > 0 || i.unexpanded > 0) {
+		errorText = "semantic indexing is incomplete; check the embedding gateway configuration and connectivity, then reindex"
+	}
+	queueState := "idle"
+	if running {
+		queueState = "running"
+	} else if queued {
+		queueState = "queued"
+	}
+	status := Status{Model: i.client.Model(), PendingBase: i.missing, PendingExpansion: i.unexpanded, QueueState: queueState, Queued: queued, Running: running, Degraded: errorText != "", Error: errorText}
+	i.stateMu.RUnlock()
+	return status
+}
+
+func (i *Index) noteError(err error) {
+	message := ""
+	if err != nil {
+		message = err.Error()
+		if len(message) > 512 {
+			message = message[:512]
+		}
+	}
+	i.stateMu.Lock()
+	i.lastError = message
+	i.stateMu.Unlock()
 }
 
 func New(statePath string, emb config.Embeddings, ranking config.Ranking) *Index {
@@ -247,14 +293,18 @@ func (i *Index) Vectors() (base, expanded map[string][]float32) {
 func (i *Index) Search(ctx context.Context, query string, entries []catalog.Entry, limit int) ([]rank.Result, rank.Evidence, error) {
 	vectors, err := i.client.Embed(ctx, []string{query})
 	if err != nil {
+		i.noteError(err)
 		results, evidence := rank.Fuse(query, entries, nil, nil, limit)
 		return results, evidence, fmt.Errorf("embed query: %w", err)
 	}
 	if len(vectors) == 0 || len(vectors[0]) == 0 {
+		i.noteError(errors.New("gateway returned no vector"))
 		results, evidence := rank.Fuse(query, entries, nil, nil, limit)
 		return results, evidence, fmt.Errorf("embed query: gateway returned no vector")
 	}
-	return i.SearchVector(ctx, query, entries, vectors[0], limit)
+	results, evidence, err := i.SearchVector(ctx, query, entries, vectors[0], limit)
+	i.noteError(err)
+	return results, evidence, err
 }
 
 func (i *Index) SearchVector(ctx context.Context, query string, entries []catalog.Entry, qvec []float32, limit int) ([]rank.Result, rank.Evidence, error) {

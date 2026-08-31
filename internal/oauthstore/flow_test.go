@@ -159,6 +159,7 @@ func (d *daemon) tokenPath() string {
 type stored struct {
 	Identity     config.Identity `json:"identity"`
 	ClientID     string          `json:"client_id"`
+	RedirectURI  string          `json:"redirect_uri,omitempty"`
 	Issuer       string          `json:"issuer"`
 	TokenURL     string          `json:"token_url"`
 	AccessToken  string          `json:"access_token"`
@@ -702,6 +703,41 @@ func TestAFailedRefreshStopsRatherThanLooping(t *testing.T) {
 				t.Fatalf("the read that should have re-authorized on its own failed: %v", err)
 			}
 		})
+	}
+}
+
+func TestCallbackChangeReusesTokenButRegistersForNextInteractiveAuthorization(t *testing.T) {
+	d := newDaemon(t, tool("search"))
+	d.authorize(nil)
+	before := d.prov.counts()
+
+	swap := &swapHandler{}
+	webServer := httptest.NewUnstartedServer(swap)
+	next := start(t, d.dir, d.prov, webServer, swap)
+	webServer.Start()
+	t.Cleanup(webServer.Close)
+	if _, err := next.list(); err != nil {
+		t.Fatalf("stored token under changed callback: %v", err)
+	}
+	if got := next.prov.counts().registrations; got != before.registrations {
+		t.Fatalf("token restore registered a client: got %d, want %d", got, before.registrations)
+	}
+
+	next.prov.revokeAccessTokens()
+	done := make(chan error, 1)
+	go func() { _, err := next.list(); done <- err }()
+	authorizeURL := next.awaitPending()
+	if got := next.prov.counts().registrations; got != before.registrations+1 {
+		t.Fatalf("callback migration registrations = %d, want %d", got, before.registrations+1)
+	}
+	if res := next.consentInBrowser(authorizeURL); res.status != http.StatusOK {
+		t.Fatalf("callback = %d %q", res.status, res.body)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("migrated authorization failed: %v", err)
+	}
+	if got := next.stored().RedirectURI; got != "http://"+webServer.Listener.Addr().String()+"/oauth/callback" {
+		t.Fatalf("redirect_uri = %q", got)
 	}
 }
 

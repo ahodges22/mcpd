@@ -52,7 +52,7 @@ func observeFileSnapshot(data []byte, values map[string]string, metadata fileMet
 	}
 }
 
-func (s *FileStore) startWatching(ctx context.Context, debounce, pollInterval time.Duration, changed func(context.Context, []string)) {
+func (s *FileStore) startWatching(ctx context.Context, debounce, pollInterval time.Duration, changed func(context.Context, []string)) <-chan struct{} {
 	var watcher *fsnotify.Watcher
 	if !s.disableWatchEvents {
 		var err error
@@ -68,7 +68,9 @@ func (s *FileStore) startWatching(ctx context.Context, debounce, pollInterval ti
 			slog.Warn("watch managed secret file with metadata fallback", "error", err)
 		}
 	}
-	go s.watchLoop(ctx, watcher, debounce, pollInterval, changed)
+	done := make(chan struct{})
+	go func() { defer close(done); s.watchLoop(ctx, watcher, debounce, pollInterval, changed) }()
+	return done
 }
 
 func (s *FileStore) watchLoop(ctx context.Context, watcher *fsnotify.Watcher, debounce, pollInterval time.Duration, changed func(context.Context, []string)) {

@@ -69,6 +69,7 @@ type ResolutionCoordinator struct {
 	referenceNames []string
 
 	startOnce sync.Once
+	workerWG  sync.WaitGroup
 	wake      chan struct{}
 	statusMu  sync.Mutex
 
@@ -190,12 +191,18 @@ func (c *ResolutionCoordinator) Start(ctx context.Context) {
 			c.noteSuccess()
 			c.deliver(group, values)
 		}
-		go c.run(ctx)
+		c.workerWG.Add(1)
+		go func() { defer c.workerWG.Done(); c.run(ctx) }()
 		if store, ok := c.provider.(*FileStore); ok {
-			store.startWatching(ctx, c.tuning.FileWatchDebounce, c.tuning.FileWatchPollInterval, c.refreshExternalChanges)
+			done := store.startWatching(ctx, c.tuning.FileWatchDebounce, c.tuning.FileWatchPollInterval, c.refreshExternalChanges)
+			c.workerWG.Add(1)
+			go func() { defer c.workerWG.Done(); <-done }()
 		}
 	})
 }
+
+// Wait returns after every worker started by Start has stopped.
+func (c *ResolutionCoordinator) Wait() { c.workerWG.Wait() }
 
 func (c *ResolutionCoordinator) Pending() []PendingConsumer {
 	c.mu.Lock()

@@ -331,6 +331,20 @@ func resultIDs(results []rank.Result) string {
 	return strings.Join(ids, ",")
 }
 
+func TestSemanticFailureReturnsLexicalResultsAndUpdatesBoundedStatus(t *testing.T) {
+	index := New(t.TempDir(), config.Embeddings{URL: "http://127.0.0.1:1", Model: "model-a"}, config.Ranking{})
+	defer index.Stop()
+	entries := []catalog.Entry{{ID: "mcp__alpha__logs", Server: "alpha", Tool: "logs", Description: "read application logs"}}
+	results, _, err := index.Search(t.Context(), "application logs", entries, 10)
+	if err == nil || len(results) != 1 || results[0].ID != entries[0].ID {
+		t.Fatalf("results = %#v, error = %v", results, err)
+	}
+	status := index.Status()
+	if !status.Degraded || status.Error == "" || len(status.Error) > 512 || status.Model != "model-a" {
+		t.Fatalf("status = %#v", status)
+	}
+}
+
 func waitSignal(t *testing.T, signal <-chan struct{}) {
 	t.Helper()
 	select {

@@ -84,6 +84,26 @@ func (l *Live) Model() string {
 	return l.emb.Model
 }
 
+func (l *Live) Status() Status {
+	if index := l.index(); index != nil {
+		return index.Status()
+	}
+	return Status{Model: l.emb.Model, QueueState: "idle"}
+}
+
+// Stop cancels and drains the active index queue.
+func (l *Live) Stop() {
+	l.applyMu.Lock()
+	defer l.applyMu.Unlock()
+	l.mu.Lock()
+	current := l.current
+	l.current = nil
+	l.mu.Unlock()
+	if current != nil {
+		current.Stop()
+	}
+}
+
 func (l *Live) index() *Index {
 	l.mu.RLock()
 	defer l.mu.RUnlock()

@@ -15,6 +15,7 @@ import (
 
 	"github.com/ahodges22/mcpd/internal/backend"
 	"github.com/ahodges22/mcpd/internal/catalog"
+	"github.com/ahodges22/mcpd/internal/searchindex"
 	"github.com/ahodges22/mcpd/internal/secretstore"
 )
 
@@ -96,7 +97,8 @@ type statusView struct {
 	// than reporting a zero that would read as "fully embedded".
 	Unvectorized int `json:"unvectorized"`
 	// Serving is how many backends are answering, which is the number the page leads with.
-	Serving int `json:"serving"`
+	Serving int                 `json:"serving"`
+	Search  *searchindex.Status `json:"search,omitempty"`
 	// Addr is the address this request arrived on, already checked against the loopback
 	// host rule, so the page can name the endpoint clients are pointed at.
 	Addr string `json:"-"`
@@ -165,6 +167,11 @@ func (s *Server) snapshot() statusView {
 	out := statusView{Backends: make([]backendStatus, 0, len(health)), ToolCount: len(s.cat.Entries()), Unvectorized: -1}
 	if s.unvectorized != nil {
 		out.Unvectorized = s.unvectorized()
+	}
+	if s.searchStatus != nil {
+		status := s.searchStatus()
+		status.CatalogTotal = out.ToolCount
+		out.Search = &status
 	}
 	for _, name := range s.reg.Names() {
 		h := health[name]

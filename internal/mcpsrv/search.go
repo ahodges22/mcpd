@@ -20,28 +20,29 @@ import (
 
 const defaultSearchLimit = 10
 
-type searchInput struct {
+type SearchRequest struct {
 	Query string `json:"query" jsonschema:"the search query"`
 	Limit int    `json:"limit,omitempty" jsonschema:"max results to return, default 10"`
 }
 
-type searchResult struct {
+type SearchResult struct {
 	ID            string `json:"id"`
 	Server        string `json:"server"`
 	Description   string `json:"description"`
 	LowConfidence bool   `json:"low_confidence,omitempty"`
 }
 
-type searchOutput struct {
-	Results []searchResult `json:"results"`
-	Message string         `json:"message,omitempty"`
+type SearchResponse struct {
+	Results       []SearchResult `json:"results"`
+	Message       string         `json:"message,omitempty"`
+	DegradedError string         `json:"degraded_error,omitempty"`
 }
 
-type describeInput struct {
+type DescribeRequest struct {
 	ID string `json:"id" jsonschema:"the canonical tool id, e.g. mcp__github__create_pull_request"`
 }
 
-type describeOutput struct {
+type DescribeResponse struct {
 	ID          string               `json:"id"`
 	Server      string               `json:"server"`
 	Description string               `json:"description,omitempty"`
@@ -49,7 +50,7 @@ type describeOutput struct {
 	Annotations *mcp.ToolAnnotations `json:"annotations,omitempty"`
 }
 
-type callInput struct {
+type CallRequest struct {
 	ID        string         `json:"id" jsonschema:"the canonical tool id, e.g. mcp__github__create_pull_request"`
 	Arguments map[string]any `json:"arguments,omitempty" jsonschema:"the tool's arguments"`
 }
@@ -64,62 +65,81 @@ type SearchIndex interface {
 }
 
 func NewSearch(cat *catalog.Catalog, reg *backend.Registry, th rank.Thresholds, index SearchIndex) *mcp.Server {
+	ops := NewOperations(cat, reg, th, index)
 	s := mcp.NewServer(&mcp.Implementation{Name: "mcpd-search", Version: version.String()},
 		&mcp.ServerOptions{Instructions: searchInstructions(reg)})
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "search_tools",
 		Description: "Search the catalog of every tool every connected backend offers.",
-	}, searchHandler(cat, reg, th, index))
+	}, searchHandler(ops))
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "describe_tool",
 		Description: "Fetch a tool's full input schema from the catalog. Never contacts the backend.",
-	}, describeHandler(cat))
+	}, describeHandler(ops))
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "call_tool",
 		Description: "Call a tool found by search_tools or describe_tool, identified by its canonical id.",
-	}, callHandler(cat, reg))
+	}, callHandler(ops))
 
 	return s
 }
 
-func searchHandler(cat *catalog.Catalog, reg *backend.Registry, th rank.Thresholds, index SearchIndex) mcp.ToolHandlerFor[searchInput, searchOutput] {
-	return func(ctx context.Context, _ *mcp.CallToolRequest, in searchInput) (*mcp.CallToolResult, searchOutput, error) {
-		entries := cat.Entries()
-		if len(entries) == 0 {
-			return nil, searchOutput{Message: explainEmptyCatalog(cat, reg)}, nil
-		}
+type Operations struct {
+	cat        *catalog.Catalog
+	reg        *backend.Registry
+	thresholds rank.Thresholds
+	index      SearchIndex
+}
 
-		limit := in.Limit
-		if limit <= 0 {
-			limit = defaultSearchLimit
-		}
-		var fused []rank.Result
-		var evidence rank.Evidence
-		if index == nil {
-			fused, evidence = rank.Fuse(in.Query, entries, nil, nil, limit)
-		} else {
-			var err error
-			fused, evidence, err = index.Search(ctx, in.Query, entries, limit)
-			if err != nil {
-				slog.Warn("hybrid ranking degraded to fusion", "error", err)
-			}
-		}
-		if len(fused) == 0 {
-			return nil, searchOutput{Message: fmt.Sprintf("no tools match your query %q", in.Query)}, nil
-		}
+func NewOperations(cat *catalog.Catalog, reg *backend.Registry, th rank.Thresholds, index SearchIndex) *Operations {
+	return &Operations{cat: cat, reg: reg, thresholds: th, index: index}
+}
 
-		low := th.LowConfidence(evidence)
-		out := searchOutput{Results: make([]searchResult, len(fused))}
-		for i, r := range fused {
-			out.Results[i] = searchResult{ID: r.ID, Server: r.Server, Description: r.Description, LowConfidence: low}
+func (o *Operations) Search(ctx context.Context, in SearchRequest) SearchResponse {
+	cat, reg, th, index := o.cat, o.reg, o.thresholds, o.index
+	entries := cat.Entries()
+	if len(entries) == 0 {
+		return SearchResponse{Message: explainEmptyCatalog(cat, reg)}
+	}
+
+	limit := in.Limit
+	if limit <= 0 {
+		limit = defaultSearchLimit
+	}
+	var fused []rank.Result
+	var evidence rank.Evidence
+	var degraded string
+	if index == nil {
+		fused, evidence = rank.Fuse(in.Query, entries, nil, nil, limit)
+	} else {
+		var err error
+		fused, evidence, err = index.Search(ctx, in.Query, entries, limit)
+		if err != nil {
+			slog.Warn("hybrid ranking degraded to fusion", "error", err)
+			degraded = err.Error()
 		}
-		if low {
-			out.Message = "low confidence: these results may not answer the query"
-		}
-		return nil, out, nil
+	}
+	if len(fused) == 0 {
+		return SearchResponse{Message: fmt.Sprintf("no tools match your query %q", in.Query), DegradedError: degraded}
+	}
+
+	low := th.LowConfidence(evidence)
+	out := SearchResponse{Results: make([]SearchResult, len(fused)), DegradedError: degraded}
+	for i, r := range fused {
+		out.Results[i] = SearchResult{ID: r.ID, Server: r.Server, Description: r.Description, LowConfidence: low}
+	}
+	if low {
+		out.Message = "low confidence: these results may not answer the query"
+	}
+	return out
+}
+
+func searchHandler(o *Operations) mcp.ToolHandlerFor[SearchRequest, SearchResponse] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in SearchRequest) (*mcp.CallToolResult, SearchResponse, error) {
+		return nil, o.Search(ctx, in), nil
 	}
 }
 
@@ -162,40 +182,50 @@ func explainEmptyCatalog(cat *catalog.Catalog, reg *backend.Registry) string {
 	return "no tools are available: backends are configured but have not connected yet"
 }
 
-func describeHandler(cat *catalog.Catalog) mcp.ToolHandlerFor[describeInput, describeOutput] {
-	return func(_ context.Context, _ *mcp.CallToolRequest, in describeInput) (*mcp.CallToolResult, describeOutput, error) {
-		entry, ok := cat.Lookup(in.ID)
-		if !ok {
-			return nil, describeOutput{}, fmt.Errorf("unknown tool id %q", in.ID)
-		}
-		return nil, describeOutput{
-			ID:          entry.ID,
-			Server:      entry.Server,
-			Description: entry.Description,
-			InputSchema: entry.Schema,
-			Annotations: entry.Annotations,
-		}, nil
+func (o *Operations) Describe(id string) (DescribeResponse, error) {
+	entry, ok := o.cat.Lookup(id)
+	if !ok {
+		return DescribeResponse{}, fmt.Errorf("unknown tool id %q", id)
+	}
+	return DescribeResponse{
+		ID:          entry.ID,
+		Server:      entry.Server,
+		Description: entry.Description,
+		InputSchema: entry.Schema,
+		Annotations: entry.Annotations,
+	}, nil
+}
+
+func describeHandler(o *Operations) mcp.ToolHandlerFor[DescribeRequest, DescribeResponse] {
+	return func(_ context.Context, _ *mcp.CallToolRequest, in DescribeRequest) (*mcp.CallToolResult, DescribeResponse, error) {
+		out, err := o.Describe(in.ID)
+		return nil, out, err
 	}
 }
 
-func callHandler(cat *catalog.Catalog, reg *backend.Registry) mcp.ToolHandlerFor[callInput, any] {
-	return func(ctx context.Context, _ *mcp.CallToolRequest, in callInput) (*mcp.CallToolResult, any, error) {
-		entry, ok := cat.Lookup(in.ID)
-		if !ok {
-			return nil, nil, fmt.Errorf("unknown tool id %q", in.ID)
-		}
-		b, ok := reg.Get(entry.Server)
-		if !ok {
-			return nil, nil, fmt.Errorf("tool %s: backend %q not connected", in.ID, entry.Server)
-		}
-		res, err := b.Call(ctx, entry.Tool, in.Arguments)
-		if err != nil {
-			// err distinguishes backend.ErrNotAttempted (safe to retry) from every
-			// other outcome (unknown, never retried). Forwarded verbatim: collapsing
-			// the two into one message would erase the only signal the caller has for
-			// deciding whether it is safe to try again.
-			return nil, nil, err
-		}
-		return res, nil, nil
+func (o *Operations) Call(ctx context.Context, in CallRequest) (*mcp.CallToolResult, error) {
+	entry, ok := o.cat.Lookup(in.ID)
+	if !ok {
+		return nil, fmt.Errorf("unknown tool id %q", in.ID)
+	}
+	b, ok := o.reg.Get(entry.Server)
+	if !ok {
+		return nil, fmt.Errorf("tool %s: backend %q not connected", in.ID, entry.Server)
+	}
+	res, err := b.Call(ctx, entry.Tool, in.Arguments)
+	if err != nil {
+		// err distinguishes backend.ErrNotAttempted (safe to retry) from every
+		// other outcome (unknown, never retried). Forwarded verbatim: collapsing
+		// the two into one message would erase the only signal the caller has for
+		// deciding whether it is safe to try again.
+		return nil, err
+	}
+	return res, nil
+}
+
+func callHandler(o *Operations) mcp.ToolHandlerFor[CallRequest, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in CallRequest) (*mcp.CallToolResult, any, error) {
+		res, err := o.Call(ctx, in)
+		return res, nil, err
 	}
 }

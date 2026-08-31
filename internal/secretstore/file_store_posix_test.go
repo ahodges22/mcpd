@@ -238,8 +238,12 @@ func TestFileStoreRejectsUnsafeExistingArtifact(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EnsureStateDir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(state, fileStoreDataName), []byte(`{"TOKEN":"value"}`), 0o644); err != nil {
+	dataPath := filepath.Join(state, fileStoreDataName)
+	if err := os.WriteFile(dataPath, []byte(`{"TOKEN":"value"}`), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
+	}
+	if err := os.Chmod(dataPath, 0o644); err != nil {
+		t.Fatalf("Chmod: %v", err)
 	}
 
 	_, err = NewFileStore(state)

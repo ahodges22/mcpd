@@ -101,6 +101,9 @@ func TestUpdateVerifiesReleaseAndReplacesBinary(t *testing.T) {
 	if err := os.WriteFile(target, []byte("old binary"), 0o751); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.Chmod(target, 0o751); err != nil {
+		t.Fatal(err)
+	}
 	updater := &Updater{
 		BinaryPath: target,
 		HTTPClient: client,
