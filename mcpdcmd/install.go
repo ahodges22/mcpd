@@ -85,6 +85,9 @@ func one(c install.Client, state, addr string, apply, revert bool) error {
 	fmt.Printf("%s %s (%s)\n", verb, c.Name, c.Path)
 	if plan.Empty() {
 		fmt.Println("  nothing to do")
+		if apply && revert {
+			return c.Revert(state, plan)
+		}
 		return nil
 	}
 	for _, note := range plan.Notes {

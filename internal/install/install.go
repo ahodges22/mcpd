@@ -163,11 +163,31 @@ type Plan struct {
 	// they have moved on, so a plan can never be applied to a file it did not see.
 	body string
 	// displaced is text the edits lift out of the file for the receipt to hold.
-	displaced string
+	displaced     string
+	removeReceipt bool
 }
 
 // Empty reports that there is nothing to do.
 func (p Plan) Empty() bool { return len(p.edits) == 0 }
+
+// Preview returns the exact bytes the plan was computed from and would produce.
+// Callers must not expose either value because client files can contain secrets.
+func (p Plan) Preview() (before, after []byte, err error) {
+	next, err := applyEdits(p.body, p.edits)
+	if err != nil {
+		return nil, nil, err
+	}
+	return []byte(p.body), []byte(next), nil
+}
+
+// PrepareMutation independently validates planned bytes and backs up the
+// current client file before a caller performs a conditioned write.
+func (c Client) PrepareMutation(before, after []byte) error {
+	if err := c.verify(string(before), string(after)); err != nil {
+		return err
+	}
+	return backup(c.Path, before)
+}
 
 // Clients are the four clients this machine runs, with the endpoint each one gets.
 func Clients(home string) []Client {
@@ -292,7 +312,7 @@ func (c Client) Apply(state string, p Plan) error {
 
 // PlanRevert works out what taking this client back off mcpd would change, refusing when a
 // region mcpd wrote is no longer as it wrote it. A receipt whose install never reached the
-// client file is removed and produces an empty plan.
+// client file produces an empty plan whose apply removes the stale receipt.
 func (c Client) PlanRevert(state string) (Plan, error) {
 	rec, err := readReceipt(state, c.Name)
 	if err != nil {
@@ -303,10 +323,8 @@ func (c Client) PlanRevert(state string) (Plan, error) {
 		return Plan{}, fmt.Errorf("read %s: %w", c.Path, err)
 	}
 	if rec.OriginalHash != "" && contentHash(raw) == rec.OriginalHash {
-		if err := os.Remove(receiptPath(state, c.Name)); err != nil {
-			return Plan{}, fmt.Errorf("remove stale receipt: %w", err)
-		}
-		return Plan{Client: c.Name, Path: c.Path, Endpoint: rec.Endpoint, body: string(raw)}, nil
+		return Plan{Client: c.Name, Path: c.Path, Endpoint: rec.Endpoint, body: string(raw), removeReceipt: true,
+			Notes: []string{"remove the stale install receipt"}}, nil
 	}
 	edits, err := c.edit.revert(c, string(raw), rec)
 	if err != nil {
@@ -343,6 +361,11 @@ func textualInverse(c Client, body string, rec Receipt) ([]edit, error) {
 // Revert performs a planned revert and drops the receipt.
 func (c Client) Revert(state string, p Plan) error {
 	if p.Empty() {
+		if p.removeReceipt {
+			if err := os.Remove(receiptPath(state, c.Name)); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return fmt.Errorf("remove stale receipt: %w", err)
+			}
+		}
 		return nil
 	}
 	raw, err := os.ReadFile(c.Path)

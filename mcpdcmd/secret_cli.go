@@ -21,6 +21,7 @@ import (
 
 	"github.com/ahodges22/mcpd/internal/config"
 	"github.com/ahodges22/mcpd/internal/secretstore"
+	"github.com/ahodges22/mcpd/internal/stateowner"
 )
 
 const (
@@ -325,6 +326,11 @@ func daemonBaseURL(addr string) (string, error) {
 func refuseSecretRedirect(*http.Request, []*http.Request) error { return errSecretRedirect }
 
 func runSecretOffline(ctx context.Context, deps secretCommandDeps, operation, name string, value []byte, cfgPath, statePath, addr string) error {
+	lease, err := stateowner.Acquire(statePath, "mcpd secret CLI")
+	if err != nil {
+		return err
+	}
+	defer lease.Close()
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
 		return err

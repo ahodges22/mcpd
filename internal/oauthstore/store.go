@@ -104,6 +104,9 @@ func New(dir, redirectURL string, declarations declarationState, hooks Hooks) *S
 	}
 }
 
+// RedirectURL is the complete callback URL registered for new authorizations.
+func (s *Store) RedirectURL() string { return s.redirectURL }
+
 // grantState is what the store knows about a backend's stored grant, and the two
 // fields answer two different questions: unusable decides whether an automatic dial
 // may present the grant or authorize without it, and requested decides whether the
@@ -268,6 +271,7 @@ type record struct {
 	// to an endpoint it was never issued for.
 	Identity     config.Identity `json:"identity"`
 	ClientID     string          `json:"client_id"`
+	RedirectURI  string          `json:"redirect_uri,omitempty"`
 	Issuer       string          `json:"issuer,omitempty"`
 	TokenURL     string          `json:"token_url"`
 	AccessToken  string          `json:"access_token"`
@@ -421,10 +425,11 @@ func (s *Store) newAuthorizer(h *handler, rec *record, restoreToken bool) (*auth
 		Client:                   s.client,
 		NewTokenSource: func(ctx context.Context, oc *oauth2.Config, tok *oauth2.Token) (oauth2.TokenSource, error) {
 			src := s.persisting(h.server, record{
-				Identity: h.identity,
-				ClientID: oc.ClientID,
-				Issuer:   h.issuerSeen(),
-				TokenURL: oc.Endpoint.TokenURL,
+				Identity:    h.identity,
+				ClientID:    oc.ClientID,
+				RedirectURI: s.redirectURL,
+				Issuer:      h.issuerSeen(),
+				TokenURL:    oc.Endpoint.TokenURL,
 			}, oc.TokenSource(ctx, tok), nil)
 			// Written here rather than left to the first refresh: a grant the user has
 			// just completed must survive a restart.
@@ -435,7 +440,7 @@ func (s *Store) newAuthorizer(h *handler, rec *record, restoreToken bool) (*auth
 		},
 	}
 	if rec != nil {
-		if rec.ClientID != "" {
+		if rec.ClientID != "" && rec.RedirectURI == s.redirectURL {
 			// Configured alongside dynamic registration, which the SDK only falls back to
 			// when this is absent, so a persisted client_id is reused rather than a second
 			// client being registered at the provider.
