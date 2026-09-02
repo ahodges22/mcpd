@@ -65,7 +65,7 @@ func TestConnectFailureIsReportedRetryable(t *testing.T) {
 }
 
 func TestBackendUsesResolvedChildEnvironment(t *testing.T) {
-	spec := config.Backend{Name: "alpha", Command: "unused", Env: map[string]string{"API_TOKEN": "prefix-${TOKEN}"}}
+	spec := config.Backend{Name: "alpha", Command: "true", Env: map[string]string{"API_TOKEN": "prefix-${TOKEN}"}}
 	b := newBackend("alpha", spec, Hooks{ResolveSecrets: func(_ context.Context, consumer config.SecretConsumer) (map[string]string, error) {
 		if consumer.Name != "alpha" || len(consumer.References) != 1 || consumer.References[0] != "TOKEN" {
 			t.Fatalf("consumer = %#v", consumer)

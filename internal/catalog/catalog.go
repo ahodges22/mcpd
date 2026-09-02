@@ -59,6 +59,11 @@ type lister interface {
 	ConnectTimeout() time.Duration
 }
 
+type refreshPreparer interface {
+	PrepareRefresh(context.Context)
+	ExecutableChanged() bool
+}
+
 // backends is the part of *backend.Registry the catalog reads.
 type backends interface {
 	names() []string
@@ -212,6 +217,21 @@ func (c *Catalog) Trigger(server string) {
 	st.timer = time.AfterFunc(c.tune.debounce, func() { c.debounced(server, st) })
 }
 
+// Reconcile schedules a tool refresh only when a connected stdio child's
+// executable changed. Unlike Trigger, it does not cold-start an untouched
+// backend merely because the operator reloaded an unchanged declaration.
+func (c *Catalog) Reconcile(server string) {
+	l, ok := c.backends.lister(server)
+	if !ok {
+		return
+	}
+	preparer, ok := l.(refreshPreparer)
+	if !ok || !preparer.ExecutableChanged() {
+		return
+	}
+	c.Trigger(server)
+}
+
 // Refresh requests a read of server without waiting out the debounce, and returns
 // once its refresh loop has finished. ctx bounds the wait, not the work: a caller
 // that gives up must not cancel a refresh other triggers are relying on, and a
@@ -349,6 +369,9 @@ func (c *Catalog) read(loop context.Context, server string) {
 	l, ok := c.backends.lister(server)
 	if !ok {
 		return
+	}
+	if preparer, ok := l.(refreshPreparer); ok {
+		preparer.PrepareRefresh(loop)
 	}
 	// The backend's handshake budget is added rather than shared: a read that has to
 	// connect gets the connect budget the config allows plus the list budget, so this

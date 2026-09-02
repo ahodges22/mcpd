@@ -14,9 +14,16 @@ import (
 )
 
 type fakeCatalog struct {
-	mu        sync.Mutex
-	triggered []string
-	dropped   []string
+	mu         sync.Mutex
+	triggered  []string
+	reconciled []string
+	dropped    []string
+}
+
+func (f *fakeCatalog) Reconcile(server string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.reconciled = append(f.reconciled, server)
 }
 
 func (f *fakeCatalog) Trigger(server string) {
@@ -308,6 +315,31 @@ func TestReloadIsAllOrNothing(t *testing.T) {
 	}
 }
 
+func TestReloadSchedulesRefreshForUnchangedStdioOnly(t *testing.T) {
+	h := newHarness(t, `{"backends":{"stdio":{"command":"true"},"http":{"http_url":"https://example.test"}}}`)
+	stdioBefore, _ := h.reg.Get("stdio")
+	httpBefore, _ := h.reg.Get("http")
+
+	if _, err := h.m.Reload(); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+
+	if !h.cat.saw(h.cat.reconciled, "stdio") {
+		t.Error("unchanged stdio backend was not scheduled for executable reconciliation")
+	}
+	if h.cat.saw(h.cat.reconciled, "http") {
+		t.Error("unchanged HTTP backend was checked for a stdio executable change")
+	}
+	if h.cat.saw(h.cat.triggered, "stdio") {
+		t.Error("reload cold-started an unchanged stdio backend instead of reconciling it")
+	}
+	stdioAfter, _ := h.reg.Get("stdio")
+	httpAfter, _ := h.reg.Get("http")
+	if stdioAfter != stdioBefore || httpAfter != httpBefore {
+		t.Error("unchanged reload replaced a backend object instead of scheduling a refresh")
+	}
+}
+
 // Scenario: "A hand-added backend appears on reload" and "A hand-removed one is torn down".
 // The refresh matters as much as the registration: without it a hand-added backend is
 // published with no tools until the next TTL tick.
@@ -379,8 +411,8 @@ func TestReloadKeepsADisabledBackendDisabledAcrossARestart(t *testing.T) {
 	}
 }
 
-// An unchanged backend must not be rebuilt: doing so would drop a live session, terminate a
-// healthy child, and force an OAuth backend through a handshake it did not need.
+// An unchanged backend must not be rebuilt: the stdio refresh it receives checks the
+// executable and keeps a matching live session rather than terminating it here.
 func TestReloadLeavesAnUnchangedBackendAlone(t *testing.T) {
 	h := newHarness(t, `{"backends": {"platform": {"command": "x"}, "flint": {"command": "y"}}}`)
 	before, _ := h.reg.Get("platform")
@@ -397,8 +429,8 @@ func TestReloadLeavesAnUnchangedBackendAlone(t *testing.T) {
 	if before != after {
 		t.Error("an unchanged backend was rebuilt, dropping its session")
 	}
-	if h.cat.saw(h.cat.triggered, "platform") {
-		t.Error("an unchanged backend was refreshed")
+	if !h.cat.saw(h.cat.reconciled, "platform") {
+		t.Error("an unchanged stdio backend was not scheduled for executable reconciliation")
 	}
 }
 

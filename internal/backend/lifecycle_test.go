@@ -19,6 +19,239 @@ import (
 	"github.com/ahodges22/mcpd/internal/testfake"
 )
 
+func TestExecutableReplacementDrainsOldCallsAndQueuesNewCalls(t *testing.T) {
+	fake := testfake.New("alpha", tool("kubectl_logs"))
+	entered := make(chan struct{}, 1)
+	release := make(chan struct{})
+	fake.OnCall = func(context.Context, *mcp.CallToolRequest) {
+		if fake.SideEffects.Load() == 1 {
+			entered <- struct{}{}
+			<-release
+		}
+	}
+	r := wire(t, Hooks{}, fake)
+	b, _ := r.Get("alpha")
+	command := filepath.Join(t.TempDir(), "backend")
+	if err := os.WriteFile(command, []byte("old"), 0o700); err != nil {
+		t.Fatalf("write executable marker: %v", err)
+	}
+	b.spec.Command = command
+	identity, err := resolveExecutable(command)
+	if err != nil {
+		t.Fatalf("resolve executable marker: %v", err)
+	}
+	b.activeExecutable = &identity
+
+	first := make(chan error, 1)
+	go func() {
+		_, err := b.Call(context.Background(), "kubectl_logs", nil)
+		first <- err
+	}()
+	<-entered
+	if err := os.WriteFile(command, []byte("replacement-is-longer"), 0o700); err != nil {
+		t.Fatalf("overwrite executable marker: %v", err)
+	}
+	now := time.Now().Add(2 * time.Second)
+	if err := os.Chtimes(command, now, now); err != nil {
+		t.Fatalf("advance executable mtime: %v", err)
+	}
+
+	prepared := make(chan struct{})
+	go func() {
+		b.PrepareRefresh(context.Background())
+		close(prepared)
+	}()
+	waitFor(t, func() bool {
+		if b.gate.TryRLock() {
+			b.gate.RUnlock()
+			return false
+		}
+		return true
+	})
+
+	queued := make(chan error, 1)
+	go func() {
+		_, err := b.Call(context.Background(), "kubectl_logs", nil)
+		queued <- err
+	}()
+	select {
+	case err := <-queued:
+		t.Fatalf("new call passed the stale-child drain (err=%v)", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	if got := fake.SideEffects.Load(); got != 1 {
+		t.Fatalf("side effects = %d, want only the already-dispatched call", got)
+	}
+
+	close(release)
+	if err := <-first; err != nil {
+		t.Fatalf("already-dispatched call was cancelled: %v", err)
+	}
+	select {
+	case <-prepared:
+	case <-time.After(10 * time.Second):
+		t.Fatal("replacement did not finish after the old call drained")
+	}
+	if err := <-queued; err != nil {
+		t.Fatalf("queued call did not use the replacement session: %v", err)
+	}
+	if got := fake.Dials.Load(); got != 2 {
+		t.Errorf("dials = %d, want the stale and replacement sessions", got)
+	}
+}
+
+func TestAutomaticReplacementYieldsToHeldLifecycleTransition(t *testing.T) {
+	command := filepath.Join(t.TempDir(), "backend")
+	if err := os.WriteFile(command, []byte("old"), 0o700); err != nil {
+		t.Fatalf("write executable marker: %v", err)
+	}
+	b := newBackend("alpha", config.Backend{Name: "alpha", Command: command}, Hooks{})
+	identity, err := resolveExecutable(command)
+	if err != nil {
+		t.Fatalf("resolve executable marker: %v", err)
+	}
+	b.activeExecutable = &identity
+	if err := os.WriteFile(command, []byte("replacement-is-longer"), 0o700); err != nil {
+		t.Fatalf("overwrite executable marker: %v", err)
+	}
+
+	b.transition.Lock()
+	defer b.transition.Unlock()
+	done := make(chan struct{})
+	go func() {
+		b.PrepareRefresh(context.Background())
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("automatic replacement waited on a lifecycle transition that may be waiting for this refresh")
+	}
+}
+
+func TestDisablePreemptsAutomaticReplacementDrain(t *testing.T) {
+	fake := testfake.New("alpha", tool("kubectl_logs"))
+	entered := make(chan struct{})
+	var enter sync.Once
+	fake.OnCall = func(ctx context.Context, _ *mcp.CallToolRequest) {
+		enter.Do(func() { close(entered) })
+		<-ctx.Done()
+	}
+	r := wire(t, Hooks{}, fake)
+	b, _ := r.Get("alpha")
+	command := filepath.Join(t.TempDir(), "backend")
+	if err := os.WriteFile(command, []byte("old"), 0o700); err != nil {
+		t.Fatalf("write executable marker: %v", err)
+	}
+	b.spec.Command = command
+	identity, err := resolveExecutable(command)
+	if err != nil {
+		t.Fatalf("resolve executable marker: %v", err)
+	}
+	b.activeExecutable = &identity
+
+	call := make(chan error, 1)
+	go func() {
+		_, err := b.Call(context.Background(), "kubectl_logs", nil)
+		call <- err
+	}()
+	<-entered
+	if err := os.WriteFile(command, []byte("replacement-is-longer"), 0o700); err != nil {
+		t.Fatalf("overwrite executable marker: %v", err)
+	}
+
+	prepared := make(chan struct{})
+	go func() {
+		b.PrepareRefresh(context.Background())
+		close(prepared)
+	}()
+	waitFor(t, func() bool {
+		if b.gate.TryRLock() {
+			b.gate.RUnlock()
+			return false
+		}
+		return true
+	})
+
+	disabled := make(chan error, 1)
+	go func() { disabled <- r.Disable("alpha") }()
+	select {
+	case <-prepared:
+	case <-time.After(5 * time.Second):
+		t.Fatal("disable did not cancel the automatic replacement drain")
+	}
+	select {
+	case err := <-disabled:
+		if err != nil {
+			t.Fatalf("disable: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("disable remained blocked behind the automatic replacement")
+	}
+	assertOutcomeUnknown(t, <-call, "kubectl_logs")
+	if got := b.Health().State; got != StateDisabled {
+		t.Errorf("state = %q, want disabled", got)
+	}
+}
+
+func TestAutomaticReplacementDefersToPublishedExplicitIntent(t *testing.T) {
+	b := &Backend{
+		name: "alpha",
+		spec: config.Backend{Command: filepath.Join(t.TempDir(), "backend")},
+		gate: newDispatchGate(),
+	}
+	if err := os.WriteFile(b.spec.Command, []byte("old"), 0o700); err != nil {
+		t.Fatalf("write executable marker: %v", err)
+	}
+	identity, err := resolveExecutable(b.spec.Command)
+	if err != nil {
+		t.Fatalf("resolve executable marker: %v", err)
+	}
+	b.activeExecutable = &identity
+	if err := os.WriteFile(b.spec.Command, []byte("replacement-is-longer"), 0o700); err != nil {
+		t.Fatalf("overwrite executable marker: %v", err)
+	}
+
+	// Model the interval after an explicit lifecycle action publishes its intent
+	// but before it obtains transition. PrepareRefresh may win TryLock in that
+	// interval, but it must yield rather than begin an unbounded drain.
+	b.mu.Lock()
+	b.explicitWaiters++
+	b.mu.Unlock()
+	b.PrepareRefresh(t.Context())
+	b.mu.Lock()
+	b.explicitWaiters--
+	b.mu.Unlock()
+
+	if b.replacementPending {
+		t.Fatal("automatic replacement proceeded despite a published explicit transition")
+	}
+	if !b.gate.TryRLock() {
+		t.Fatal("automatic replacement left the dispatch gate closed")
+	}
+	b.gate.RUnlock()
+}
+
+func TestCallQueuedBehindAutomaticReplacementHonorsContext(t *testing.T) {
+	b := &Backend{
+		name: "alpha",
+		spec: config.Backend{},
+		gate: newDispatchGate(),
+	}
+	b.gate.Lock()
+	defer b.gate.Unlock()
+
+	ctx, cancel := context.WithTimeout(t.Context(), 25*time.Millisecond)
+	defer cancel()
+	_, err := b.Call(ctx, "kubectl_logs", nil)
+	if !errors.Is(err, ErrNotAttempted) {
+		t.Fatalf("call err = %v, want ErrNotAttempted", err)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("call err = %v, want context deadline", err)
+	}
+}
+
 func TestADisabledOverrideOutlivesARestart(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.json")
