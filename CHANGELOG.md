@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.1](https://github.com/ahodges22/mcpd/compare/v0.5.0...v0.5.1) (2026-09-02)
+
+
+### Bug Fixes
+
+* replace stale stdio children after executable upgrades ([6e7bdf8](https://github.com/ahodges22/mcpd/commit/6e7bdf87a99265f49edff4dfcf436acb7e17b24b))
+
 ## [0.5.0](https://github.com/ahodges22/mcpd/compare/v0.4.2...v0.5.0) (2026-08-31)
 
 
