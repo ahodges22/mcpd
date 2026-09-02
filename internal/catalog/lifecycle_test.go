@@ -53,7 +53,181 @@ func serveAsChild(pidFile string) {
 	}
 	fmt.Fprintf(f, "%d\n", os.Getpid())
 	f.Close()
-	testfake.New("child", tool("kubectl_logs")).Server().Run(context.Background(), &mcp.StdioTransport{})
+	toolName := os.Getenv("MCPD_TEST_CHILD_TOOL")
+	if toolName == "" {
+		toolName = "kubectl_logs"
+	}
+	testfake.New("child", tool(toolName)).Server().Run(context.Background(), &mcp.StdioTransport{})
+}
+
+func TestReconcileReplacesStdioChildWhoseExecutableChanged(t *testing.T) {
+	dir := t.TempDir()
+	pidFile := filepath.Join(dir, "pids")
+	command := filepath.Join(dir, "backend")
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatalf("locate the test binary: %v", err)
+	}
+	writeChildCommand(t, command, self, "old_tool")
+
+	reg, c := lifecycle(t, dir, fastTuning, config.Backend{
+		Name:       "child",
+		Command:    command,
+		Env:        map[string]string{childPIDFile: pidFile},
+		TimeoutSec: 30,
+	})
+	c.Reconcile("child")
+	c.WaitIdle()
+	if _, err := os.Stat(pidFile); !os.IsNotExist(err) {
+		t.Fatalf("reconciliation cold-started a child before normal refresh: %v", err)
+	}
+	c.Refresh(t.Context(), "child")
+	if _, ok := c.Lookup("mcp__child__old_tool"); !ok {
+		t.Fatalf("the original child's tools were never catalogued: %v", c.Errors())
+	}
+	c.Reconcile("child")
+	c.WaitIdle()
+	if pids := childPIDs(t, pidFile); len(pids) != 1 {
+		t.Fatalf("unchanged reconciliation spawned children %v, want one", pids)
+	}
+
+	replacement := filepath.Join(dir, "replacement")
+	writeChildCommand(t, replacement, self, "new_tool")
+	if err := os.Rename(replacement, command); err != nil {
+		t.Fatalf("replace child command: %v", err)
+	}
+	c.Reconcile("child")
+	c.WaitIdle()
+
+	if _, ok := c.Lookup("mcp__child__new_tool"); !ok {
+		t.Errorf("replacement child's tool was not catalogued: %v", c.Errors())
+	}
+	if _, ok := c.Lookup("mcp__child__old_tool"); ok {
+		t.Error("the stale child's tool survived executable replacement")
+	}
+	if pids := childPIDs(t, pidFile); len(pids) != 2 {
+		t.Errorf("pids = %v, want the stale and replacement children", pids)
+	}
+	if got := reg.Health()["child"]; got.State != backend.StateUp || got.ToolCount != 1 {
+		t.Errorf("health = %+v, want the replacement child serving one tool", got)
+	}
+}
+
+func TestRefreshKeepsServingChildWhenExecutableCannotBeInspected(t *testing.T) {
+	dir := t.TempDir()
+	pidFile := filepath.Join(dir, "pids")
+	command := filepath.Join(dir, "backend")
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatalf("locate the test binary: %v", err)
+	}
+	writeChildCommand(t, command, self, "old_tool")
+
+	_, c := lifecycle(t, dir, fastTuning, config.Backend{
+		Name:       "child",
+		Command:    command,
+		Env:        map[string]string{childPIDFile: pidFile},
+		TimeoutSec: 30,
+	})
+	c.Refresh(t.Context(), "child")
+	if err := os.Remove(command); err != nil {
+		t.Fatalf("remove child command: %v", err)
+	}
+	c.Refresh(t.Context(), "child")
+
+	if _, ok := c.Lookup("mcp__child__old_tool"); !ok {
+		t.Errorf("inspection failure removed a tool the serving child still offers: %v", c.Errors())
+	}
+	if pids := childPIDs(t, pidFile); len(pids) != 1 || !alive(pids[0]) {
+		t.Errorf("pids = %v, want the original child still alive", pids)
+	}
+}
+
+func TestRefreshReplacesStdioChildWhoseExecutableWasOverwritten(t *testing.T) {
+	dir := t.TempDir()
+	pidFile := filepath.Join(dir, "pids")
+	command := filepath.Join(dir, "backend")
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatalf("locate the test binary: %v", err)
+	}
+	writeChildCommand(t, command, self, "old")
+
+	_, c := lifecycle(t, dir, fastTuning, config.Backend{
+		Name:       "child",
+		Command:    command,
+		Env:        map[string]string{childPIDFile: pidFile},
+		TimeoutSec: 30,
+	})
+	c.Refresh(t.Context(), "child")
+
+	writeChildCommand(t, command, self, "replacement_tool")
+	now := time.Now().Add(2 * time.Second)
+	if err := os.Chtimes(command, now, now); err != nil {
+		t.Fatalf("advance child command mtime: %v", err)
+	}
+	c.Refresh(t.Context(), "child")
+
+	if _, ok := c.Lookup("mcp__child__replacement_tool"); !ok {
+		t.Errorf("overwritten child's replacement tool was not catalogued: %v", c.Errors())
+	}
+	if _, ok := c.Lookup("mcp__child__old"); ok {
+		t.Error("the old tool survived in-place executable overwrite")
+	}
+	if pids := childPIDs(t, pidFile); len(pids) != 2 {
+		t.Errorf("pids = %v, want the stale and replacement children", pids)
+	}
+}
+
+func TestFailedStdioReplacementDropsToolsAndRetries(t *testing.T) {
+	dir := t.TempDir()
+	pidFile := filepath.Join(dir, "pids")
+	command := filepath.Join(dir, "backend")
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatalf("locate the test binary: %v", err)
+	}
+	writeChildCommand(t, command, self, "old_tool")
+
+	reg, c := lifecycle(t, dir, fastTuning, config.Backend{
+		Name:       "child",
+		Command:    command,
+		Env:        map[string]string{childPIDFile: pidFile},
+		TimeoutSec: 2,
+	})
+	c.Refresh(t.Context(), "child")
+	if err := os.WriteFile(command, []byte("#!/bin/sh\nexit 1\n"), 0o700); err != nil {
+		t.Fatalf("write broken replacement: %v", err)
+	}
+	c.Refresh(t.Context(), "child")
+
+	if _, ok := c.Lookup("mcp__child__old_tool"); ok {
+		t.Error("failed replacement left unavailable tools in the catalog")
+	}
+	if got := reg.Health()["child"].State; got != backend.StateDown {
+		t.Errorf("state = %q, want down after replacement failure", got)
+	}
+	if got := c.Errors()["child"]; got == "" {
+		t.Error("replacement failure was not reported")
+	}
+
+	time.Sleep(300 * time.Millisecond) // let the first connect backoff expire
+	writeChildCommand(t, command, self, "new_tool")
+	c.Refresh(t.Context(), "child")
+	if _, ok := c.Lookup("mcp__child__new_tool"); !ok {
+		t.Errorf("repaired replacement did not restore tools: %v", c.Errors())
+	}
+	if pids := childPIDs(t, pidFile); len(pids) != 2 {
+		t.Errorf("pids = %v, want the original and repaired replacement children", pids)
+	}
+}
+
+func writeChildCommand(t *testing.T, path, testBinary, toolName string) {
+	t.Helper()
+	body := fmt.Sprintf("#!/bin/sh\nMCPD_TEST_CHILD_TOOL=%s exec %s %s\n", toolName, testBinary, childMarker)
+	if err := os.WriteFile(path, []byte(body), 0o700); err != nil {
+		t.Fatalf("write child command: %v", err)
+	}
 }
 
 func TestDisableRemovesToolsAndTerminatesTheChild(t *testing.T) {

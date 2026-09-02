@@ -15,6 +15,7 @@ import (
 // Catalog is the part of the tool catalog these operations drive.
 type Catalog interface {
 	Trigger(server string)
+	Reconcile(server string)
 	Drop(server string)
 }
 
@@ -181,7 +182,12 @@ func (m *Manager) Reload() ([]error, error) {
 			continue
 		}
 		if config.SameBackend(b.Spec(), spec) {
-			// Untouched, so its session, its child and its authorization all survive.
+			// The declaration is untouched, so the object, session and authorization
+			// survive. A stdio refresh compares the executable that session spawned
+			// with the file currently on disk and replaces only a stale child.
+			if spec.IsStdio() {
+				m.cat.Reconcile(name)
+			}
 			continue
 		}
 		id := config.IdentityOf(spec)

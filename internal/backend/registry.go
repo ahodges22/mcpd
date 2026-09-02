@@ -127,7 +127,7 @@ func (r *Registry) Remove(name string) {
 	if !ok {
 		return
 	}
-	b.transition.Lock()
+	b.lockExplicitTransition()
 	defer b.transition.Unlock()
 	b.teardown(forShutdown)
 }
@@ -147,7 +147,7 @@ func (r *Registry) Replace(name string, spec config.Backend) (enabled bool) {
 		r.Add(name, spec, true)
 		return true
 	}
-	b.transition.Lock()
+	b.lockExplicitTransition()
 	enabled = b.Health().State != StateDisabled
 	r.unpublish(name)
 	b.teardown(forShutdown)
@@ -202,6 +202,7 @@ func newBackend(name string, spec config.Backend, hooks Hooks) *Backend {
 	b := &Backend{
 		name:           name,
 		spec:           spec,
+		gate:           newDispatchGate(),
 		onReconnect:    hooks.Reconnected,
 		stopRefresh:    hooks.StopRefresh,
 		dropTools:      hooks.DropTools,
@@ -322,7 +323,7 @@ func (r *Registry) Shutdown() {
 	r.mu.Unlock()
 
 	for _, b := range backends {
-		b.transition.Lock()
+		b.lockExplicitTransition()
 		b.teardown(forShutdown)
 		b.transition.Unlock()
 	}
@@ -347,7 +348,7 @@ func (r *Registry) beginTransition(name string) (*Backend, func(), error) {
 	if !ok {
 		return nil, nil, fmt.Errorf("unknown backend %q", name)
 	}
-	b.transition.Lock()
+	b.lockExplicitTransition()
 	if b.shuttingDown() {
 		b.transition.Unlock()
 		return nil, nil, fmt.Errorf("%s: %w", name, ErrShutdown)

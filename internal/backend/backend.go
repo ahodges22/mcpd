@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"sync"
 	"sync/atomic"
@@ -73,6 +74,13 @@ type dispatchCancel struct {
 	cancel context.CancelFunc
 }
 
+type executableIdentity struct {
+	path    string
+	info    os.FileInfo
+	size    int64
+	modTime time.Time
+}
+
 // environ is a package var so tests can inject a parent environment.
 var environ = os.Environ
 
@@ -118,7 +126,7 @@ type Backend struct {
 	// transition serializes a whole user-initiated enable or disable, including
 	// the override write, which happens before the gate closes.
 	transition sync.Mutex
-	gate       sync.RWMutex // RLock is a dispatch lease; Lock closes and drains it
+	gate       dispatchGate // one unit is a dispatch lease; full capacity closes and drains it
 	life       sync.Mutex   // serializes lifecycle transitions
 	// gen advances only while mu is held, which is what lets a read check it and
 	// write the health record in one critical section rather than straddling a
@@ -135,6 +143,15 @@ type Backend struct {
 	connectAttempt  ConnectAttempt
 	connected       bool // a session has existed, so the next connect is a reconnect
 	preparedSecrets map[string]string
+	// activeExecutable belongs to the last successfully connected direct stdio
+	// child. It deliberately survives a lost session and a failed replacement so
+	// an explicit reload can retry the pending upgrade.
+	activeExecutable   *executableIdentity
+	dialExecutable     *executableIdentity
+	replacementPending bool
+	automaticCancel    context.CancelFunc
+	automaticSequence  uint64
+	explicitWaiters    int
 	// interactive latches that the next handshake is one a user asked for and is waiting on
 	// in a browser, so it gets the budget above. Atomic rather than guarded by mu, because
 	// connectTimeout is read with mu already held.
@@ -214,9 +231,14 @@ func (b *Backend) NoteAuthorized() {
 // ErrNotAttempted only when no send began; any other error means the upstream
 // may have received and acted on the request.
 func (b *Backend) Call(ctx context.Context, tool string, args map[string]any) (*mcp.CallToolResult, error) {
-	b.gate.RLock()
+	if err := b.gate.RLockContext(ctx); err != nil {
+		return nil, fmt.Errorf("%w: tool %s: waiting for backend: %w", ErrNotAttempted, tool, err)
+	}
 	defer b.gate.RUnlock()
 
+	// Size the operation after the gate opens. A lifecycle transition may have
+	// removed the session while this call waited, in which case withTimeout must
+	// include the handshake budget for the replacement connection.
 	ctx, cancel := b.withTimeout(ctx)
 	cancel = b.trackDispatch(cancel)
 	defer cancel()
@@ -251,6 +273,182 @@ func (b *Backend) ListTools(ctx context.Context) ([]*mcp.Tool, error) {
 		return nil, fmt.Errorf("backend %s: list tools: %w", b.name, err)
 	}
 	return res.Tools, nil
+}
+
+// PrepareRefresh replaces a direct stdio child whose executable changed since
+// it connected. Unlike an explicit reconnect, this automatic transition drains
+// dispatched calls rather than cancelling them. The catalog calls it before a
+// list, so the same refresh connects and reads the replacement child.
+func (b *Backend) PrepareRefresh(ctx context.Context) {
+	stale, pending, err := b.executableState()
+	if err != nil {
+		slog.Warn("inspect stdio executable; keeping serving child", "server", b.name, "error", err)
+		return
+	}
+	if !stale || pending {
+		return
+	}
+
+	automatic, done := b.beginAutomaticReplacement(ctx)
+	defer done()
+	if !b.transition.TryLock() {
+		return
+	}
+	defer b.transition.Unlock()
+	if !b.automaticReplacementMayProceed(automatic) {
+		return
+	}
+	stale, pending, err = b.executableState()
+	if err != nil {
+		slog.Warn("inspect stdio executable; keeping serving child", "server", b.name, "error", err)
+		return
+	}
+	if !stale || pending {
+		return
+	}
+
+	// The weighted gate gives a waiting full-capacity acquisition priority over
+	// new one-unit dispatch leases. Calls already in flight finish; later calls
+	// wait and use the replacement. An explicit lifecycle action cancels this
+	// wait so it can take priority and retain its kill-switch semantics.
+	if err := b.gate.LockContext(automatic); err != nil {
+		return
+	}
+	defer b.gate.Unlock()
+	if automatic.Err() != nil {
+		return
+	}
+	b.life.Lock()
+	defer b.life.Unlock()
+
+	stale, pending, err = b.executableState()
+	if err != nil {
+		slog.Warn("inspect stdio executable; keeping serving child", "server", b.name, "error", err)
+		return
+	}
+	if !stale || pending {
+		return
+	}
+
+	b.mu.Lock()
+	sess := b.session
+	b.session = nil
+	b.replacementPending = true
+	b.failures, b.retryAt = 0, time.Time{}
+	if b.health.State != StateDisabled && b.health.State != StatePending {
+		b.health.State = StateDown
+		b.health.LastErr = ""
+	}
+	b.gen.Add(1)
+	b.mu.Unlock()
+
+	if sess != nil {
+		sess.Close()
+	}
+}
+
+func (b *Backend) beginAutomaticReplacement(ctx context.Context) (context.Context, func()) {
+	ctx, cancel := context.WithCancel(ctx)
+	b.mu.Lock()
+	b.automaticSequence++
+	sequence := b.automaticSequence
+	previous := b.automaticCancel
+	b.automaticCancel = cancel
+	b.mu.Unlock()
+	if previous != nil {
+		previous()
+	}
+	return ctx, func() {
+		cancel()
+		b.mu.Lock()
+		if b.automaticSequence == sequence {
+			b.automaticCancel = nil
+		}
+		b.mu.Unlock()
+	}
+}
+
+// lockExplicitTransition publishes an explicit lifecycle action before waiting
+// for the transition lock. That closes the check-then-act window where an
+// automatic replacement could otherwise start draining a hung call after the
+// explicit action had checked for work to cancel but before it took the lock.
+func (b *Backend) lockExplicitTransition() {
+	b.mu.Lock()
+	b.explicitWaiters++
+	cancel := b.automaticCancel
+	b.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	b.transition.Lock()
+	b.mu.Lock()
+	b.explicitWaiters--
+	b.mu.Unlock()
+}
+
+func (b *Backend) automaticReplacementMayProceed(ctx context.Context) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.explicitWaiters == 0 && ctx.Err() == nil
+}
+
+// ExecutableChanged reports whether a connected direct stdio child no longer
+// matches the configured command on disk. A pending failed replacement remains
+// changed so an explicit reload schedules another attempt.
+func (b *Backend) ExecutableChanged() bool {
+	stale, _, err := b.executableState()
+	if err != nil {
+		slog.Warn("inspect stdio executable; keeping serving child", "server", b.name, "error", err)
+		return false
+	}
+	return stale
+}
+
+func (b *Backend) executableState() (stale, pending bool, err error) {
+	b.mu.Lock()
+	if !b.spec.IsStdio() || b.health.State == StateDisabled || b.shutdown {
+		b.mu.Unlock()
+		return false, false, nil
+	}
+	pending = b.replacementPending
+	active := b.activeExecutable
+	b.mu.Unlock()
+	if pending {
+		return true, true, nil
+	}
+	if active == nil {
+		return false, false, nil
+	}
+
+	current, err := resolveExecutable(b.spec.Command)
+	if err != nil {
+		return false, false, err
+	}
+	return !sameExecutable(*active, current), false, nil
+}
+
+func resolveExecutable(command string) (executableIdentity, error) {
+	path, err := exec.LookPath(command)
+	if err != nil {
+		return executableIdentity{}, err
+	}
+	target, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return executableIdentity{}, err
+	}
+	target, err = filepath.Abs(target)
+	if err != nil {
+		return executableIdentity{}, err
+	}
+	info, err := os.Stat(target)
+	if err != nil {
+		return executableIdentity{}, err
+	}
+	return executableIdentity{path: target, info: info, size: info.Size(), modTime: info.ModTime()}, nil
+}
+
+func sameExecutable(a, b executableIdentity) bool {
+	return a.path == b.path && os.SameFile(a.info, b.info) && a.size == b.size && a.modTime.Equal(b.modTime)
 }
 
 // commitList records a completed read, or reports why it was discarded. The
@@ -323,6 +521,7 @@ func (b *Backend) connect(ctx context.Context) (*mcp.ClientSession, error) {
 	ctx, cancel := context.WithTimeout(ctx, b.handshakeTimeout(b.interactive.Swap(false)))
 	b.connectAttempt = ConnectAttempt{Generation: b.gen.Load()}
 	b.connectCancel = cancel
+	b.dialExecutable = nil
 	b.mu.Unlock()
 	defer func() {
 		cancel()
@@ -354,6 +553,11 @@ func (b *Backend) connect(ctx context.Context) (*mcp.ClientSession, error) {
 	b.health.State = StateUp
 	b.health.LastErr = ""
 	b.health.AuthNote = b.authNote
+	if b.dialExecutable != nil {
+		b.activeExecutable = b.dialExecutable
+	}
+	b.dialExecutable = nil
+	b.replacementPending = false
 	reconnected := b.connected
 	b.connected = true
 	b.gen.Add(1)
@@ -550,6 +754,7 @@ func (b *Backend) dropSession(sess *mcp.ClientSession, cause error) {
 func (b *Backend) failConnect(stage string, cause error) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	b.dialExecutable = nil
 	// Only connect writes this record, and it holds life throughout, so this can only
 	// be marking its own attempt.
 	b.connectAttempt.Failed = true
@@ -639,6 +844,16 @@ func (b *Backend) stdioTransport(ctx context.Context) (mcp.Transport, error) {
 	}
 	defer clear(values)
 	cmd := exec.Command(b.spec.Command, b.spec.Args...)
+	if cmd.Err != nil {
+		return nil, cmd.Err
+	}
+	identity, err := resolveExecutable(cmd.Path)
+	if err != nil {
+		return nil, fmt.Errorf("inspect executable: %w", err)
+	}
+	b.mu.Lock()
+	b.dialExecutable = &identity
+	b.mu.Unlock()
 	// Never nil: nil means inherit-everything, which would hand every credential
 	// mcpd holds to third-party code.
 	cmd.Env = b.spec.ChildEnvResolved(environ(), values)
