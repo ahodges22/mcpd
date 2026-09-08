@@ -254,7 +254,7 @@ func TestADisabledBackendRendersAsDisabledRatherThanFailing(t *testing.T) {
 	}
 	// The lamp colour as well as the state, because the two are rendered from separate
 	// fields and a backend shown as off in one and as broken in the other is still wrong.
-	for _, failing := range []string{`data-tone="fault"`, `data-tone="cold"`} {
+	for _, failing := range []string{`data-s="fault"`, `data-s="cold"`} {
 		if strings.Contains(res.body, failing) {
 			t.Errorf("the page renders a backend the user turned off with %s", failing)
 		}

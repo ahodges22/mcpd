@@ -1,38 +1,7 @@
-/* mcpd's operator panel.
- *
- * One typographic rule governs the page: monospace if the machine chose the string,
- * sans if a person wrote it. So a backend name, a tool id, a URL and an upstream error
- * are all mono, and every label, sentence and button is not. You can tell at a glance
- * whether a token is something you type or something someone said.
- *
- * Colour carries exactly one meaning: backend state. Five distinguishable conditions get
- * five lamp hues and nothing else on the page is allowed a hue, so a spot of colour is
- * always a state and never a decoration. */
-
-:root {
-  --vault: #0d1117;
-  --rail: #161c24;
-  --raise: #1b232d;
-  --etch: #26303b;
-  --lumen: #dee7f0;
-  --dim: #7c8a99;
-
-  --up: #43d9a3;
-  --wait: #ffb338;
-  --fault: #ff6a5c;
-  --off: #55636f;
-  --cold: #58aef5;
-
-  --mono: ui-monospace, "JetBrains Mono", "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
-  --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-
-  --gap: 1.5rem;
-  --radius: 3px;
-}
-
-* {
-  box-sizing: border-box;
-}
+/* mcpd's operator panel: page layout only. Tokens and the primitives (lamp, rows, group
+ * titles, buttons, fields, brand, inbox) come from /theme/theme.css, which is linked
+ * first. Everything here composes those into mcpd's single page, the inspector and the
+ * remote relogin page. */
 
 /* Every element this page hides is also given a display by a class, and a class beats the
  * user agent's own [hidden] rule, so without this the add form shows the fields for both
@@ -42,409 +11,67 @@
 }
 
 body {
-  background: var(--vault);
-  color: var(--lumen);
-  font: 400 14px/1.55 var(--sans);
-  margin: 0;
-  padding-bottom: 5rem;
+  padding-bottom: 64px;
 }
 
-.mono,
-code,
-pre,
-input,
-textarea {
-  font-family: var(--mono);
-}
+/* Top bar ------------------------------------------------------------------- */
 
-/* An eyebrow names a region. Set as a machine label rather than a heading, because the
- * regions are fixed parts of one instrument and not an outline of a document. */
-.eyebrow {
-  color: var(--dim);
-  font-family: var(--mono);
-  font-size: 10px;
-  letter-spacing: 0.18em;
-  margin: 0 0 0.9rem;
-  text-transform: uppercase;
-}
-
-.tally {
-  background: var(--raise);
-  border-radius: 2px;
-  color: var(--lumen);
-  letter-spacing: 0;
-  margin-left: 0.5rem;
-  padding: 0.1rem 0.4rem;
-}
-
-/* Rail ---------------------------------------------------------------------- */
-
-.rail {
+.top {
   align-items: center;
-  background: color-mix(in srgb, var(--rail) 92%, transparent);
-  backdrop-filter: blur(6px);
-  border-bottom: 1px solid var(--etch);
+  background: var(--panel);
+  border-bottom: 1px solid var(--line-soft);
   display: flex;
   flex-wrap: wrap;
-  gap: 1rem;
+  gap: 12px;
   justify-content: space-between;
-  padding: 0.85rem clamp(1rem, 4vw, 2.5rem);
+  padding: 12px 40px;
   position: sticky;
   top: 0;
-  z-index: 10;
+  z-index: 2;
 }
 
-.mark {
-  align-items: baseline;
-  display: flex;
-  gap: 0.75rem;
-  margin: 0;
-}
-
-.mark-logo {
-  align-self: center;
-  display: block;
-  height: 22px;
-  width: 22px;
-}
-
-.mark-name {
-  font-family: var(--mono);
-  font-size: 15px;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-}
-
-.mark-addr {
-  color: var(--dim);
-  font-family: var(--mono);
-  font-size: 12px;
-}
-
-.mark-addr::before {
-  content: "▏";
-  margin-right: 0.5rem;
-}
-
-.rail-acts {
+.acts {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.4rem;
+  gap: 6px;
 }
 
 main {
   margin: 0 auto;
-  max-width: 76rem;
-  padding: 0 clamp(1rem, 4vw, 2.5rem);
+  max-width: 1180px;
+  padding: 8px 40px 0;
 }
 
-.block {
-  border-bottom: 1px solid var(--etch);
-  padding: var(--gap) 0;
+section {
+  margin-top: 26px;
 }
 
-.block:last-of-type {
-  border-bottom: 0;
-}
-
-.block-head {
-  align-items: baseline;
+.group-title .right {
   display: flex;
-  gap: 1rem;
-  justify-content: space-between;
-}
-
-/* The bus ------------------------------------------------------------------- */
-
-.readout {
-  align-items: baseline;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-  margin: 0 0 0.9rem;
-}
-
-.readout-n {
-  font-family: var(--mono);
-  font-size: clamp(2.75rem, 8vw, 4.5rem);
-  font-variant-numeric: tabular-nums;
-  font-weight: 500;
-  letter-spacing: -0.045em;
-  line-height: 0.9;
-}
-
-.readout-unit {
-  color: var(--dim);
-  font-size: 1rem;
-}
-
-.readout-sub {
-  color: var(--dim);
+  gap: 6px;
   margin-left: auto;
+  order: 2;
 }
 
-.readout-vec {
-  color: var(--dim);
+.group-title .n .lamp {
+  margin-right: 6px;
+  vertical-align: middle;
 }
 
-/* The signature element. Segment width is a backend's share of the catalog, so the bar is
- * the fan-in made readable: everything on this machine goes through one port. A backend
- * serving nothing has no share, so it appears as a notch rather than a block, which is
- * what makes the bar say both what the catalog holds and what is missing from it. */
-.bus {
-  background: var(--rail);
-  border: 1px solid var(--etch);
-  border-radius: var(--radius);
-  display: flex;
-  gap: 2px;
-  height: 2.5rem;
-  overflow: hidden;
-  padding: 2px;
+.lead {
+  color: var(--ink-2);
+  font-size: 13px;
+  margin: 0 0 10px;
+  max-width: 46rem;
 }
 
-.seg,
-.notch {
-  border-radius: 1px;
-  display: block;
-  position: relative;
-}
-
-.seg {
-  align-items: center;
-  display: flex;
-  flex: 1 1 0;
-  min-width: 7px;
-  overflow: hidden;
-  padding: 0 0.5rem;
-}
-
-.seg.alt {
-  filter: brightness(0.78);
-}
-
-.seg-name {
-  color: var(--vault);
-  font-family: var(--mono);
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  white-space: nowrap;
-}
-
-.notch {
-  flex: 0 0 3px;
-}
-
-.bus-foot {
-  color: var(--dim);
-  font-size: 12px;
-  margin: 0.6rem 0 0;
-}
-
-/* Lamps and tones ----------------------------------------------------------- */
-
-[data-tone="up"] {
-  background: var(--up);
-}
-[data-tone="wait"] {
-  background: var(--wait);
-}
-[data-tone="fault"] {
-  background: var(--fault);
-}
-[data-tone="off"] {
-  background: var(--off);
-}
-[data-tone="cold"] {
-  background: var(--cold);
-}
-
-.lamp {
-  border-radius: 50%;
-  flex: 0 0 auto;
-  height: 8px;
-  width: 8px;
-}
-
-/* Needs you ----------------------------------------------------------------- */
-
-.attn {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  list-style: none;
-  margin: 0;
-  padding: 0;
-}
-
-.attn-row {
-  align-items: center;
-  background: var(--raise);
-  border-left: 2px solid var(--wait);
-  display: flex;
-  gap: 0.75rem;
-  padding: 0.75rem 1rem;
-}
-
-.attn-says {
-  min-width: 0;
-}
-
-.attn-do {
-  flex: 0 0 auto;
-  margin-left: auto;
-}
-
-.allclear {
-  color: var(--dim);
-  margin: 0;
-}
-
-/* Backend rows -------------------------------------------------------------- */
-
-.rows {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  list-style: none;
-  margin: 1rem 0 0;
-  padding: 0;
-}
-
-/* One flexible column, and it sits between the facts and the actions, so every fact
- * clusters at the left where the eye already is and the controls stay pinned right. Giving
- * two columns a share instead left a lake of nothing in the middle of every row. */
-.row {
-  align-items: center;
-  background: var(--rail);
-  column-gap: 0.9rem;
-  display: grid;
-  grid-template-columns: auto minmax(7rem, 15rem) 9rem 3.2rem 5.5rem 6.5rem minmax(0, 1fr) auto;
-  padding: 0.6rem 1rem;
-  row-gap: 0.4rem;
-}
-
-.row:hover {
-  background: var(--raise);
-}
-
-.row-name {
-  color: var(--lumen);
-  font-weight: 600;
-  overflow-wrap: anywhere;
-  text-decoration: none;
-}
-
-.row-name:hover {
-  text-decoration: underline;
-}
-
-.row-state,
-.row-transport,
-.row-age,
-.row-token,
-.row-tools {
-  color: var(--dim);
+.help {
+  color: var(--ink-3);
   font-size: 12px;
 }
 
-.row-tools-n {
-  color: var(--lumen);
-  font-variant-numeric: tabular-nums;
-}
-
-.row-acts {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.3rem;
-  grid-column: -2 / -1;
-  justify-content: flex-end;
-}
-
-/* The error spans the row, so an upstream message of any length never distorts the grid
- * the other fourteen rows are read against, and is clamped to two lines because a chained
- * error runs to three hundred characters and would otherwise dominate the page it is
- * reported on. Never truncated in the markup: the whole text is the element's title. */
-.row-err {
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  color: var(--fault);
-  display: -webkit-box;
-  font-size: 11px;
-  grid-column: 2 / -1;
-  line-clamp: 2;
-  margin: 0;
-  overflow: hidden;
-  overflow-wrap: anywhere;
-}
-
-/* Controls ------------------------------------------------------------------ */
-
-button,
-.linkish {
-  background: transparent;
-  border: 1px solid var(--etch);
-  border-radius: var(--radius);
-  color: var(--lumen);
-  cursor: pointer;
-  font: 500 12px/1 var(--sans);
-  padding: 0.45rem 0.7rem;
-  text-decoration: none;
-  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
-  white-space: nowrap;
-}
-
-button:hover:not(:disabled),
-.linkish:hover {
-  background: var(--raise);
-  border-color: var(--dim);
-}
-
-button:disabled {
-  color: var(--dim);
-  cursor: progress;
-}
-
-:focus-visible {
-  outline: 2px solid var(--cold);
-  outline-offset: 2px;
-}
-
-.attn-do,
-.primary {
-  background: var(--lumen);
-  border-color: var(--lumen);
-  color: var(--vault);
-  font-weight: 600;
-}
-
-.attn-do:hover:not(:disabled),
-.primary:hover:not(:disabled) {
-  background: #fff;
-  border-color: #fff;
-  color: var(--vault);
-}
-
-/* A quiet action is still a visible, always-clickable control. It only stops competing
- * with the state it sits beside until the pointer is on it. */
-.quiet {
-  border-color: transparent;
-  color: var(--dim);
-  padding: 0.45rem 0.5rem;
-}
-
-.quiet:hover:not(:disabled) {
-  border-color: var(--etch);
-  color: var(--lumen);
-}
-
-.danger:hover:not(:disabled) {
-  border-color: var(--fault);
-  color: var(--fault);
-}
-
-.ghost {
-  color: var(--dim);
+p.help {
+  margin: 8px 0 0;
 }
 
 /* The note is the one place a message from the daemon or an upstream lands, and it is
@@ -456,104 +83,179 @@ button:disabled {
   font-size: 12px;
   margin: 0;
   overflow-wrap: anywhere;
-  padding: 0.75rem clamp(1rem, 4vw, 2.5rem);
+  padding: 10px 40px;
   white-space: pre-wrap;
 }
 
-/* Add form ------------------------------------------------------------------ */
+/* The bus ------------------------------------------------------------------- */
+
+/* Segment width is a backend's share of the catalog, so the bar is the fan-in made
+ * readable: everything on this machine goes through one port. A backend serving nothing
+ * has no share, so it appears as a notch rather than a block, which is what makes the bar
+ * say both what the catalog holds and what is missing from it. */
+.bus {
+  background: var(--panel);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r);
+  display: flex;
+  gap: 2px;
+  height: 36px;
+  overflow: hidden;
+  padding: 2px;
+}
+
+.seg,
+.notch {
+  background: var(--off);
+  border-radius: 2px;
+  display: block;
+}
+
+.seg[data-s="up"],
+.notch[data-s="up"] {
+  background: var(--up);
+}
+.seg[data-s="wait"],
+.notch[data-s="wait"] {
+  background: var(--wait);
+}
+.seg[data-s="fault"],
+.notch[data-s="fault"] {
+  background: var(--fault);
+}
+.seg[data-s="cold"],
+.notch[data-s="cold"] {
+  background: var(--cold);
+}
+
+.seg {
+  align-items: center;
+  display: flex;
+  flex: 1 1 0;
+  min-width: 7px;
+  overflow: hidden;
+  padding: 0 8px;
+}
+
+.seg.alt {
+  filter: brightness(0.8);
+}
+
+.seg-name {
+  color: var(--ground);
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.notch {
+  flex: 0 0 3px;
+}
+
+.bus-foot {
+  color: var(--ink-3);
+  font-size: 12px;
+  margin: 8px 0 0;
+}
+
+/* Backend rows -------------------------------------------------------------- */
+
+.row .name:hover {
+  text-decoration: underline;
+}
+
+/* The error is clamped to two lines because a chained error runs to three hundred
+ * characters and would otherwise dominate the page it is reported on. Never truncated in
+ * the markup: the whole text is the element's title. */
+.row .err {
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  display: -webkit-box;
+  line-clamp: 2;
+  margin: -6px 0 0;
+  overflow: hidden;
+}
+
+.row .hint {
+  color: var(--ink-3);
+  font-size: 12px;
+  grid-column: 2 / -1;
+  margin: -6px 0 0;
+  padding-bottom: 10px;
+}
+
+.row .hint.warn {
+  color: var(--wait);
+}
+
+/* Forms --------------------------------------------------------------------- */
+
+.control {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+
+.control-label {
+  color: var(--ink-3);
+  font-size: 12px;
+}
+
+.control .field {
+  width: 100%;
+}
 
 .add {
-  background: var(--rail);
-  border: 1px solid var(--etch);
-  border-radius: var(--radius);
-  margin-top: 1rem;
-  padding: 1.25rem;
+  background: var(--panel);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r);
+  margin-bottom: 10px;
+  padding: 18px;
 }
 
 .add-grid {
   align-items: start;
   display: grid;
-  gap: 1rem 1.25rem;
+  gap: 16px 20px;
   grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
 }
 
-.field {
-  display: flex;
-  flex-direction: column;
-  gap: 0.35rem;
-  min-width: 0;
-}
-
-.field.wide {
+.control.wide {
   grid-column: span 2;
 }
 
-.field.narrow {
+.control.narrow {
   max-width: 12rem;
-}
-
-.field-label {
-  color: var(--dim);
-  font-family: var(--mono);
-  font-size: 10px;
-  letter-spacing: 0.14em;
-  padding: 0;
-  text-transform: uppercase;
-}
-
-.field-help {
-  color: var(--dim);
-  font-family: var(--sans);
-  font-size: 11px;
-}
-
-input[type="text"],
-input[type="url"],
-input[type="password"],
-input:not([type]) {
-  background: var(--vault);
-  border: 1px solid var(--etch);
-  border-radius: var(--radius);
-  color: var(--lumen);
-  font-size: 13px;
-  padding: 0.5rem 0.6rem;
-  width: 100%;
-}
-
-input::placeholder {
-  color: var(--off);
-}
-
-input:focus {
-  border-color: var(--cold);
 }
 
 .suffixed {
   align-items: center;
   display: flex;
-  gap: 0.5rem;
+  gap: 8px;
 }
 
 .suffix {
-  color: var(--dim);
-  font-size: 11px;
+  color: var(--ink-3);
+  font-size: 12px;
 }
 
 /* Two mutually exclusive transports, shown as one control rather than a menu, because
  * which one you pick changes which fields the form asks for. */
 .switch {
   border: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 0.35rem;
   margin: 0;
-  min-width: 0;
+  padding: 0;
+}
+
+.switch legend {
   padding: 0;
 }
 
 .switch-opts {
   display: flex;
-  gap: 0.4rem;
+  gap: 6px;
 }
 
 .switch .opt {
@@ -561,25 +263,24 @@ input:focus {
 }
 
 .switch .opt input {
-  position: absolute;
   opacity: 0;
   pointer-events: none;
+  position: absolute;
 }
 
 .switch .opt span {
-  border: 1px solid var(--etch);
-  border-radius: var(--radius);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  color: var(--ink-2);
   display: block;
   font-family: var(--mono);
-  font-size: 12px;
-  padding: 0.45rem 0.9rem;
-  text-align: center;
+  font-size: 13px;
+  padding: 5px 14px;
 }
 
 .switch .opt input:checked + span {
   background: var(--raise);
-  border-color: var(--dim);
-  color: var(--lumen);
+  color: var(--ink);
 }
 
 .switch .opt input:focus-visible + span {
@@ -587,155 +288,133 @@ input:focus {
   outline-offset: 2px;
 }
 
-.switch legend {
-  padding: 0;
-}
-
 /* Aligned with the inputs beside it rather than with the labels above them, because it is
  * a value and not a heading. */
-.field.check {
+.control.check {
   align-items: center;
   align-self: center;
   flex-direction: row;
-  font-size: 13px;
-  gap: 0.5rem;
-  padding-top: 1.1rem;
+  gap: 8px;
+  padding-top: 22px;
 }
 
-.field.check input {
+.control.check input {
   accent-color: var(--cold);
-  width: auto;
 }
 
 .add-foot {
   align-items: center;
-  border-top: 1px solid var(--etch);
+  border-top: 1px solid var(--line-soft);
   display: flex;
   flex-wrap: wrap;
-  gap: 1rem;
+  gap: 16px;
   justify-content: space-between;
-  margin-top: 1.25rem;
-  padding-top: 1rem;
+  margin-top: 18px;
+  padding-top: 14px;
+}
+
+.add-foot .help {
+  margin: 0;
 }
 
 code {
-  background: var(--vault);
+  background: var(--ground);
   border-radius: 2px;
-  font-size: 11px;
-  padding: 0.1rem 0.3rem;
+  font-size: 12px;
+  padding: 1px 4px;
 }
 
 /* Secrets ------------------------------------------------------------------- */
 
-.secret-head-actions,
 .secret-set-form {
   display: flex;
-  gap: 0.4rem;
-}
-
-.secret-rows {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  list-style: none;
-  margin: 1rem 0 0;
-  padding: 0;
-}
-
-.secret-row {
-  align-items: center;
-  background: var(--rail);
-  display: grid;
-  gap: 0.45rem 0.75rem;
-  grid-template-columns: minmax(8rem, 1fr) auto auto minmax(12rem, 1fr) auto;
-  padding: 0.75rem 1rem;
-}
-
-.secret-name {
-  font-weight: 600;
-  overflow-wrap: anywhere;
-}
-
-.secret-source,
-.secret-condition,
-.secret-consumers {
-  color: var(--dim);
-  font-size: 11px;
-}
-
-.secret-warning,
-.secret-guidance,
-.secret-consumers {
-  grid-column: 1 / -1;
-  margin: 0;
-}
-
-.secret-warning {
-  color: var(--wait);
-}
-
-.secret-guidance {
-  color: var(--dim);
-}
-
-.secret-set-form {
-  min-width: 0;
+  gap: 6px;
 }
 
 .secret-value {
   min-width: 8rem;
 }
 
-@media (max-width: 60rem) {
-  .secret-row {
-    grid-template-columns: 1fr auto;
-  }
+/* Remote relogin: the panel section and the phone page.
+ *
+ * A pairing URL is a credential. The row sets the address bright and the token
+ * dim, because the address is the part a person reads and the token is the
+ * part they only carry; Copy takes the whole thing. */
 
-  .secret-source,
-  .secret-condition {
-    grid-column: 1;
-  }
+.pairs .row {
+  grid-template-columns: 1fr auto;
+}
 
-  .secret-set-form {
-    grid-column: 1 / -1;
-  }
+.pair-url {
+  font-size: 12.5px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
-  .secret-remove {
-    grid-column: 2;
-    grid-row: 1;
-  }
+.pair-key {
+  color: var(--ink-3);
+}
+
+.adv {
+  align-items: flex-end;
+  display: flex;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.adv .control {
+  max-width: 100%;
+  width: 28rem;
+}
+
+/* The phone page: one narrow column, because its consumer is a hand. */
+
+.relogin {
+  max-width: 30rem;
+  padding: 0 20px;
+}
+
+.relogin .row {
+  grid-template-columns: 8px 1fr auto auto;
+}
+
+.relogin .row > .state:only-child {
+  grid-column: 1 / -1;
+}
+
+.paste {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.paste .field {
+  flex: 1;
+  min-width: 0;
 }
 
 /* Inspector ----------------------------------------------------------------- */
 
-.back {
-  color: var(--dim);
-  font-size: 12px;
-  text-decoration: none;
-}
-
-.back:hover {
-  color: var(--lumen);
-}
-
 .filter {
-  margin: 0 0 1rem;
+  margin: 0 0 16px;
   max-width: 22rem;
 }
 
 .tool {
-  background: var(--rail);
-  border: 1px solid var(--etch);
-  border-radius: var(--radius);
-  margin-bottom: 1px;
-  padding: 0.9rem 1rem;
+  background: var(--panel);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r);
+  margin: 0 0 4px;
+  padding: 12px 14px;
 }
 
 .tool-head {
   align-items: baseline;
   display: flex;
   flex-wrap: wrap;
-  gap: 0.75rem;
+  gap: 12px;
 }
 
 .tool-name {
@@ -746,85 +425,62 @@ code {
 }
 
 .tool-id {
-  color: var(--dim);
+  color: var(--ink-3);
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: 12px;
   margin-left: auto;
 }
 
 .badge {
   border: 1px solid var(--wait);
-  border-radius: 2px;
+  border-radius: 3px;
   color: var(--wait);
-  font-family: var(--mono);
-  font-size: 10px;
-  letter-spacing: 0.08em;
-  padding: 0.1rem 0.35rem;
-  text-transform: uppercase;
+  font-size: 11px;
+  padding: 1px 6px;
 }
 
 .tool-desc {
-  color: var(--dim);
+  color: var(--ink-2);
   font-size: 13px;
-  margin: 0.5rem 0 0;
+  margin: 6px 0 0;
 }
 
 details {
-  margin-top: 0.75rem;
+  margin-top: 10px;
 }
 
 summary {
-  color: var(--dim);
+  color: var(--ink-3);
   cursor: pointer;
-  font-family: var(--mono);
-  font-size: 11px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+  font-size: 12px;
 }
 
 summary:hover {
-  color: var(--lumen);
+  color: var(--ink);
 }
 
 pre {
-  background: var(--vault);
-  border: 1px solid var(--etch);
-  border-radius: var(--radius);
-  font-size: 11px;
-  margin: 0.5rem 0 0;
+  background: var(--ground);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r);
+  font-size: 12px;
+  margin: 8px 0 0;
   max-height: 22rem;
   overflow: auto;
-  padding: 0.75rem;
-  white-space: pre-wrap;
   overflow-wrap: anywhere;
+  padding: 10px;
+  white-space: pre-wrap;
 }
 
 pre:empty {
   display: none;
 }
 
-textarea {
-  background: var(--vault);
-  border: 1px solid var(--etch);
-  border-radius: var(--radius);
-  color: var(--lumen);
-  display: block;
-  font-size: 12px;
-  margin-top: 0.35rem;
-  padding: 0.5rem;
-  resize: vertical;
-  width: 100%;
-}
-
-textarea:focus {
-  border-color: var(--cold);
-}
-
 .tool-call {
   align-items: flex-end;
   display: flex;
-  gap: 0.75rem;
-  margin-top: 0.75rem;
+  gap: 12px;
+  margin-top: 10px;
 }
 
 .tool-call label {
@@ -832,38 +488,64 @@ textarea:focus {
   flex: 1 1 auto;
 }
 
+textarea.field {
+  display: block;
+  font-size: 12px;
+  margin-top: 5px;
+  resize: vertical;
+  width: 100%;
+}
+
 .empty {
-  color: var(--dim);
+  color: var(--ink-3);
 }
 
 /* Narrow ------------------------------------------------------------------- */
 
 @media (max-width: 60rem) {
+  .top,
+  .note {
+    padding-left: 20px;
+    padding-right: 20px;
+  }
+
+  main {
+    padding: 8px 20px 0;
+  }
+
   .row {
-    grid-template-columns: auto 1fr;
-    row-gap: 0.15rem;
+    grid-template-columns: 8px 1fr;
+    padding-bottom: 10px;
+    padding-top: 10px;
+    row-gap: 6px;
   }
 
-  .row-state,
-  .row-transport,
-  .row-tools,
-  .row-age,
-  .row-token {
+  .row > :not(.lamp) {
     grid-column: 2;
   }
 
-  .row-acts {
-    grid-column: 2;
-    justify-content: flex-start;
+  .row .action {
+    flex-wrap: wrap;
+    justify-self: start;
   }
 
-  .readout-sub {
-    margin-left: 0;
-    width: 100%;
+  .inbox .row {
+    grid-template-columns: 8px 1fr auto;
   }
 
-  .field.wide {
+  .inbox .row > :not(.lamp) {
+    grid-column: auto;
+  }
+
+  .control.wide {
     grid-column: span 1;
+  }
+
+  .adv,
+  .paste,
+  .secret-set-form {
+    align-items: stretch;
+    flex-direction: column;
   }
 
   /* No segment is wide enough to hold a name here, and a clipped name reads as a
@@ -871,147 +553,5 @@ textarea:focus {
    * title. */
   .seg-name {
     display: none;
-  }
-}
-
-/* Remote relogin: the panel card and the phone page.
- *
- * A pairing URL is a credential. The row sets the address bright and the token
- * dim, because the address is the part a person reads and the token is the
- * part they only carry; Copy takes the whole thing. */
-
-.remote-head {
-  align-items: center;
-  display: flex;
-  gap: 0.75rem;
-}
-
-.remote-head .eyebrow {
-  flex: 1;
-  margin: 0;
-}
-
-.remote-state {
-  align-items: center;
-  color: var(--dim);
-  display: inline-flex;
-  font-size: 12px;
-  gap: 0.45rem;
-  white-space: nowrap;
-}
-
-.remote-lead {
-  color: var(--dim);
-  font-size: 13px;
-  margin: 0.75rem 0;
-  max-width: 46rem;
-}
-
-.pair {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  list-style: none;
-  margin: 0.75rem 0;
-  padding: 0;
-}
-
-.pair-row {
-  align-items: center;
-  background: var(--rail);
-  border-radius: var(--radius);
-  display: flex;
-  gap: 0.75rem;
-  min-width: 0;
-  padding: 0.45rem 0.75rem;
-}
-
-.pair-url {
-  flex: 1;
-  font-size: 12.5px;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.pair-key {
-  color: var(--off);
-}
-
-.adv-row {
-  align-items: flex-end;
-  display: flex;
-  gap: 0.5rem;
-  margin-top: 1rem;
-}
-
-.adv-field {
-  margin: 0;
-  width: 28rem;
-  max-width: 100%;
-}
-
-.adv-help {
-  margin-top: 0.4rem;
-  max-width: 46rem;
-}
-
-/* The phone page: one narrow column, because its consumer is a hand. */
-
-.relogin {
-  margin: 0 auto;
-  max-width: 30rem;
-  padding: 0 1.25rem;
-}
-
-.relogin .pair-row {
-  padding: 0.65rem 0.75rem;
-}
-
-.pair-name {
-  flex: 1;
-  font-size: 13px;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.pair-state {
-  color: var(--dim);
-  font-family: var(--sans);
-  font-size: 12px;
-  white-space: nowrap;
-}
-
-.paste {
-  display: flex;
-  gap: 0.5rem;
-  margin-top: 0.75rem;
-}
-
-.paste input {
-  flex: 1;
-  min-width: 0;
-}
-
-@media (max-width: 34rem) {
-  .secret-head-actions {
-    align-items: stretch;
-    flex-direction: column;
-  }
-
-  .secret-set-form {
-    align-items: stretch;
-    flex-direction: column;
-  }
-
-  .paste {
-    flex-direction: column;
-  }
-  .adv-row {
-    align-items: stretch;
-    flex-direction: column;
   }
 }

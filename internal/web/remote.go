@@ -16,6 +16,7 @@ import (
 
 	"github.com/ahodges22/mcpd/internal/backend"
 	"github.com/ahodges22/mcpd/internal/config"
+	"github.com/ahodges22/mcpd/theme"
 )
 
 // WithRemote enables the panel's remote-relogin toggle. Without it the route
@@ -353,6 +354,7 @@ func (s *Server) remoteRoutes() []route {
 		{method: http.MethodGet, path: "/{$}", handler: s.remotePage},
 		{method: http.MethodGet, path: "/api/status", handler: s.remoteStatus},
 		{method: http.MethodGet, path: "/assets/", handler: http.FileServerFS(assetFS).ServeHTTP},
+		{method: http.MethodGet, path: "/theme/", handler: theme.Handler().ServeHTTP},
 		{method: http.MethodPost, path: "/api/backends/{name}/authorize", mutates: true, handler: s.authorize},
 		{method: http.MethodGet, path: "/oauth/callback", mutates: true, nonceGuarded: true,
 			handler: s.oauthCallback},

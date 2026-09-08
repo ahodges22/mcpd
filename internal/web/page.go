@@ -27,6 +27,7 @@ var templateFS embed.FS
 var pages = template.Must(template.New("pages").Funcs(template.FuncMap{
 	"secretGuidance": secretGuidance,
 	"secretShadowed": secretShadowed,
+	"secretTone":     secretTone,
 }).ParseFS(templateFS, "templates/*.html"))
 
 func secretGuidance(condition secretstore.Condition) string {
@@ -50,6 +51,22 @@ func secretGuidance(condition secretstore.Condition) string {
 
 func secretShadowed(source secretstore.EffectiveSource) bool {
 	return source == secretstore.EffectiveSourceEnvironment
+}
+
+// secretTone is the lamp for a secret's effective source: a stored value is up, an
+// environment value that shadows the store is a warning, a provider fault is a fault,
+// and an absent value is the hollow ring.
+func secretTone(source secretstore.EffectiveSource) string {
+	switch source {
+	case secretstore.EffectiveSourceProvider:
+		return "up"
+	case secretstore.EffectiveSourceEnvironment:
+		return "wait"
+	case secretstore.EffectiveSourceCondition:
+		return "fault"
+	default:
+		return "none"
+	}
 }
 
 // namedShare is the share of the catalog a bus segment must hold before it carries its

@@ -1,0 +1,143 @@
+/* Shared theme for mcpd and the tools built on it: design tokens and the primitive
+ * classes every panel composes (lamp, row, group title, buttons, field, sidebar, inbox).
+ * Page layout belongs to the consumer. Fonts load from beside this file, so any mount
+ * prefix works; they are Ubuntu Sans subsets, licensed under LICENCE-ubuntu-font.txt. */
+
+@font-face {
+  font-family: "Ubuntu Sans";
+  src: url("UbuntuSans.woff2") format("woff2");
+  font-weight: 100 800;
+  font-stretch: 75% 100%;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Ubuntu Sans Mono";
+  src: url("UbuntuSansMono.woff2") format("woff2");
+  font-weight: 400 700;
+  font-display: swap;
+}
+
+:root {
+  --ground: #1b1916;
+  --panel: #211e1a;
+  --raise: #292520;
+  --line: #36312a;
+  --line-soft: #2d2924;
+  --ink: #ebe4d8;
+  --ink-2: #b8ae9f;
+  --ink-3: #857b6d;
+
+  --up: #63c184;
+  --wait: #e3a53b;
+  --fault: #e26b52;
+  --off: #6d665c;
+  --cold: #6fa8dc;
+
+  --sans: "Ubuntu Sans", system-ui, sans-serif;
+  --mono: "Ubuntu Sans Mono", ui-monospace, monospace;
+  --r: 5px;
+  --side: 224px;
+  color-scheme: dark;
+}
+
+/* Base ---------------------------------------------------------------- */
+*, *::before, *::after { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  background: var(--ground);
+  color: var(--ink);
+  font: 400 14px/1.5 var(--sans);
+}
+.mono, code, pre { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
+:focus-visible { outline: 2px solid var(--cold); outline-offset: 2px; }
+
+/* Lamp: colour means state and nothing else ---------------------------- */
+.lamp { width: 8px; height: 8px; border-radius: 50%; background: var(--off); display: inline-block; flex: none; }
+.lamp[data-s="up"] { background: var(--up); }
+.lamp[data-s="wait"] { background: var(--wait); }
+.lamp[data-s="fault"] { background: var(--fault); }
+.lamp[data-s="cold"] { background: var(--cold); }
+.lamp[data-s="off"] { background: var(--off); }
+.lamp[data-s="none"] { background: transparent; border: 1px solid var(--line); }
+
+/* Row primitive: lamp | name(+small) | state | facts | action ------------ */
+.rows { border: 1px solid var(--line-soft); border-radius: var(--r); background: var(--panel); list-style: none; margin: 0; padding: 0; }
+.row {
+  display: grid; align-items: center; gap: 16px;
+  grid-template-columns: 8px minmax(140px, 180px) minmax(90px, 130px) 1fr auto;
+  padding: 0 14px; min-height: 46px; border-top: 1px solid var(--line-soft);
+}
+.row:first-child { border-top: 0; }
+.row .name { font-weight: 600; font-family: var(--mono); font-size: 13.5px; color: var(--ink); text-decoration: none; }
+.row .name small { display: block; font-family: var(--sans); font-weight: 400; color: var(--ink-3); font-size: 12px; }
+.row .state { color: var(--ink-2); font-size: 13px; }
+.row .state small { display: block; color: var(--ink-3); font-size: 12px; font-family: var(--mono); }
+.row .state[data-s="fault"] { color: var(--fault); }
+.row .state[data-s="wait"] { color: var(--wait); }
+.facts { display: flex; gap: 22px; flex-wrap: wrap; color: var(--ink-2); font-size: 13px; }
+.facts .f { display: flex; flex-direction: column; line-height: 1.2; }
+.facts .f b { font-family: var(--mono); font-weight: 500; color: var(--ink); font-size: 13px; white-space: nowrap; }
+.facts .f span { font-size: 11.5px; color: var(--ink-3); white-space: nowrap; }
+.facts .f b.dim, .facts .f b .dim { color: var(--ink-3); font-weight: 400; }
+.facts .f b em { color: var(--fault); font-style: normal; }
+.row .action { justify-self: end; display: flex; gap: 6px; }
+.row .err { grid-column: 2 / -1; color: var(--fault); font-family: var(--mono); font-size: 12px; padding: 0 0 10px; margin-top: -6px; overflow-wrap: anywhere; }
+
+/* Group title: sits outside the box, hairline rule runs to the right ---- */
+.group-title {
+  display: flex; align-items: baseline; gap: 10px;
+  margin: 18px 0 8px; padding-left: 2px;
+  font-size: 13px; font-weight: 500; color: var(--ink-2);
+}
+.group-title .n { color: var(--ink-3); font-weight: 400; font-size: 12px; }
+.group-title::after { content: ""; flex: 1; border-top: 1px solid var(--line-soft); transform: translateY(-4px); }
+
+/* Buttons: .act raised, .act.quiet outline only, .act.link bare --------- */
+.act {
+  display: inline-block; padding: 5px 11px; border: 1px solid var(--line); border-radius: var(--r);
+  color: var(--ink); font-size: 13px; line-height: 1.3; background: var(--raise);
+  text-decoration: none; white-space: nowrap;
+}
+.act:hover:not(:disabled) { border-color: var(--ink-3); }
+.act:disabled { color: var(--ink-3); cursor: progress; }
+.act.quiet { background: none; color: var(--ink-2); }
+.act.link { background: none; border-color: transparent; color: var(--ink-3); padding-right: 0; }
+
+/* Field: one text input ------------------------------------------------- */
+.field {
+  font: inherit; color: var(--ink); background: var(--panel); border: 1px solid var(--line);
+  border-radius: var(--r); padding: 6px 10px;
+}
+.field::placeholder { color: var(--ink-3); }
+.field:focus { border-color: var(--cold); outline: 0; }
+
+/* Sidebar entries ------------------------------------------------------- */
+.side {
+  background: var(--panel);
+  border-right: 1px solid var(--line-soft);
+  padding: 18px 14px;
+  display: flex; flex-direction: column; gap: 22px;
+}
+.brand { display: flex; align-items: center; gap: 10px; padding: 0 6px; }
+.brand img { width: 26px; height: 26px; border-radius: 6px; }
+.brand b { font-weight: 600; font-size: 15px; letter-spacing: .01em; }
+.brand small { display: block; color: var(--ink-3); font-size: 12px; margin-top: -2px; }
+.nav { display: flex; flex-direction: column; gap: 2px; }
+.nav a {
+  display: grid; grid-template-columns: 10px 1fr auto; align-items: center; gap: 10px;
+  padding: 7px 8px; border-radius: var(--r); color: var(--ink-2); text-decoration: none;
+}
+.nav a:hover, .nav a[aria-current] { background: var(--raise); color: var(--ink); }
+.nav a .n { font-size: 12px; color: var(--ink-3); }
+.nav a[aria-current] .n { color: var(--ink-2); }
+.nav a.plain { grid-template-columns: 1fr auto; padding-left: 28px; }
+.nav .group { color: var(--ink-3); font-size: 12px; padding: 12px 8px 4px; }
+.side-foot { margin-top: auto; color: var(--ink-3); font-size: 12px; padding: 0 8px; }
+.side-foot span { display: block; }
+
+/* Inbox: things that need the user --------------------------------------- */
+.inbox .row { grid-template-columns: 8px 1fr auto; min-height: 44px; }
+.inbox .row .say { font-size: 14px; }
+.inbox .row .say small { color: var(--ink-3); margin-left: 8px; }
+.allclear { color: var(--ink-3); padding: 14px; border: 1px dashed var(--line); border-radius: var(--r); margin: 0; }

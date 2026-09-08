@@ -4,6 +4,8 @@ import (
 	"io/fs"
 	"strings"
 	"testing"
+
+	"github.com/ahodges22/mcpd/theme"
 )
 
 // TestNoMarkupInsertionAPIInTheAssets is a regression gate rather than a one-time
@@ -100,4 +102,44 @@ func assertNoInlineCode(t *testing.T, path, body string) {
 			t.Errorf("%s carries an inline script block", path)
 		}
 	}
+}
+
+// TestPanelStylesheetRedefinesNoThemeToken keeps the two stylesheets in their roles:
+// theme.css owns every design token, and style.css only lays the page out. A token
+// redefined here would silently fork the shared look.
+func TestPanelStylesheetRedefinesNoThemeToken(t *testing.T) {
+	themeCSS, err := fs.ReadFile(theme.FS(), "theme.css")
+	if err != nil {
+		t.Fatalf("read theme.css: %v", err)
+	}
+	panelCSS, err := fs.ReadFile(assetFS, "assets/style.css")
+	if err != nil {
+		t.Fatalf("read style.css: %v", err)
+	}
+	tokens := rootTokens(string(themeCSS))
+	if len(tokens) == 0 {
+		t.Fatal("theme.css defines no :root tokens; the extraction is broken")
+	}
+	for _, token := range tokens {
+		if strings.Contains(string(panelCSS), token+":") {
+			t.Errorf("style.css redefines %s, which theme.css owns", token)
+		}
+	}
+}
+
+// rootTokens lists the custom property names declared inside the :root block.
+func rootTokens(css string) []string {
+	_, after, ok := strings.Cut(css, ":root {")
+	if !ok {
+		return nil
+	}
+	block, _, _ := strings.Cut(after, "}")
+	var out []string
+	for _, line := range strings.Split(block, "\n") {
+		name, _, found := strings.Cut(strings.TrimSpace(line), ":")
+		if found && strings.HasPrefix(name, "--") {
+			out = append(out, name)
+		}
+	}
+	return out
 }
