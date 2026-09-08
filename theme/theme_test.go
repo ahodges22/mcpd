@@ -64,11 +64,17 @@ func TestHandler(t *testing.T) {
 	if css.StatusCode != http.StatusOK || css.Header.Get("Content-Type") != "text/css; charset=utf-8" {
 		t.Errorf("theme.css = %d %q", css.StatusCode, css.Header.Get("Content-Type"))
 	}
-	if cc := css.Header.Get("Cache-Control"); !strings.Contains(cc, "immutable") {
-		t.Errorf("Cache-Control = %q, want immutable", cc)
+	if cc := css.Header.Get("Cache-Control"); cc != "no-cache" {
+		t.Errorf("Cache-Control = %q, want no-cache so a changed theme is fetched after an upgrade", cc)
 	}
-	if css.Header.Get("ETag") == "" {
+	etag := css.Header.Get("ETag")
+	if etag == "" {
 		t.Error("no ETag")
+	}
+	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/theme/theme.css", nil)
+	req.Header.Set("If-None-Match", etag)
+	if res, err := http.DefaultClient.Do(req); err != nil || res.StatusCode != http.StatusNotModified || res.Header.Get("ETag") != etag {
+		t.Errorf("conditional GET: err=%v status=%v etag=%q, want 304 with the same ETag", err, res.StatusCode, res.Header.Get("ETag"))
 	}
 	if font := get("/theme/UbuntuSans.woff2"); font.StatusCode != http.StatusOK || font.Header.Get("Content-Type") != "font/woff2" {
 		t.Errorf("UbuntuSans.woff2 = %d %q", font.StatusCode, font.Header.Get("Content-Type"))

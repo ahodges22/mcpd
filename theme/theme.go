@@ -36,8 +36,9 @@ var contentTypes = map[string]string{
 }
 
 // Handler serves the four files by the last path element, so it works mounted under any
-// prefix without StripPrefix. Everything is immutable for one Version, so the cache
-// header is a year and the ETag is Version plus a content hash.
+// prefix without StripPrefix. The URLs do not change between releases, so the response
+// is cacheable but must revalidate: the ETag is Version plus a content hash, and a daemon
+// upgrade that changes a file answers the next conditional request with the new bytes.
 func Handler() http.Handler {
 	etags := make(map[string]string, len(contentTypes))
 	for name := range contentTypes {
@@ -60,15 +61,15 @@ func Handler() http.Handler {
 			http.NotFound(w, r)
 			return
 		}
+		h := w.Header()
+		h.Set("Cache-Control", "no-cache")
+		h.Set("ETag", etags[name])
 		if r.Header.Get("If-None-Match") == etags[name] {
 			w.WriteHeader(http.StatusNotModified)
 			return
 		}
 		raw, _ := files.ReadFile(name)
-		h := w.Header()
 		h.Set("Content-Type", ct)
-		h.Set("Cache-Control", "public, max-age=31536000, immutable")
-		h.Set("ETag", etags[name])
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("Content-Length", fmt.Sprint(len(raw)))
 		if r.Method == http.MethodHead {
