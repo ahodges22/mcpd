@@ -5,31 +5,32 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>mcpd remote relogin</title>
 <link rel="icon" type="image/svg+xml" href="/assets/logo.svg">
+<link rel="stylesheet" href="/theme/theme.css">
 <link rel="stylesheet" href="/assets/style.css">
 </head>
 <body>
-<header class="rail">
-  <p class="mark"><img class="mark-logo" src="/assets/logo.svg" alt=""><span class="mark-name">mcpd</span><span class="mark-addr">{{.Addr}}</span></p>
+<header class="top">
+  <div class="brand"><img src="/assets/logo.svg" alt=""><div><b>mcpd</b><small class="mono">{{.Addr}}</small></div></div>
 </header>
 
 <p class="note" id="note" hidden></p>
 
 <main class="relogin">
-  <section class="block">
-    <p class="eyebrow">Relogin</p>
-    <p class="remote-lead">These backends log in with OAuth. Authorize one, approve access at the provider, then come back here.</p>
-    <ul class="pair" id="remote-backends"></ul>
+  <section>
+    <div class="group-title"><span>Relogin</span></div>
+    <p class="lead">These backends log in with OAuth. Authorize one, approve access at the provider, then come back here.</p>
+    <ul class="rows" id="remote-backends"></ul>
   </section>
 
-  <section class="block">
-    <p class="eyebrow">Finish a login</p>
-    <p class="remote-lead">After you approve access, the browser lands on a dead 127.0.0.1 page.
+  <section>
+    <div class="group-title"><span>Finish a login</span></div>
+    <p class="lead">After you approve access, the browser lands on a dead 127.0.0.1 page.
       Edit that address to <span class="mono">{{if .Advertise}}{{.Advertise}}{{else}}{{.Addr}}{{end}}</span>,
       or paste the whole URL here.</p>
     <form id="paste-form" class="paste">
-      <input class="mono" id="paste-url" type="url" placeholder="http://127.0.0.1:7420/oauth/callback?code=..."
+      <input class="field mono" id="paste-url" type="url" placeholder="http://127.0.0.1:7420/oauth/callback?code=..."
              aria-label="Callback URL" required>
-      <button class="primary" type="submit">Deliver</button>
+      <button class="act" type="submit">Deliver</button>
     </form>
   </section>
 </main>

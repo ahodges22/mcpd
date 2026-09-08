@@ -5,20 +5,21 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>mcpd: {{.Name}}</title>
 <link rel="icon" type="image/svg+xml" href="/assets/logo.svg">
+<link rel="stylesheet" href="/theme/theme.css">
 <link rel="stylesheet" href="/assets/style.css">
 </head>
 <body>
-<header class="rail">
-  <p class="mark"><span class="mark-name mono">{{.Name}}</span><span class="mark-addr">{{len .Tools}} tools</span></p>
-  <a class="back" href="/">Back to the panel</a>
+<header class="top">
+  <div class="brand"><div><b class="mono">{{.Name}}</b><small><span class="mono">{{len .Tools}}</span> tools</small></div></div>
+  <a class="act quiet" href="/">Back to the panel</a>
 </header>
 
 <main>
-<section class="block">
+<section>
   {{if .Tools}}
-  <label class="field filter">
-    <span class="field-label">Find a tool</span>
-    <input class="mono" id="tool-filter" autocomplete="off" spellcheck="false" placeholder="name or description">
+  <label class="control filter">
+    <span class="control-label">Find a tool</span>
+    <input class="field mono" id="tool-filter" autocomplete="off" spellcheck="false" placeholder="name or description">
   </label>
   {{range .Tools}}
   <section class="tool" data-id="{{.ID}}" data-confirm="{{.Confirm}}" data-find="{{.Tool}} {{.Description}}">
@@ -35,10 +36,10 @@
       {{if .Schema}}<pre class="schema">{{.Schema}}</pre>{{end}}
       <div class="tool-call">
         <label>
-          <span class="field-label">Call it with</span>
-          <textarea class="args" rows="3" spellcheck="false">{}</textarea>
+          <span class="control-label">Call it with</span>
+          <textarea class="field args" rows="3" spellcheck="false">{}</textarea>
         </label>
-        <button class="invoke">Run</button>
+        <button class="act invoke">Run</button>
       </div>
       <pre class="result"></pre>
     </details>

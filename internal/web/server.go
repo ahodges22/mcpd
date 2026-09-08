@@ -22,6 +22,7 @@ import (
 	"github.com/ahodges22/mcpd/internal/oauthstore"
 	"github.com/ahodges22/mcpd/internal/searchindex"
 	"github.com/ahodges22/mcpd/internal/secretstore"
+	"github.com/ahodges22/mcpd/theme"
 )
 
 const (
@@ -377,6 +378,7 @@ func (s *Server) routes() []route {
 		{method: http.MethodPost, path: "/api/secrets/{name}/refresh", mutates: true, handler: s.secretRefreshConsumers},
 		{method: http.MethodGet, path: "/inspect/{name}", handler: s.inspectPage},
 		{method: http.MethodGet, path: "/assets/", handler: http.FileServerFS(assetFS).ServeHTTP},
+		{method: http.MethodGet, path: "/theme/", handler: theme.Handler().ServeHTTP},
 		{method: http.MethodGet, path: "/oauth/callback", mutates: true, nonceGuarded: true,
 			handler: s.oauthCallback},
 		{method: http.MethodPost, path: "/api/backends/{name}/authorize", mutates: true,

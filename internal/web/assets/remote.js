@@ -84,9 +84,9 @@ function renderBackends(list) {
   ul.replaceChildren();
   if (list.length === 0) {
     const li = document.createElement("li");
-    li.className = "pair-row";
+    li.className = "row";
     const name = document.createElement("span");
-    name.className = "pair-state";
+    name.className = "state";
     setText(name, "No OAuth-backed backends are declared.");
     li.appendChild(name);
     ul.appendChild(li);
@@ -94,17 +94,17 @@ function renderBackends(list) {
   }
   for (const b of list) {
     const li = document.createElement("li");
-    li.className = "pair-row";
+    li.className = "row";
     const lamp = document.createElement("span");
     lamp.className = "lamp";
-    lamp.dataset.tone = b.tone;
+    lamp.dataset.s = b.tone;
     li.appendChild(lamp);
     const name = document.createElement("span");
-    name.className = "pair-name mono";
+    name.className = "name";
     setText(name, b.name);
     li.appendChild(name);
     const state = document.createElement("span");
-    state.className = "pair-state";
+    state.className = "state";
     setText(state, b.label);
     li.appendChild(state);
     const btn = document.createElement("button");
