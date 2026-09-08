@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0](https://github.com/ahodges22/mcpd/compare/v0.5.1...v0.6.0) (2026-09-08)
+
+
+### Features
+
+* shared theme package and panel restyle ([#21](https://github.com/ahodges22/mcpd/issues/21)) ([0fa01d9](https://github.com/ahodges22/mcpd/commit/0fa01d9289de52e13a83e177e826abf055a8354d))
+
 ## [0.5.1](https://github.com/ahodges22/mcpd/compare/v0.5.0...v0.5.1) (2026-09-02)
 
 
