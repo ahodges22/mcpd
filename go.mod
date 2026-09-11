@@ -4,7 +4,7 @@ go 1.26.6
 
 require (
 	github.com/BurntSushi/toml v1.6.0
-	github.com/ahodges22/systray v0.2.9-0.20260819052144-8d1612f51132
+	github.com/ahodges22/systray a3901e26a164
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/godbus/dbus/v5 v5.2.2
 	github.com/modelcontextprotocol/go-sdk v1.7.0
