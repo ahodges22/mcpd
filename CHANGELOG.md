@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.7.0](https://github.com/ahodges22/mcpd/compare/v0.6.0...v0.7.0) (2026-09-24)
+
+
+### Features
+
+* disable individual tools without disabling their backend ([eab1309](https://github.com/ahodges22/mcpd/commit/eab1309d4f0fc2d69703f9bda855fe0854f130c9))
+
+
+### Bug Fixes
+
+* **deps:** upgrade grpc to address GO-2026-6348 ([74eb496](https://github.com/ahodges22/mcpd/commit/74eb4965453dc1cf88bc4a51a9a6a388ab2f212d))
+
 ## [0.6.0](https://github.com/ahodges22/mcpd/compare/v0.5.1...v0.6.0) (2026-09-08)
 
 
