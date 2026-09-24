@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.1](https://github.com/ahodges22/mcpd/compare/v0.7.0...v0.7.1) (2026-09-24)
+
+
+### Bug Fixes
+
+* **deps:** upgrade go-sdk so backend calls use the negotiated protocol version ([#29](https://github.com/ahodges22/mcpd/issues/29)) ([368ed0a](https://github.com/ahodges22/mcpd/commit/368ed0a968f15f397645e543a5b2f777b4483961))
+
 ## [0.7.0](https://github.com/ahodges22/mcpd/compare/v0.6.0...v0.7.0) (2026-09-24)
 
 
