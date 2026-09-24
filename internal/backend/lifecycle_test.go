@@ -928,3 +928,47 @@ func TestShutdownDoesNotRaceAnAdd(t *testing.T) {
 		}
 	}
 }
+
+// Scenario (tool-catalog spec, "A disabled tool stays disabled across a restart"):
+// a tool disable is read back by a fresh store and leaves the backend's own state alone.
+func TestADisabledToolOutlivesARestart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "overrides.json")
+	if err := overridesAt(t, path).SetToolDisabled("alpha", "kubectl_delete", true); err != nil {
+		t.Fatalf("disable tool: %v", err)
+	}
+
+	restarted := overridesAt(t, path)
+	if !restarted.ToolDisabled("alpha", "kubectl_delete") {
+		t.Error("tool disable did not survive a restart")
+	}
+	if restarted.ToolDisabled("alpha", "kubectl_logs") || restarted.Disabled("alpha") {
+		t.Error("a tool disable spread to another tool or to its backend")
+	}
+}
+
+// Scenario (tool-catalog spec, "A removed backend forgets its disabled tools"):
+// neither a removal nor a startup with the name undeclared leaves a tool disable behind
+// for a later backend that reuses the name.
+func TestARemovedBackendForgetsItsDisabledTools(t *testing.T) {
+	dir := t.TempDir()
+	removed := overridesAt(t, filepath.Join(dir, "removed.json"))
+	undeclared := overridesAt(t, filepath.Join(dir, "undeclared.json"))
+	for _, ov := range []*Overrides{removed, undeclared} {
+		if err := ov.SetToolDisabled("alpha", "kubectl_delete", true); err != nil {
+			t.Fatalf("disable tool: %v", err)
+		}
+	}
+
+	if err := removed.Forget("alpha"); err != nil {
+		t.Fatalf("forget: %v", err)
+	}
+	if err := undeclared.Reconcile(map[string]config.Identity{}); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	for name, path := range map[string]string{"removal": "removed.json", "reconcile": "undeclared.json"} {
+		if overridesAt(t, filepath.Join(dir, path)).ToolDisabled("alpha", "kubectl_delete") {
+			t.Errorf("a tool disable survived %s", name)
+		}
+	}
+}

@@ -7,6 +7,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 
 	"github.com/ahodges22/mcpd/internal/atomicfile"
@@ -14,13 +15,16 @@ import (
 )
 
 // Overrides records which backends the user has disabled, and which declaration each
-// disable was aimed at. It lives under the daemon's state directory, separately from
+// disable was aimed at, plus the individual tools the user has disabled on a backend
+// that stays enabled. It lives under the daemon's state directory, separately from
 // the declarations, so a runtime toggle never rewrites a declaration.
 type Overrides struct {
 	path string
 
-	mu           sync.Mutex
-	disabled     map[string]config.Identity
+	mu       sync.Mutex
+	disabled map[string]config.Identity
+	// tools maps a backend name to its disabled tool names, kept sorted.
+	tools        map[string][]string
 	declarations declarationGuard
 }
 
@@ -33,7 +37,8 @@ type overrideDocument struct {
 	// under. It was an array of names before identities existed, and LoadOverrides
 	// still accepts that shape: rejecting it would silently enable every backend the
 	// user had disabled on the first start after the upgrade.
-	Disabled json.RawMessage `json:"disabled"`
+	Disabled json.RawMessage     `json:"disabled"`
+	Tools    map[string][]string `json:"disabled_tools,omitempty"`
 }
 
 // LoadOverrides reads the override file. An absent file is a first run, not an
@@ -42,7 +47,7 @@ func LoadOverrides(path string, declarations declarationGuard) (*Overrides, erro
 	if declarations == nil {
 		return nil, errors.New("declaration guard is required")
 	}
-	o := &Overrides{path: path, disabled: make(map[string]config.Identity), declarations: declarations}
+	o := &Overrides{path: path, disabled: make(map[string]config.Identity), tools: make(map[string][]string), declarations: declarations}
 	raw, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return o, nil
@@ -53,6 +58,11 @@ func LoadOverrides(path string, declarations declarationGuard) (*Overrides, erro
 	var doc overrideDocument
 	if err := json.Unmarshal(raw, &doc); err != nil {
 		return nil, fmt.Errorf("parse overrides: %w", err)
+	}
+	for name, tools := range doc.Tools {
+		if len(tools) > 0 {
+			o.tools[name] = slices.Sorted(slices.Values(tools))
+		}
 	}
 	if len(doc.Disabled) == 0 {
 		return o, nil
@@ -91,7 +101,15 @@ func (o *Overrides) Reconcile(declared map[string]config.Identity) error {
 	defer o.mu.Unlock()
 
 	next := make(map[string]config.Identity, len(o.disabled))
+	nextTools := make(map[string][]string, len(o.tools))
 	changed := false
+	for name, tools := range o.tools {
+		if _, ok := declared[name]; !ok {
+			changed = true
+			continue
+		}
+		nextTools[name] = tools
+	}
 	for name, recorded := range o.disabled {
 		current, ok := declared[name]
 		if !ok {
@@ -106,10 +124,10 @@ func (o *Overrides) Reconcile(declared map[string]config.Identity) error {
 	if !changed {
 		return nil
 	}
-	if err := o.save(next); err != nil {
+	if err := o.save(next, nextTools); err != nil {
 		return err
 	}
-	o.disabled = next
+	o.disabled, o.tools = next, nextTools
 	return nil
 }
 
@@ -139,7 +157,7 @@ func (o *Overrides) set(name string, disabled bool, id config.Identity) error {
 		delete(next, name)
 	}
 	write := func() error {
-		if err := o.save(next); err != nil {
+		if err := o.save(next, o.tools); err != nil {
 			return err
 		}
 		o.disabled = next
@@ -152,17 +170,61 @@ func (o *Overrides) set(name string, disabled bool, id config.Identity) error {
 	return err
 }
 
+// ToolDisabled reports whether the user has disabled server's tool.
+func (o *Overrides) ToolDisabled(server, tool string) bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	_, ok := slices.BinarySearch(o.tools[server], tool)
+	return ok
+}
+
+// SetToolDisabled persists one tool's state on server. It is idempotent, and like set it
+// writes under the declaration guard, so a toggle racing a removal cannot leave state
+// behind under a name that is no longer declared.
+func (o *Overrides) SetToolDisabled(server, tool string, disabled bool) error {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
+	current := o.tools[server]
+	i, found := slices.BinarySearch(current, tool)
+	if found == disabled {
+		return nil
+	}
+	var names []string
+	if disabled {
+		names = slices.Insert(slices.Clone(current), i, tool)
+	} else {
+		names = slices.Delete(slices.Clone(current), i, i+1)
+	}
+	next := maps.Clone(o.tools)
+	if len(names) == 0 {
+		delete(next, server)
+	} else {
+		next[server] = names
+	}
+	var err error
+	if !o.declarations.HoldDeclared(server, nil, func() {
+		if err = o.save(o.disabled, next); err == nil {
+			o.tools = next
+		}
+	}) {
+		return fmt.Errorf("%s: %w", server, ErrUndeclared)
+	}
+	return err
+}
+
 // ErrUndeclared reports that state was not persisted because its backend is no longer
 // declared.
 var ErrUndeclared = errors.New("backend no longer declared")
 
-func (o *Overrides) save(disabled map[string]config.Identity) error {
+func (o *Overrides) save(disabled map[string]config.Identity, tools map[string][]string) error {
 	if disabled == nil {
 		disabled = map[string]config.Identity{}
 	}
 	raw, err := json.Marshal(struct {
 		Disabled map[string]config.Identity `json:"disabled"`
-	}{disabled})
+		Tools    map[string][]string        `json:"disabled_tools,omitempty"`
+	}{disabled, tools})
 	if err != nil {
 		return fmt.Errorf("marshal overrides: %w", err)
 	}
@@ -176,20 +238,24 @@ func (o *Overrides) save(disabled map[string]config.Identity) error {
 	return nil
 }
 
-// Forget deletes name's entry outright. A removal calls it, because state left under a
+// Forget deletes name's entries outright. A removal calls it, because state left under a
 // name that is no longer declared would silently apply to a later backend that reused it.
 func (o *Overrides) Forget(name string) error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	if _, ok := o.disabled[name]; !ok {
+	_, disabled := o.disabled[name]
+	_, tools := o.tools[name]
+	if !disabled && !tools {
 		return nil
 	}
 	next := maps.Clone(o.disabled)
 	delete(next, name)
-	if err := o.save(next); err != nil {
+	nextTools := maps.Clone(o.tools)
+	delete(nextTools, name)
+	if err := o.save(next, nextTools); err != nil {
 		return err
 	}
-	o.disabled = next
+	o.disabled, o.tools = next, nextTools
 	return nil
 }
 
@@ -203,7 +269,7 @@ func (o *Overrides) Rebind(name string, id config.Identity) error {
 	}
 	next := maps.Clone(o.disabled)
 	next[name] = id
-	if err := o.save(next); err != nil {
+	if err := o.save(next, o.tools); err != nil {
 		return err
 	}
 	o.disabled = next

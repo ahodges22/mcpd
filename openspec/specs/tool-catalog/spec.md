@@ -81,3 +81,28 @@ serve search before every backend has been re-listed.
 
 - **WHEN** the daemon restarts with a previously written catalog
 - **THEN** search answers from the persisted catalog while backends reconnect
+
+### Requirement: Individual tools can be disabled
+
+The user SHALL be able to disable one tool without disabling its backend. A disabled tool
+SHALL be absent from search, describe, call, and the pass-through endpoint, and a call for
+it SHALL NOT reach the backend. The catalog SHALL keep the tool's entry, so an enable
+restores it without a re-list. The disable SHALL be recorded under the state directory,
+never in the declaration file.
+
+#### Scenario: A disabled tool is unreachable while its backend serves
+
+- **WHEN** one tool of a connected backend is disabled
+- **THEN** no endpoint lists, describes, or dispatches it, the backend's other tools keep
+  serving, and an enable restores it without contacting the backend
+
+#### Scenario: A disabled tool stays disabled across a restart
+
+- **WHEN** the daemon restarts after a tool was disabled
+- **THEN** the tool is still disabled, and neither its backend nor its other tools are
+
+#### Scenario: A removed backend forgets its disabled tools
+
+- **WHEN** a backend with a disabled tool is removed, or is absent from the declarations
+  at startup
+- **THEN** no tool disable remains under its name for a later backend that reuses it

@@ -51,6 +51,23 @@ type Entry struct {
 	Annotations *mcp.ToolAnnotations `json:"annotations,omitempty"`
 }
 
+// Listing is one catalog entry as the management surface shows it, disabled or not.
+type Listing struct {
+	Entry
+	Disabled bool `json:"disabled"`
+}
+
+// ErrUnknownTool reports that a canonical id names no listed tool.
+var ErrUnknownTool = errors.New("unknown tool id")
+
+// toolGate is the part of *backend.Overrides that records individually disabled tools.
+type toolGate interface {
+	ToolDisabled(server, tool string) bool
+	SetToolDisabled(server, tool string, disabled bool) error
+}
+
+var _ toolGate = (*backend.Overrides)(nil)
+
 // lister is the part of *backend.Backend the catalog reads.
 type lister interface {
 	ListTools(context.Context) ([]*mcp.Tool, error)
@@ -107,6 +124,9 @@ type Catalog struct {
 	backends backends
 	path     string
 	tune     tuning
+	// gate hides disabled tools. The index keeps them, so an enable needs no re-list.
+	// It is nil only in tests that never disable a tool.
+	gate toolGate
 
 	saveMu sync.Mutex // serializes marshal-through-rename, so no save lands out of order
 	// beforeRename is a test seam: it forces two saves to interleave, which is the
@@ -124,12 +144,14 @@ type Catalog struct {
 
 // New builds a catalog over reg, persisted at path.
 func New(reg *backend.Registry, path string) *Catalog {
-	return newCatalog(registrySource{reg}, path, tuning{
+	c := newCatalog(registrySource{reg}, path, tuning{
 		debounce:    defaultDebounce,
 		backoffBase: defaultBackoffBase,
 		ttl:         DefaultTTL,
 		listTimeout: defaultListTimeout,
 	})
+	c.gate = reg.Overrides()
+	return c
 }
 
 func newCatalog(src backends, path string, tune tuning) *Catalog {
@@ -152,17 +174,62 @@ func newCatalog(src backends, path string, tune tuning) *Catalog {
 // refresh starts, and there is one hook: a second call replaces the first.
 func (c *Catalog) OnCommit(hook func()) { c.onCommit = hook }
 
+// Entries reports the tools clients may see and call. Every serving path reads the
+// catalog through Entries or Lookup, so a disabled tool is absent from all of them.
 func (c *Catalog) Entries() []Entry {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.sortedLocked()
+	entries := c.sortedLocked()
+	c.mu.Unlock()
+	// The gate is consulted with c.mu released, so its lock never nests inside ours.
+	return slices.DeleteFunc(entries, c.disabled)
 }
 
 func (c *Catalog) Lookup(id string) (Entry, bool) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	e, ok := c.index[id]
-	return e, ok
+	c.mu.Unlock()
+	if !ok || c.disabled(e) {
+		return Entry{}, false
+	}
+	return e, true
+}
+
+// Listings reports every listed tool, including disabled ones, for the surface that
+// toggles them.
+func (c *Catalog) Listings() []Listing {
+	c.mu.Lock()
+	entries := c.sortedLocked()
+	c.mu.Unlock()
+	out := make([]Listing, len(entries))
+	for i, e := range entries {
+		out[i] = Listing{Entry: e, Disabled: c.disabled(e)}
+	}
+	return out
+}
+
+// SetToolEnabled persists whether a listed tool is served, then runs the post-commit
+// hook so the pass-through endpoint adds or removes it before this returns.
+func (c *Catalog) SetToolEnabled(id string, enabled bool) error {
+	c.mu.Lock()
+	e, ok := c.index[id]
+	c.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("%w %q", ErrUnknownTool, id)
+	}
+	if c.gate == nil {
+		return errors.New("tool overrides are unavailable")
+	}
+	if err := c.gate.SetToolDisabled(e.Server, e.Tool, !enabled); err != nil {
+		return err
+	}
+	if c.onCommit != nil {
+		c.onCommit()
+	}
+	return nil
+}
+
+func (c *Catalog) disabled(e Entry) bool {
+	return c.gate != nil && c.gate.ToolDisabled(e.Server, e.Tool)
 }
 
 // Errors reports, per backend, why that backend's tools are absent.

@@ -173,6 +173,8 @@ func (s *Server) AdminHandler() http.Handler {
 		{method: http.MethodPost, path: "/tools/search", mutates: true, handler: s.toolSearch},
 		{method: http.MethodGet, path: "/tools/{id}", handler: s.toolDescribe},
 		{method: http.MethodPost, path: "/tools/{id}/invoke", mutates: true, handler: s.toolInvoke},
+		{method: http.MethodPost, path: "/tools/{id}/enable", mutates: true, handler: s.toolToggle(true)},
+		{method: http.MethodPost, path: "/tools/{id}/disable", mutates: true, handler: s.toolToggle(false)},
 		{method: http.MethodPost, path: "/tools/-/reindex", mutates: true, handler: s.reindex},
 		{method: http.MethodGet, path: "/clients", handler: s.clientStatus},
 		{method: http.MethodPost, path: "/clients/{name}/install", mutates: true, handler: s.clientInstall},
@@ -207,7 +209,24 @@ func validateAdminMethod(rt route, next http.Handler) http.Handler {
 }
 
 func (s *Server) toolList(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"tools": s.cat.Entries()})
+	writeJSON(w, http.StatusOK, map[string]any{"tools": s.cat.Listings()})
+}
+
+// toolToggle hides one tool from every client, or restores it, without touching the
+// rest of its backend.
+func (s *Server) toolToggle(enabled bool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		err := s.cat.SetToolEnabled(id, enabled)
+		switch {
+		case errors.Is(err, catalog.ErrUnknownTool), errors.Is(err, backend.ErrUndeclared):
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+		case err != nil:
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		default:
+			writeJSON(w, http.StatusOK, map[string]any{"id": id, "disabled": !enabled})
+		}
+	}
 }
 
 func (s *Server) toolSearch(w http.ResponseWriter, r *http.Request) {

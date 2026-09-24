@@ -169,6 +169,10 @@ func (r *Registry) unpublish(name string) (*Backend, bool) {
 	return b, true
 }
 
+// Overrides is the store of the user's disable intent. The catalog reads it to hide
+// tools disabled individually on a backend that stays enabled.
+func (r *Registry) Overrides() *Overrides { return r.overrides }
+
 // ShuttingDown reports whether shutdown has latched.
 func (r *Registry) ShuttingDown() bool {
 	r.mu.RLock()
