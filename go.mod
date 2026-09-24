@@ -7,7 +7,7 @@ require (
 	github.com/ahodges22/systray v0.2.9-0.20260819052144-8d1612f51132
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/godbus/dbus/v5 v5.2.2
-	github.com/modelcontextprotocol/go-sdk v1.7.0
+	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/sigstore/protobuf-specs v0.5.1
 	github.com/sigstore/sigstore-go v1.2.2
 	github.com/theupdateframework/go-tuf/v2 v2.4.2
